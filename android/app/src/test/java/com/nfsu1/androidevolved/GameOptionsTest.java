@@ -25,6 +25,7 @@ public class GameOptionsTest {
         assertEquals("0", GameOptions.defaultValue(GameOptions.ANTIALIAS, 16 * GB));
         assertEquals("120", GameOptions.defaultValue(GameOptions.FPS, 16 * GB));
         assertEquals("on", GameOptions.defaultValue(GameOptions.WIDESCREEN, 16 * GB));
+        assertEquals("overlapped", GameOptions.defaultValue(GameOptions.READS, 16 * GB));   // build 7: reads hand the machine over again
     }
 
     @Test public void everyOptionHasADefaultAmongItsValues() {

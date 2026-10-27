@@ -882,6 +882,10 @@ std::string guestTelemetryJson(bool live){
     return json+"}";
 }
 void setGuestCpuPlacement(int placement){cpuPlacement=placement==0?0:1;}
+void setGuestReadHandover(bool overlapped){
+    readHandover.store(overlapped,std::memory_order_relaxed);
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Loader reads: %s",overlapped?"overlapped (reads of 64 KB and more hand the guest machine over while the kernel copies)":"atomic (every read holds the guest machine)");
+}
 void setGuestFrameLimit(unsigned framesPerSecond){
     frameLimit=(framesPerSecond>=30&&framesPerSecond<=240)?framesPerSecond:0;
     host_perf::setTargetFps(frameLimit.load());

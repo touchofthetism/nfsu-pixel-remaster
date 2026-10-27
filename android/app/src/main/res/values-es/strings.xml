@@ -273,6 +273,9 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
     <string name="opt_gamegfx">Gráficos del juego</string>
     <string name="gamegfx_max">Máximo · reflejos, estelas, desenfoque, detalle completo</string>
     <string name="gamegfx_game">Como estén en las opciones del propio juego</string>
+    <string name="opt_reads">Lecturas del cargador</string>
+    <string name="reads_overlapped">Solapadas · el juego sigue mientras se cargan archivos</string>
+    <string name="reads_atomic">Detener el juego en cada lectura (versiones 1–3)</string>
     <string name="opt_wrongway">Aviso de sentido contrario</string>
     <string name="wrongway_on">Activado · como el juego</string>
     <string name="wrongway_off">Desactivado · para free roam</string>

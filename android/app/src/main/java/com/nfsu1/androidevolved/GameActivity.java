@@ -166,6 +166,7 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeWidescreen(boolean enabled);
     private static native void nativeWrongWayWarning(boolean enabled);
     private static native void nativeCpuPlacement(int placement);
+    private static native void nativeReadHandover(boolean overlapped);
     /** Instrumented (PGO) builds write their profile; false in ordinary builds. */
     private static native boolean nativeWriteProfile();
     private static native void nativeOnlineServer(String host);
@@ -248,6 +249,8 @@ public final class GameActivity extends NativeActivity {
         nativeFrameLimit(launch.getIntExtra("frameCap", GameOptions.intValue(this, GameOptions.FPS)));
         nativeCpuPlacement(launch.getStringExtra("cpuPlacement") != null ? ("system".equals(launch.getStringExtra("cpuPlacement")) ? 0 : 1)
                 : (GameOptions.get(this, GameOptions.CPU).equals("system") ? 0 : 1));
+        nativeReadHandover(launch.getStringExtra("reads") != null ? !"atomic".equals(launch.getStringExtra("reads"))
+                : !GameOptions.get(this, GameOptions.READS).equals("atomic"));
         nativeGraphicsQuality(launch.getIntExtra("anisotropy", GameOptions.intValue(this, GameOptions.ANISOTROPY)),
                 launch.getIntExtra("antialias", GameOptions.intValue(this, GameOptions.ANTIALIAS)), getFilesDir().getAbsolutePath());
         nativeWidescreen(launch.getBooleanExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on")));

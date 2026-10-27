@@ -285,6 +285,9 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
     <string name="opt_gamegfx">Game graphics</string>
     <string name="gamegfx_max">Maximum · reflections, streaks, blur, full detail</string>
     <string name="gamegfx_game">As set in the game\'s own options</string>
+    <string name="opt_reads">Loader reads</string>
+    <string name="reads_overlapped">Overlapped · the game keeps running while files load</string>
+    <string name="reads_atomic">Hold the game during every read (builds 1–3)</string>
     <string name="opt_wrongway">Wrong-way warning</string>
     <string name="wrongway_on">On · game default</string>
     <string name="wrongway_off">Off · for free roam</string>

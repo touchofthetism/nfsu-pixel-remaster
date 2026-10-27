@@ -30,6 +30,9 @@ void setGuestResolution(unsigned width,unsigned height);
 void setGuestFrameLimit(unsigned framesPerSecond);
 /** Launcher "CPU placement": 0 = system scheduler, 1 = render thread on the fastest cores (host_perf.h). */
 void setGuestCpuPlacement(int placement);
+/** Launcher "Loader reads": true = reads of 64 KB and more hand the guest machine to the other guest threads
+ * while the kernel copies (guest_files.inc); false = every read holds the machine, as builds 1-3 and 5-6 did. */
+void setGuestReadHandover(bool overlapped);
 /** Session telemetry as JSON: frame intervals (frame_telemetry.h), DXVK pipeline compiles, audio
  * underruns, render size; live = the overlay view (last 240 frames), else the complete record. */
 std::string guestTelemetryJson(bool live);

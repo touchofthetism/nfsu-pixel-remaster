@@ -44,7 +44,7 @@ final class GameOptions {
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
             ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu",
-            GAMEGFX = "gamegfx";
+            GAMEGFX = "gamegfx", READS = "reads";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -79,6 +79,11 @@ final class GameOptions {
             new Option(CPU, R.string.opt_cpu,
                     new String[] {"fast", "system"},
                     new int[] {R.string.cpu_fast, R.string.cpu_system}),
+            // Reads of 64 KB and more (loader, music/stream blocks) let the other guest threads run while the kernel
+            // copies; "atomic" holds the game for every read as builds 1-3 did (guest_files.inc).
+            new Option(READS, R.string.opt_reads,
+                    new String[] {"overlapped", "atomic"},
+                    new int[] {R.string.reads_overlapped, R.string.reads_atomic}),
             new Option(LATENCY, R.string.opt_latency,
                     new String[] {"2", "1"},
                     new int[] {R.string.latency_performance, R.string.latency_low}),
@@ -152,6 +157,7 @@ final class GameOptions {
             case OVERLAY: return "off";
             case WRONGWAY: return "on";
             case GAMEGFX: return "max";
+            case READS: return "overlapped";
             case CPU: return "fast";
             case GFXLOG: return "info";
             default: throw new IllegalArgumentException(key);
