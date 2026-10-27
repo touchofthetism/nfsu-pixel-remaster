@@ -48,7 +48,8 @@ POLICIES = {
     "ui": ("animevideo", 1024, 4, 2, 2),
     # Photographs (track select, magazine covers) also go through the compact net: RRDBNet is 20x slower
     # on a CPU and the gain on these mostly-dark 2003 renders is small at 2x.
-    "photo": ("animevideo", 1024, 4, 2, 2),
+    # ...and 512-px photographs stay as they are: the magazine covers alone would grow to 200 MB at 2x.
+    "photo": ("animevideo", 512, 4, 2, 1),
 }
 
 
