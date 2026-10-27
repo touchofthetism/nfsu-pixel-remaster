@@ -51,7 +51,7 @@ Nothing game-derived is ever committed anywhere; `work/` and `src/recomp/gen*/` 
 The lifted game code is the frame's biggest cost, and it is branchy enough that a profile helps the compiler more than flags do.
 1. Private `BUILD`: `pgo=generate` → an instrumented APK (`…-pgo` versionName) that writes `files/pgo/game-*.profraw` on pause/exit.
 2. Play a long session (front end, several races, a drift event), then **Share diagnostics**: the ZIP carries `pgo/*.profraw`.
-3. `llvm-profdata merge -o nfsu1.profdata pgo/game-*.profraw` (the NDK's `llvm-profdata`), commit it as `pgo/nfsu1.profdata` in the private repo, set `pgo=use`.
+3. `tools/pgo/merge_profile.sh -o nfsu1.profdata <diagnostics ZIP>...` (the pinned NDK's `llvm-profdata`; several ZIPs merge into one profile and the script prints the hottest lifted functions), commit it as `pgo/nfsu1.profdata` in the private repo, set `pgo=use`.
 Profiles stay valid while the lift inputs and scripts are unchanged (the function set is the same); a changed lift just loses coverage with a warning, never correctness.
 
 ## Working on it
