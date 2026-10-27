@@ -249,4 +249,25 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
     <string name="saves_err_too_large">Demasiado grande para una copia de partidas.</string>
     <string name="saves_err_empty">El ZIP no contiene archivos.</string>
     <string name="saves_err_replace">No se pudo sustituir la carpeta de partidas.</string>
+    <string name="opt_mods_install">Instalar paquete de mods (ZIP)</string>
+    <string name="opt_mods_install_value">Texturas HD, Free Roam…</string>
+    <string name="opt_mods_installed">Paquetes de mods</string>
+    <string name="mods_title">Paquetes de mods</string>
+    <string name="mods_install_message">Un paquete de mods es un ZIP con archivos del juego (Global/, Tracks/, FrontEnd/, Cars/…): los paquetes de texturas HD de esta versión o mods de datos de la comunidad como el Free Roam Mod. Los archivos que sustituye se conservan, así que el paquete se puede quitar. El juego se cierra antes. Speed.exe y los programas dentro del ZIP se ignoran.</string>
+    <string name="mods_installing">Instalando… %1$d MB</string>
+    <string name="mods_installed_done">%1$s instalado: %2$d archivos (%3$d originales sustituidos y conservados).</string>
+    <string name="mods_failed">No se pudo terminar: %1$s</string>
+    <string name="mods_none">No hay ningún paquete de mods instalado. Usa Instalar paquete de mods (ZIP).</string>
+    <string name="mods_pack_line">%1$d archivos · %2$s · toca para quitar</string>
+    <string name="mods_remove_title">Quitar paquete de mods</string>
+    <string name="mods_remove_message">¿Quitar %1$s y restaurar los archivos que sustituyó?</string>
+    <string name="mods_remove_message_stack">¿Quitar %1$s? Los %2$d paquete(s) instalados después también se quitarán, para que vuelvan todos los archivos originales.</string>
+    <string name="mods_remove_button">Quitar</string>
+    <string name="mods_removing">Quitando el paquete de mods…</string>
+    <string name="mods_removed_done">%1$d paquete(s) quitados; los archivos originales han vuelto.</string>
+    <plurals name="mods_count">
+        <item quantity="one">%d instalado</item>
+        <item quantity="many">%d instalados</item>
+        <item quantity="other">%d instalados</item>
+    </plurals>
 </resources>

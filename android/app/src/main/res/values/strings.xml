@@ -262,4 +262,24 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
     <string name="saves_err_too_large">Too large for a save backup.</string>
     <string name="saves_err_empty">The ZIP holds no files.</string>
     <string name="saves_err_replace">Could not replace the save folder.</string>
+    <string name="opt_mods_install">Install mod pack (ZIP)</string>
+    <string name="opt_mods_install_value">HD textures, Free Roam…</string>
+    <string name="opt_mods_installed">Mod packs</string>
+    <string name="mods_title">Mod packs</string>
+    <string name="mods_install_message">A mod pack is a ZIP of game files (Global/, Tracks/, FrontEnd/, Cars/…): the HD texture packs made for this build, or community data mods such as the Free Roam Mod. The files it replaces are kept, so a pack can be removed again. The game is closed first. Speed.exe and programs inside the ZIP are ignored.</string>
+    <string name="mods_installing">Installing… %1$d MB</string>
+    <string name="mods_installed_done">%1$s installed: %2$d files (%3$d replaced originals kept).</string>
+    <string name="mods_failed">Could not finish: %1$s</string>
+    <string name="mods_none">No mod pack is installed. Use Install mod pack (ZIP).</string>
+    <string name="mods_pack_line">%1$d files · %2$s · tap to remove</string>
+    <string name="mods_remove_title">Remove mod pack</string>
+    <string name="mods_remove_message">Remove %1$s and restore the files it replaced?</string>
+    <string name="mods_remove_message_stack">Remove %1$s? The %2$d pack(s) installed after it will be removed too, so every original file comes back.</string>
+    <string name="mods_remove_button">Remove</string>
+    <string name="mods_removing">Removing the mod pack…</string>
+    <string name="mods_removed_done">%1$d pack(s) removed; the original files are back.</string>
+    <plurals name="mods_count">
+        <item quantity="one">%d installed</item>
+        <item quantity="other">%d installed</item>
+    </plurals>
 </resources>

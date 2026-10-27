@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * This edition adds importing the game folder from a ZIP and sharing the diagnostics ZIP directly.
  */
 public final class LauncherActivity extends Activity {
-    private static final int REQUEST_DRIVER_ZIP = 45, REQUEST_DRIVER_PROBE = 46, REQUEST_GAME_ZIP = 47, REQUEST_SAVE_ZIP = 48;
+    private static final int REQUEST_DRIVER_ZIP = 45, REQUEST_DRIVER_PROBE = 46, REQUEST_GAME_ZIP = 47, REQUEST_SAVE_ZIP = 48, REQUEST_MOD_ZIP = 49;
     // Launcher accent: Underground orange/red (the NFSU2 port is green).
     private static final int ACCENT = 0xFFFF7A1A;
 
@@ -274,6 +274,9 @@ public final class LauncherActivity extends Activity {
         for (GameOptions.Option option : GameOptions.ALL)
             optionsList.addView(optionRow(option.title(this), option.label(this, GameOptions.get(this, option.key)), () -> chooseOption(option)));
         optionsList.addView(optionRow(getString(R.string.opt_online_server), GameOptions.onlineServer(this), this::chooseOnlineServer));
+        optionsList.addView(optionRow(getString(R.string.opt_mods_install), getString(R.string.opt_mods_install_value), this::installModPack));
+        int packs = allowed() ? ModPacks.installed(gameRoot()).size() : 0;
+        optionsList.addView(optionRow(getString(R.string.opt_mods_installed), getResources().getQuantityString(R.plurals.mods_count, packs, packs), this::showModPacks));
         optionsList.addView(optionRow(getString(R.string.opt_saves_backup), getString(R.string.opt_saves_backup_value), this::backupSaves));
         optionsList.addView(optionRow(getString(R.string.opt_saves_restore), getString(R.string.opt_saves_restore_value), this::restoreSaves));
         optionsList.addView(optionRow(getString(R.string.opt_check_updates),
@@ -440,7 +443,99 @@ public final class LauncherActivity extends Activity {
             runImport(data.getData());
         } else if (requestCode == REQUEST_SAVE_ZIP && resultCode == RESULT_OK && data != null && data.getData() != null) {
             runSaveRestore(data.getData());
+        } else if (requestCode == REQUEST_MOD_ZIP && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            runModInstall(data.getData());
         }
+    }
+
+    // ---- Mod packs ---------------------------------------------------------------------------------------
+
+    private void installModPack() {
+        if (!allowed()) { message(getString(R.string.mods_title), getString(R.string.import_err_access)); return; }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(R.string.mods_title).setMessage(R.string.mods_install_message)
+                .setPositiveButton(R.string.import_choose, (dialog, which) -> startActivityForResult(
+                        new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
+                                .putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed", "application/octet-stream"})
+                                .addCategory(Intent.CATEGORY_OPENABLE), REQUEST_MOD_ZIP))
+                .setNegativeButton(R.string.cancel, null).show();
+    }
+
+    private String displayName(Uri uri) {
+        try (android.database.Cursor cursor = getContentResolver().query(uri, new String[] {android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
+        } catch (RuntimeException ignored) { }
+        return uri.getLastPathSegment();
+    }
+
+    private void runModInstall(Uri zip) {
+        killGameProcess();
+        importing = true;
+        refresh();
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        TextView text = label(getString(R.string.mods_installing, 0L), 14, Color.WHITE, false);
+        text.setPadding(dp(24), dp(8), dp(24), dp(8));
+        AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(R.string.mods_title).setView(text).setCancelable(false).create();
+        dialog.show();
+        String name = displayName(zip);
+        final long[] lastShown = {0};
+        worker.execute(() -> {
+            try (java.io.InputStream input = getContentResolver().openInputStream(zip)) {
+                if (input == null) throw new java.io.IOException(getString(R.string.saves_err_open));
+                ModPacks.Pack pack = ModPacks.install(input, gameRoot(), name, (bytes, entry) -> {
+                    long now = System.currentTimeMillis();
+                    if (now - lastShown[0] < 200) return;
+                    lastShown[0] = now;
+                    main.post(() -> text.setText(getString(R.string.mods_installing, bytes >> 20)));
+                });
+                main.post(() -> {
+                    finishImport(dialog);
+                    String notes = pack.notes.isEmpty() ? "" : "\n\n" + pack.notes;
+                    message(getString(R.string.mods_title), getString(R.string.mods_installed_done, pack.name, pack.files.size(), pack.replaced.size()) + notes);
+                });
+            } catch (Exception error) {
+                main.post(() -> { finishImport(dialog); message(getString(R.string.mods_title), getString(R.string.mods_failed, error.getMessage())); });
+            }
+        });
+    }
+
+    private void showModPacks() {
+        if (!allowed()) { message(getString(R.string.mods_title), getString(R.string.import_err_access)); return; }
+        List<ModPacks.Pack> packs = ModPacks.installed(gameRoot());
+        if (packs.isEmpty()) { message(getString(R.string.opt_mods_installed), getString(R.string.mods_none)); return; }
+        String[] lines = new String[packs.size()];
+        for (int i = 0; i < packs.size(); i++) {
+            ModPacks.Pack pack = packs.get(i);
+            lines[i] = (i + 1) + ". " + pack.name + (pack.version.isEmpty() ? "" : " " + pack.version) + "\n"
+                    + getString(R.string.mods_pack_line, pack.files.size(), java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(new java.util.Date(pack.installedAt)));
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(R.string.opt_mods_installed)
+                .setItems(lines, (dialog, which) -> confirmModRemoval(packs, which))
+                .setNegativeButton(R.string.close, null).show();
+    }
+
+    private void confirmModRemoval(List<ModPacks.Pack> packs, int index) {
+        ModPacks.Pack pack = packs.get(index);
+        int later = packs.size() - index - 1;
+        String message = later == 0 ? getString(R.string.mods_remove_message, pack.name)
+                : getString(R.string.mods_remove_message_stack, pack.name, later);
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(R.string.mods_remove_title).setMessage(message)
+                .setPositiveButton(R.string.mods_remove_button, (dialog, which) -> {
+                    killGameProcess();
+                    status.setText(R.string.mods_removing);
+                    worker.execute(() -> {
+                        try {
+                            List<ModPacks.Pack> removed = ModPacks.uninstall(gameRoot(), pack.id);
+                            main.post(() -> { refresh(); message(getString(R.string.mods_title), getString(R.string.mods_removed_done, removed.size())); });
+                        } catch (Exception error) {
+                            main.post(() -> { refresh(); message(getString(R.string.mods_title), getString(R.string.mods_failed, error.getMessage())); });
+                        }
+                    });
+                })
+                .setNegativeButton(R.string.cancel, null).show();
     }
 
     // ---- Save backup -----------------------------------------------------------------------------------

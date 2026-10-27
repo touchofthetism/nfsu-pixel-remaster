@@ -48,6 +48,8 @@ jobs:
         run: bash ci/syntax_check.sh
       - name: Host unit tests
         run: bash ci/host_tests.sh
+      - name: Texture toolkit tests (tools/nfstex)
+        run: python3 -m unittest discover -s tools -p "test_*.py" -v
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |

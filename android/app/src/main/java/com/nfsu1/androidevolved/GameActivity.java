@@ -44,7 +44,7 @@ public final class GameActivity extends NativeActivity {
         @Override public void run() {
             if (!foreground || overlay == null || telemetry == null) return;
             org.json.JSONObject live = null;
-            try { live = new org.json.JSONObject(nativeTelemetryJson(true)); } catch (org.json.JSONException | RuntimeException ignored) { }
+            try { live = new org.json.JSONObject(nativeTelemetryJson(true)); } catch (Exception ignored) { }
             String text = telemetry.overlayText(live, overlayFull);
             overlay.setText(text == null ? "…" : text);
             overlay.postDelayed(this, GameTelemetry.OVERLAY_MS);

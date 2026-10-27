@@ -169,7 +169,7 @@ final class GameTelemetry {
     private final Runnable sampler = new Runnable() {
         @Override public void run() {
             try { JSONObject sample = sample(); synchronized (samples) { samples.put(sample); } }
-            catch (RuntimeException | JSONException ignored) { }
+            catch (Exception ignored) { }
             long now = SystemClock.elapsedRealtime();
             if (now - lastFlushAt >= FLUSH_MS) flush(false);
             if (!stopped && handler != null) handler.postDelayed(this, SAMPLE_MS);
