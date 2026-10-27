@@ -18,10 +18,15 @@ common=(--target=aarch64-linux-android29 -fsyntax-only -Wall -Wextra -Werror -Wn
         -I"$pcrecomp/runtime/recomp32" -I"$pcrecomp/runtime/win32hle" -I"$here/src/runtime"
         -I"$ndk/sources/android/native_app_glue" -I"$parent/nfsu2-recompiled/third_party/libadrenotools/include")
 status=0
-for source in main.cpp guest_runtime.cpp d3d9_bridge.cpp host_perf.cpp vulkan_driver.cpp gpu_probe.cpp; do
-    if "$clang" -x c++ -std=c++17 "${common[@]}" "$cpp/$source"; then echo "[syntax] ok   $source"; else echo "[syntax] FAIL $source"; status=1; fi
+# Every C++ unit in the host runtime directory, and the src/runtime C units CMakeLists.txt links into
+# libnfsu1_android (read from the add_library line), so a new file is checked without editing this list.
+for path in "$cpp"/*.cpp; do
+    source=$(basename "$path")
+    if "$clang" -x c++ -std=c++17 "${common[@]}" "$path"; then echo "[syntax] ok   $source"; else echo "[syntax] FAIL $source"; status=1; fi
 done
-for source in overrides.c widescreen.c abk_code.c; do
-    if "$clang" -x c -std=c11 "${common[@]}" "$here/src/runtime/$source"; then echo "[syntax] ok   src/runtime/$source"; else echo "[syntax] FAIL src/runtime/$source"; status=1; fi
+runtime_c=$(grep -oE 'src/runtime/[A-Za-z0-9_]+\.c' "$cpp/CMakeLists.txt" | sort -u)
+[ -n "$runtime_c" ] || { echo "[syntax] no src/runtime C units found in CMakeLists.txt"; exit 1; }
+for source in $runtime_c; do
+    if "$clang" -x c -std=c11 "${common[@]}" "$here/$source"; then echo "[syntax] ok   $source"; else echo "[syntax] FAIL $source"; status=1; fi
 done
 exit $status

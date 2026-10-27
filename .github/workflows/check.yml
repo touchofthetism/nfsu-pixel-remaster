@@ -40,6 +40,11 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;${{ steps.pins.outputs.ANDROID_PLATFORM }}" \
             "build-tools;${{ steps.pins.outputs.ANDROID_BUILD_TOOLS }}" "ndk;${{ steps.pins.outputs.ANDROID_NDK }}" \
             "cmake;${{ steps.pins.outputs.ANDROID_CMAKE }}" >/dev/null
+          # The install's output is noise, its result is not: every pinned package must be on disk.
+          for dir in "platforms/${{ steps.pins.outputs.ANDROID_PLATFORM }}" "build-tools/${{ steps.pins.outputs.ANDROID_BUILD_TOOLS }}" \
+                     "ndk/${{ steps.pins.outputs.ANDROID_NDK }}" "cmake/${{ steps.pins.outputs.ANDROID_CMAKE }}"; do
+            test -d "$ANDROID_HOME/$dir" || { echo "::error::sdkmanager did not install $dir"; exit 1; }
+          done
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ steps.pins.outputs.ANDROID_NDK }}" >> "$GITHUB_ENV"
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
       - name: Sibling checkouts + DXVK
