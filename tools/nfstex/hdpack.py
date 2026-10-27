@@ -74,21 +74,22 @@ def factor_for(policy, width: int, height: int) -> int:
 
 
 def mip_chain_dds(image: Image.Image, compression: int) -> bytes:
-    """A DDS with the full mip chain in the game's compression, built level by level with Pillow."""
-    fmt = {tpk.COMP_DXT1: "DXT1", tpk.COMP_DXT3: "DXT3", tpk.COMP_DXT5: "DXT5"}[compression]
+    """A DDS with the mip chain in the game's compression, encoded level by level (nfstex.dxt)."""
+    import numpy as np
+    from nfstex import dxt
+    fmt = {tpk.COMP_DXT1: "DXT1", tpk.COMP_DXT3: "DXT3"}[compression]
     levels = []
     w, h = image.size
-    current = image
+    current = image.convert("RGBA")
     # The game's own chains stop when the smaller edge reaches 8 pixels (128x128 -> 5 levels, 256x64 -> 4):
     # keep that convention so the engine's size arithmetic for the chain matches the data.
     while True:
-        buffer = io.BytesIO()
-        current.convert("RGBA").save(buffer, format="DDS", pixel_format=fmt)
-        levels.append(buffer.getvalue()[128:])
+        pixels = np.array(current)
+        levels.append(dxt.encode_dxt1(pixels) if compression == tpk.COMP_DXT1 else dxt.encode_dxt3(pixels))
         if min(w, h) <= 8:
             break
         w, h = max(1, w // 2), max(1, h // 2)
-        current = image.resize((w, h), Image.LANCZOS)
+        current = image.convert("RGBA").resize((w, h), Image.LANCZOS)
     mips = len(levels)
     flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000
     pitch = max(1, (image.width + 3) // 4) * (8 if compression == tpk.COMP_DXT1 else 16)
