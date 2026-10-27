@@ -24,7 +24,18 @@ Later builds install straight over the previous one (same signing key, higher ve
 - [ ] **Share diagnostics** → send the ZIP (Drive is fine).
 
 ## What the diagnostics ZIP holds
-`report.txt` (device, RAM, options and their defaults, game folder listing), `logcat.txt` (this app's log: NFSU1 runtime, DXVK warnings/errors, crashes), `exits.txt` plus native crash/ANR traces if any, and `graphics-cache/` (DXVK state cache — lets the next build precompile shaders so the first session doesn't stutter). No game files or saves are included.
+- `report.txt` — device, RAM, thermal state, display modes, options and their defaults, the game folder listing (unexpected entries listed one level deep).
+- `session-summary.txt` — every recorded session in readable lines: frames, average FPS, 1 % low, p50/p99/max, hitches and stalls, pipeline compiles, audio underruns, thermal/battery/memory/CPU ranges, refresh-rate changes, D3D9 calls per frame, events. Read this first.
+- `telemetry/session-*.json` — the full records those lines come from (histogram, per-second FPS and worst frame, 2 s device samples).
+- `logs/game-*.log` — the complete log of each game process (NFSU1 runtime, DXVK at info level, crashes); `logs/tail-*.txt` — the log buffer as the launcher saw it right after each game.
+- `logcat-now.txt`, `exits.txt`, native crash/ANR traces if any.
+- `graphics-cache/` — DXVK state cache and the driver pipeline cache (the next build ships them as its seed).
+- `dxvk.conf`, and `save/` — the small `nfsu1/Save` folder (options, career), skipped above 4 MB. No game data files are ever included.
+
+## The data loop
+1. Play normally (career and quick race; a long session is better than a short one). Leave the overlay off unless you want to watch it; it does not change what is recorded.
+2. Back in the launcher the **Last session** card shows the numbers; tap it for the full summary.
+3. **Share diagnostics** → Drive. The next build is tuned from that ZIP and seeds its shader cache from it.
 
 ## Reading the log quickly
 - `GPU … ; API …` — the Vulkan device DXVK ended up on.

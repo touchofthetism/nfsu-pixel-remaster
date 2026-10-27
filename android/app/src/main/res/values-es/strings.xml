@@ -138,7 +138,10 @@
     <string name="crash_anr">El juego dejó de responder</string>
     <string name="crash_native">El juego se cerró inesperadamente</string>
     <string name="report_preparing">Preparando el registro…</string>
-    <string name="report_message">El registro completo se ha guardado en:\n%1$s\n\nCompártelo por Drive, correo o un chat para que se pueda revisar.</string>
+    <string name="report_message">El informe se ha guardado en:
+%1$s
+
+Contiene los registros y la telemetría de sesión de esta app (tiempos de fotograma, calor, memoria), las cachés gráficas, las opciones del lanzador y la pequeña carpeta nfsu1/Save; nunca los archivos de datos del juego. Compártelo por Drive, correo o un chat para que se pueda revisar.</string>
     <string name="report_failed">No se pudo preparar el registro: %1$s</string>
     <string name="report_err_create">No se pudo crear el informe.</string>
     <string name="report_err_downloads_create">No se pudo crear el archivo en Descargas.</string>
@@ -215,4 +218,35 @@
     <string name="layout_none">Todavía no hay layouts guardados para este modo</string>
     <string name="layout_load_title">Cargar layout</string>
     <string name="layout_load_failed">No se pudo cargar el layout</string>
+    <string name="opt_overlay">Superposición de rendimiento</string>
+    <string name="overlay_off">Desactivada</string>
+    <string name="overlay_compact">Compacta · FPS, tiempo de fotograma, calor</string>
+    <string name="overlay_full">Completa · añade las gráficas de DXVK (GPU, pipelines)</string>
+    <string name="opt_gfxlog">Detalle del registro gráfico</string>
+    <string name="gfxlog_info">Normal</string>
+    <string name="gfxlog_debug">Detallado · cada compilación de shaders (más lento)</string>
+    <string name="session_header">ÚLTIMA SESIÓN</string>
+    <string name="session_details_title">Sesión %1$s</string>
+    <string name="opt_saves_backup">Copia de las partidas</string>
+    <string name="opt_saves_backup_value">ZIP en Download/NFSU1</string>
+    <string name="opt_saves_restore">Restaurar partidas</string>
+    <string name="opt_saves_restore_value">Desde un ZIP de copia</string>
+    <string name="saves_title">Partidas</string>
+    <string name="saves_working">Trabajando con la carpeta de partidas…</string>
+    <string name="saves_none">Aún no hay carpeta de partidas: el juego crea nfsu1/Save al guardar un perfil.</string>
+    <string name="saves_backup_done">%1$d archivos copiados en:
+%2$s
+
+Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
+    <string name="saves_share_chooser">Compartir la copia de partidas</string>
+    <string name="saves_restore_message">Elige un ZIP de copia de partidas (hecho con Copia de las partidas). La carpeta nfsu1/Save actual se sustituye; el juego se cierra antes.</string>
+    <string name="saves_restore_done">%1$d archivos restaurados en nfsu1/Save.</string>
+    <string name="saves_failed">No se pudo terminar: %1$s</string>
+    <string name="saves_err_open">No se pudo abrir el archivo elegido.</string>
+    <string name="saves_err_staging">No se pudo escribir junto a la carpeta de partidas.</string>
+    <string name="saves_err_entry">El ZIP contiene un archivo que no pertenece a una copia de partidas: %1$s</string>
+    <string name="saves_err_too_many">Demasiados archivos para una copia de partidas.</string>
+    <string name="saves_err_too_large">Demasiado grande para una copia de partidas.</string>
+    <string name="saves_err_empty">El ZIP no contiene archivos.</string>
+    <string name="saves_err_replace">No se pudo sustituir la carpeta de partidas.</string>
 </resources>

@@ -35,6 +35,21 @@ public final class GameActivity extends NativeActivity {
     private RacingControlsView touchControls;
     private boolean statusHidden;
     private Runnable statusHideTask;
+    // Session recorder (log file, device samples, frame telemetry) and the optional performance overlay.
+    private GameTelemetry telemetry;
+    private TextView overlay;
+    private PopupWindow overlayWindow;
+    private boolean overlayFull;
+    private final Runnable overlayTask = new Runnable() {
+        @Override public void run() {
+            if (!foreground || overlay == null || telemetry == null) return;
+            org.json.JSONObject live = null;
+            try { live = new org.json.JSONObject(nativeTelemetryJson(true)); } catch (org.json.JSONException | RuntimeException ignored) { }
+            String text = telemetry.overlayText(live, overlayFull);
+            overlay.setText(text == null ? "…" : text);
+            overlay.postDelayed(this, GameTelemetry.OVERLAY_MS);
+        }
+    };
     private static native void nativeKey(int scan, boolean down);
     private static native boolean nativeDrivingControls();
     private static native boolean nativeGamepadUsed();
@@ -156,6 +171,10 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeBackBuffers(int count);
     private static native void nativeCpuTextures(boolean enabled);
     private static native void nativeGpuDriver(String hooks, String temp, String directory, String library);
+    /** Session telemetry JSON (guest_runtime.cpp): live = the last 240 frames for the overlay. */
+    private static native String nativeTelemetryJson(boolean live);
+    /** DXVK_HUD configuration for the full overlay ("" = no HUD); before the game creates Direct3D. */
+    private static native void nativeGraphicsHud(String config);
     private void showFrameLimitOptions() {
         GameOptions.Option option=GameOptions.find(GameOptions.FPS);
         String saved=GameOptions.get(this,GameOptions.FPS);int selected=0;
@@ -235,6 +254,23 @@ public final class GameActivity extends NativeActivity {
         String[] loader = launch.getStringArrayExtra("driverLoader");
         if (loader == null || loader.length != 4) loader = GpuDrivers.loaderArguments(this);
         nativeGpuDriver(loader[0], loader[1], loader[2], loader[3]);
+        String overlayMode = launch.getStringExtra("overlay");
+        if (overlayMode == null) overlayMode = GameOptions.get(this, GameOptions.OVERLAY);
+        overlayFull = overlayMode.equals("full");
+        nativeGraphicsHud(overlayFull ? GameOptions.DXVK_HUD_FULL : "");
+        telemetry = new GameTelemetry(this, launch, GameActivity::nativeTelemetryJson);
+        telemetry.start();
+        if (!overlayMode.equals("off")) {
+            overlay = new TextView(this);
+            overlay.setTextColor(0xFFE8F0FF);
+            overlay.setBackgroundColor(0x90000000);
+            overlay.setTypeface(android.graphics.Typeface.MONOSPACE);
+            overlay.setTextSize(11);
+            overlay.setPadding(dp(8), dp(4), dp(8), dp(4));
+            overlay.setText("…");
+            overlayWindow = new PopupWindow(overlay, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, false);
+            overlayWindow.setTouchable(false);
+        }
         status = new TextView(this);
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xb0000000);
@@ -255,6 +291,7 @@ public final class GameActivity extends NativeActivity {
     /** The boot worker's "game is running" status (guest_boot_worker.h); the overlay hides itself after it. */
     static final String STATUS_GAME_RUNNING = "Running the game";
     public void setStatus(String message) {
+        if (telemetry != null) telemetry.event("status", message);
         runOnUiThread(() -> {
             if (statusHideTask != null) status.removeCallbacks(statusHideTask);
             if (message.contains(STATUS_GAME_RUNNING)) {
@@ -290,6 +327,10 @@ public final class GameActivity extends NativeActivity {
         if (focused && foreground && controlsWindow != null && !controlsWindow.isShowing()) {
             controlsWindow.showAtLocation(getWindow().getDecorView(), Gravity.TOP | Gravity.START, 0, 0);
         }
+        if (focused && foreground && overlayWindow != null && !overlayWindow.isShowing()) {
+            overlayWindow.showAtLocation(getWindow().getDecorView(), Gravity.TOP | Gravity.END, 0, 0);
+            overlay.removeCallbacks(overlayTask); overlay.post(overlayTask);
+        }
     }
     // LAN games announce and discover themselves with UDP broadcasts on port 9999;
     // without this lock many devices drop incoming Wi-Fi broadcasts to save power.
@@ -311,11 +352,15 @@ public final class GameActivity extends NativeActivity {
         if (statusWindow != null) statusWindow.dismiss();
         if (touchControls != null) {touchControls.removeCallbacks(updateControlMode);touchControls.releaseAll();}
         if (controlsWindow != null) controlsWindow.dismiss();
+        if (overlay != null) overlay.removeCallbacks(overlayTask);
+        if (overlayWindow != null) overlayWindow.dismiss();
+        if (telemetry != null) { telemetry.event("pause", null); telemetry.flushAsync(); }
         super.onPause();
     }
     @Override protected void onResume() {
         super.onResume();
         foreground=true;
+        if (telemetry != null) telemetry.event("resume", null);
         holdLanBroadcasts(true);
         updateTiltSensor();
         if(inputManager!=null){inputManager.registerInputDeviceListener(gamepadListener,null);updateGamepads();}
@@ -342,6 +387,8 @@ public final class GameActivity extends NativeActivity {
     }
     @Override protected void onDestroy() {
         super.onDestroy();
+        // The session record first: the process ends right after this.
+        if (telemetry != null) telemetry.stop();
         // Each launch uses a fresh guest machine in the dedicated :game process.
         android.os.Process.killProcess(android.os.Process.myPid());
     }

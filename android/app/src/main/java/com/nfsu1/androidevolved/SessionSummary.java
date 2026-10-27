@@ -1,0 +1,224 @@
+package com.nfsu1.androidevolved;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/**
+ * Reads a session record written by {@link GameTelemetry} into a few human-readable lines: what the
+ * launcher's "Last session" card shows and what the diagnostics ZIP puts in session-summary.txt, so the
+ * numbers can be read without parsing JSON. English on purpose: it is written for whoever tunes the build.
+ */
+final class SessionSummary {
+    private static final String[] THERMAL = {"none", "light", "moderate", "severe", "critical", "emergency", "shutdown"};
+    /** IDirect3DDevice9 vtable slots worth naming in a call profile (kind 2). */
+    private static final Map<Integer, String> DEVICE_METHODS = new HashMap<>();
+    static {
+        int[] slots = {17, 23, 26, 27, 29, 34, 37, 39, 41, 42, 43, 44, 47, 57, 65, 67, 69, 75, 81, 82, 83, 84, 87, 89, 92, 94, 100, 104, 107, 109};
+        String[] names = {"Present", "CreateTexture", "CreateVertexBuffer", "CreateIndexBuffer", "CreateDepthStencilSurface", "StretchRect",
+                "SetRenderTarget", "SetDepthStencilSurface", "BeginScene", "EndScene", "Clear", "SetTransform", "SetViewport", "SetRenderState",
+                "SetTexture", "SetTextureStageState", "SetSamplerState", "SetScissorRect", "DrawPrimitive", "DrawIndexedPrimitive",
+                "DrawPrimitiveUP", "DrawIndexedPrimitiveUP", "SetVertexDeclaration", "SetFVF", "SetVertexShader", "SetVertexShaderConstantF",
+                "SetStreamSource", "SetIndices", "SetPixelShader", "SetPixelShaderConstantF"};
+        for (int i = 0; i < slots.length; i++) DEVICE_METHODS.put(slots[i], names[i]);
+    }
+
+    final String session, app;
+    final long durationS, frames, hitches, stalls, gaps;
+    final double avgFps, onePercentLowFps, p50Ms, p99Ms, maxMs, presentMsAvg;
+    final long pipelineCompiles, pipelineOver10Ms;
+    final double pipelineTotalMs, pipelineMaxMs;
+    final int thermalMax, pssMaxMb;
+    final double batteryStartC, batteryEndC, headroomMin;
+    final boolean complete;
+    final String report;
+
+    private SessionSummary(JSONObject record) {
+        session = record.optString("session", "?");
+        app = record.optString("app", "?");
+        durationS = record.optLong("durationS");
+        complete = record.optBoolean("complete");
+        JSONObject nat = record.optJSONObject("native");
+        JSONObject frames = nat == null ? null : nat.optJSONObject("frames");
+        JSONObject pipelines = nat == null ? null : nat.optJSONObject("pipelines");
+        this.frames = frames == null ? 0 : frames.optLong("frames");
+        hitches = frames == null ? 0 : frames.optLong("hitches");
+        stalls = frames == null ? 0 : frames.optLong("stalls");
+        gaps = frames == null ? 0 : frames.optLong("gaps");
+        avgFps = frames == null ? 0 : frames.optDouble("avgFps", 0);
+        onePercentLowFps = frames == null ? 0 : frames.optDouble("onePercentLowFps", 0);
+        p50Ms = frames == null ? 0 : frames.optDouble("p50Ms", 0);
+        p99Ms = frames == null ? 0 : frames.optDouble("p99Ms", 0);
+        maxMs = frames == null ? 0 : frames.optDouble("maxMs", 0);
+        presentMsAvg = frames == null ? 0 : frames.optDouble("presentMsAvg", 0);
+        pipelineCompiles = pipelines == null ? 0 : pipelines.optLong("graphics") + pipelines.optLong("compute");
+        pipelineOver10Ms = pipelines == null ? 0 : pipelines.optLong("over10Ms");
+        pipelineTotalMs = pipelines == null ? 0 : pipelines.optDouble("totalMs", 0);
+        pipelineMaxMs = pipelines == null ? 0 : pipelines.optDouble("maxMs", 0);
+        JSONArray samples = record.optJSONArray("samples");
+        int thermal = 0, pss = 0;
+        double battStart = Double.NaN, battEnd = Double.NaN, headroom = Double.NaN;
+        if (samples != null) for (int i = 0; i < samples.length(); i++) {
+            JSONObject s = samples.optJSONObject(i);
+            if (s == null) continue;
+            thermal = Math.max(thermal, s.optInt("thermal"));
+            pss = Math.max(pss, s.optInt("pssMb"));
+            if (s.has("battTemp")) { if (Double.isNaN(battStart)) battStart = s.optDouble("battTemp"); battEnd = s.optDouble("battTemp"); }
+            if (s.has("headroom")) headroom = Double.isNaN(headroom) ? s.optDouble("headroom") : Math.min(headroom, s.optDouble("headroom"));
+        }
+        thermalMax = thermal; pssMaxMb = pss; batteryStartC = battStart; batteryEndC = battEnd; headroomMin = headroom;
+        report = buildReport(record, nat, frames, pipelines, samples);
+    }
+
+    static SessionSummary parse(String json) throws JSONException { return new SessionSummary(new JSONObject(json)); }
+
+    /** One line for the launcher card. */
+    String shortLine() {
+        if (frames == 0) return String.format(Locale.US, "%s · no frames recorded%s", duration(), complete ? "" : " · ended abruptly");
+        return String.format(Locale.US, "%s · %.0f FPS avg · 1%% low %.0f · %d hitches · %s%s", duration(), avgFps, onePercentLowFps, hitches,
+                THERMAL[Math.min(THERMAL.length - 1, Math.max(0, thermalMax))], complete ? "" : " · ended abruptly");
+    }
+
+    String duration() {
+        long m = durationS / 60, s = durationS % 60;
+        return m > 0 ? String.format(Locale.US, "%d min %02d s", m, s) : String.format(Locale.US, "%d s", s);
+    }
+
+    private String buildReport(JSONObject record, JSONObject nat, JSONObject frames, JSONObject pipelines, JSONArray samples) {
+        StringBuilder out = new StringBuilder();
+        out.append(String.format(Locale.US, "Session %s — %s — %s%s\n", session, app, duration(), complete ? " (complete)" : " (NOT complete: crash or kill)"));
+        JSONObject options = record.optJSONObject("options");
+        if (options != null) {
+            List<String> keys = new ArrayList<>();
+            for (java.util.Iterator<String> it = options.keys(); it.hasNext();) keys.add(it.next());
+            Collections.sort(keys);
+            StringBuilder line = new StringBuilder("  Options:");
+            for (String key : keys) if (!key.equals("driverLoader")) line.append(' ').append(key).append('=').append(options.opt(key));
+            out.append(line).append('\n');
+        }
+        JSONObject display = record.optJSONObject("display");
+        if (display != null) out.append("  Display: ").append(display.optString("mode")).append(" of ").append(display.optJSONArray("modes"))
+                .append(" preferred ").append(display.optDouble("preferredRefresh")).append(" Hz\n");
+        if (frames == null) out.append("  No frame telemetry in this record.\n");
+        else {
+            out.append(String.format(Locale.US, "  Frames %d over %.0f s active: avg %.1f FPS, 1%% low %.0f FPS (p99 %.1f ms), p50 %.1f ms, p90 %.1f ms, p99.9 %.1f ms, max %.0f ms\n",
+                    frames.optLong("frames"), frames.optDouble("activeSeconds"), avgFps, onePercentLowFps, p99Ms, p50Ms, frames.optDouble("p90Ms"),
+                    frames.optDouble("p999Ms"), maxMs));
+            out.append(String.format(Locale.US, "  Hitches %d (>2.5 frame periods), stalls %d (>100 ms), gaps %d (>2 s); Present avg %.2f ms; frame cap %d\n",
+                    hitches, stalls, gaps, presentMsAvg, frames.optInt("targetFps")));
+            JSONArray histogram = frames.optJSONArray("histogramUs");
+            if (histogram != null && histogram.length() > 0) {
+                StringBuilder line = new StringBuilder("  Frame-time histogram (≤ms: frames):");
+                for (int i = 0; i < histogram.length(); i++) {
+                    JSONArray bucket = histogram.optJSONArray(i);
+                    if (bucket == null) continue;
+                    long bound = bucket.optLong(0);
+                    line.append(' ').append(bound >= 0xFFFFFFFFL ? "more" : String.format(Locale.US, "%.1f", bound / 1000.0)).append(':').append(bucket.optLong(1));
+                }
+                out.append(line).append('\n');
+            }
+            JSONArray perSecond = frames.optJSONArray("perSecond");
+            if (perSecond != null && perSecond.length() > 0) {
+                List<double[]> worst = new ArrayList<>();
+                int lowSeconds = 0;
+                for (int i = 0; i < perSecond.length(); i++) {
+                    JSONArray second = perSecond.optJSONArray(i);
+                    if (second == null) continue;
+                    worst.add(new double[] {second.optDouble(0), second.optDouble(1), second.optDouble(2)});
+                    if (second.optDouble(1) < 0.8 * Math.max(30, frames.optInt("targetFps") == 0 ? 120 : frames.optInt("targetFps")) && second.optDouble(1) > 0) lowSeconds++;
+                }
+                worst.sort((a, b) -> Double.compare(b[2], a[2]));
+                StringBuilder line = new StringBuilder(String.format(Locale.US, "  Seconds below 80%% of the cap: %d of %d. Worst seconds (t, fps, max ms):", lowSeconds, perSecond.length()));
+                for (int i = 0; i < Math.min(8, worst.size()); i++)
+                    line.append(String.format(Locale.US, " [%.0f: %.0f fps, %.0f ms]", worst.get(i)[0], worst.get(i)[1], worst.get(i)[2]));
+                out.append(line).append('\n');
+            }
+        }
+        if (pipelines != null) out.append(String.format(Locale.US, "  Pipelines compiled: %d graphics + %d compute, %.0f ms total, worst %.0f ms, %d over 10 ms\n",
+                pipelines.optLong("graphics"), pipelines.optLong("compute"), pipelineTotalMs, pipelineMaxMs, pipelineOver10Ms));
+        JSONObject audio = nat == null ? null : nat.optJSONObject("audio");
+        if (audio != null) out.append(String.format(Locale.US, "  Audio: xruns %d, buffer %d frames (burst %d), %d Hz\n",
+                audio.optInt("xruns"), audio.optInt("bufferFrames"), audio.optInt("burstFrames"), audio.optInt("rate")));
+        JSONObject render = nat == null ? null : nat.optJSONObject("render");
+        if (render != null) out.append(String.format(Locale.US, "  Render %dx%d on display %s\n", render.optInt("width"), render.optInt("height"), render.optJSONArray("display")));
+        if (samples != null && samples.length() > 0) {
+            double headroomMin = Double.NaN, battMin = Double.NaN, battMax = Double.NaN;
+            int thermalMax = 0, thermalAt = -1, pssMax = 0, availMin = Integer.MAX_VALUE, cpuSum = 0, cpuCount = 0, clockMax = 0, lowMemory = 0;
+            Map<String, Integer> refresh = new HashMap<>();
+            Integer levelStart = null, levelEnd = null; boolean charging = false;
+            for (int i = 0; i < samples.length(); i++) {
+                JSONObject s = samples.optJSONObject(i);
+                if (s == null) continue;
+                if (s.optInt("thermal") > thermalMax) { thermalMax = s.optInt("thermal"); thermalAt = (int) s.optDouble("t"); }
+                if (s.has("headroom")) headroomMin = Double.isNaN(headroomMin) ? s.optDouble("headroom") : Math.min(headroomMin, s.optDouble("headroom"));
+                if (s.has("battTemp")) { double v = s.optDouble("battTemp"); battMin = Double.isNaN(battMin) ? v : Math.min(battMin, v); battMax = Double.isNaN(battMax) ? v : Math.max(battMax, v); }
+                if (s.has("battLevel")) { if (levelStart == null) levelStart = s.optInt("battLevel"); levelEnd = s.optInt("battLevel"); }
+                charging |= s.optBoolean("charging");
+                pssMax = Math.max(pssMax, s.optInt("pssMb"));
+                if (s.has("availMb")) availMin = Math.min(availMin, s.optInt("availMb"));
+                if (s.optBoolean("lowMemory")) lowMemory++;
+                if (s.has("cpuPct")) { cpuSum += s.optInt("cpuPct"); cpuCount++; }
+                JSONArray mhz = s.optJSONArray("cpuMhz");
+                if (mhz != null) for (int c = 0; c < mhz.length(); c++) clockMax = Math.max(clockMax, mhz.optInt(c));
+                if (s.has("refresh")) { String hz = String.valueOf(Math.round(s.optDouble("refresh"))); refresh.put(hz, refresh.getOrDefault(hz, 0) + 1); }
+            }
+            out.append(String.format(Locale.US, "  Thermal: max %s (status %d) at %d s; headroom min %s; battery %s→%s°C (min %s, max %s), level %s→%s%%%s\n",
+                    THERMAL[Math.min(THERMAL.length - 1, thermalMax)], thermalMax, thermalAt, fmt(headroomMin), fmt(batteryStartC), fmt(batteryEndC), fmt(battMin), fmt(battMax),
+                    levelStart == null ? "?" : levelStart, levelEnd == null ? "?" : levelEnd, charging ? ", charging" : ""));
+            out.append(String.format(Locale.US, "  Memory: game process PSS max %d MB; system free min %s MB; low-memory samples %d\n", pssMax,
+                    availMin == Integer.MAX_VALUE ? "?" : String.valueOf(availMin), lowMemory));
+            out.append(String.format(Locale.US, "  CPU: game process %s%% of one core on average (cores=%d); clocks max %d MHz\n",
+                    cpuCount == 0 ? "?" : String.valueOf(cpuSum / cpuCount), record.optInt("cores"), clockMax));
+            if (!refresh.isEmpty()) {
+                StringBuilder line = new StringBuilder("  Panel refresh (samples):");
+                for (Map.Entry<String, Integer> e : refresh.entrySet()) line.append(' ').append(e.getKey()).append(" Hz×").append(e.getValue());
+                out.append(line).append('\n');
+            }
+        }
+        JSONObject calls = nat == null ? null : nat.optJSONObject("d3d9Calls");
+        if (calls != null && frames != null && frames.optLong("frames") > 0) {
+            List<Map.Entry<String, Long>> list = new ArrayList<>();
+            for (java.util.Iterator<String> it = calls.keys(); it.hasNext();) { String key = it.next(); list.add(new java.util.AbstractMap.SimpleEntry<>(key, calls.optLong(key))); }
+            list.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+            StringBuilder line = new StringBuilder("  D3D9 calls per frame:");
+            for (int i = 0; i < Math.min(14, list.size()); i++)
+                line.append(String.format(Locale.US, " %s %.0f", methodName(list.get(i).getKey()), list.get(i).getValue() / (double) frames.optLong("frames")));
+            out.append(line).append('\n');
+        }
+        JSONArray events = record.optJSONArray("events");
+        if (events != null && events.length() > 0) {
+            StringBuilder line = new StringBuilder("  Events:");
+            for (int i = 0; i < Math.min(40, events.length()); i++) {
+                JSONObject e = events.optJSONObject(i);
+                if (e == null) continue;
+                String detail = e.optString("detail", "");
+                if (detail.length() > 60) detail = detail.substring(0, 57) + "...";
+                line.append(String.format(Locale.US, " [%.0f s %s%s]", e.optDouble("t"), e.optString("event"), detail.isEmpty() ? "" : ": " + detail.replace('\n', ' ')));
+            }
+            out.append(line).append('\n');
+        }
+        return out.toString();
+    }
+
+    static String methodName(String key) {
+        int slash = key.indexOf('/');
+        if (slash < 0) return key;
+        try {
+            int kind = Integer.parseInt(key.substring(0, slash)), method = Integer.parseInt(key.substring(slash + 1));
+            if (kind == 2 && DEVICE_METHODS.containsKey(method)) return DEVICE_METHODS.get(method);
+            if (method == 0) return "QueryInterface(" + kind + ")";
+            if (method == 1) return "AddRef(" + kind + ")";
+            if (method == 2) return "Release(" + kind + ")";
+        } catch (NumberFormatException ignored) { }
+        return key;
+    }
+
+    private static String fmt(double value) { return Double.isNaN(value) ? "?" : String.format(Locale.US, "%.2f", value).replaceAll("\\.?0+$", ""); }
+}

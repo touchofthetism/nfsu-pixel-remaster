@@ -11,6 +11,10 @@ void setD3D9Compatibility(bool cpuTextures,unsigned backBuffers);
 // Launcher graphics quality: anisotropic filtering (0 = game default, else 2..16) and MSAA samples
 // (0 = off); configDirectory receives dxvk.conf. Call before the game creates Direct3D.
 void setD3D9GraphicsQuality(unsigned anisotropy,unsigned msaaSamples,const std::string& configDirectory);
+// Launcher performance overlay: DXVK_HUD configuration ("" = none). Call before the game creates Direct3D.
+void setD3D9Hud(const std::string& config);
+// Session call counts per D3D9 method as a JSON object {"kind/method": count}; see guestTelemetryJson.
+std::string d3d9CallCountsJson();
 bool d3d9RequestsSurface();
 void acknowledgeD3D9Surface(bool available);
 uint32_t createGuestD3D9(uint32_t sdk);

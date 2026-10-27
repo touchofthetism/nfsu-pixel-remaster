@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <cstring>
+#include <cstdio>
 #include <stdexcept>
 #ifdef __ANDROID__
 #include <android/native_window.h>
@@ -42,6 +43,9 @@ uint32_t (*allocateGuest)(uint32_t);
 void (*freeGuest)(uint32_t);
 std::atomic<ANativeWindow*> hostWindow{nullptr};
 std::atomic<bool> surfaceRequested{false},surfaceAvailable{false};
+// Session call counts per D3D9 method, indexed like the first-call log (kind*256+method); the
+// telemetry JSON reports the non-zero ones so a frame's draw/state profile is visible in a report.
+std::atomic<uint32_t> methodTotals[4096];
 void* pointer(uint32_t address){return address?static_cast<uint8_t*>(guestBase)+address:nullptr;}
 void write(uint32_t address,uint32_t value){if(!address)throw std::runtime_error("Null D3D9 output");std::memcpy(pointer(address),&value,4);}
 uint32_t wrap(IUnknown* native,Kind kind){
@@ -111,6 +115,9 @@ std::atomic<unsigned> requestedMultisample{0};
 // DXVK_CONFIG_FILE right before Direct3DCreate9 (DXVK 1.9.2 reads it once, at interface creation).
 std::mutex qualityMutex;
 std::string dxvkConfigPath;
+// Launcher "Performance overlay: full": DXVK_HUD (fps, frame-time graph, GPU load...), read by DXVK when
+// the swap chain is created. Empty = no HUD.
+std::string dxvkHud;
 // What applyAntialiasing settled on for the current device, so a depth surface the game creates for
 // the back buffer gets the same sample count (D3D9 requires render target and depth to match).
 std::atomic<unsigned> activeMultisample{0};
@@ -159,6 +166,14 @@ D3DFORMAT nativeTextureFormat(IDirect3DDevice9* device,D3DFORMAT format,DWORD us
 }
 void describeOriginal(uint32_t address,D3DSURFACE_DESC* desc){auto view=compressionView(address);if(view.texture&&desc)desc->Format=static_cast<D3DFORMAT>(view.texture->format);}
 }
+std::string d3d9CallCountsJson(){
+    std::string json="{";bool first=true;
+    for(unsigned index=0;index<4096;++index){
+        uint32_t count=methodTotals[index].load(std::memory_order_relaxed);if(!count)continue;
+        char item[48];std::snprintf(item,sizeof item,"%s\"%u/%u\":%u",first?"":",",index/256,index%256,count);json+=item;first=false;
+    }
+    return json+"}";
+}
 void setD3D9Compatibility(bool cpuTextures,unsigned backBuffers){
     forceCpuTextures=cpuTextures;configuredBackBuffers=backBuffers<1?1u:backBuffers>3?3u:backBuffers;
 }
@@ -172,6 +187,10 @@ void setD3D9GraphicsQuality(unsigned anisotropy,unsigned msaaSamples,const std::
     }
     {std::lock_guard<std::mutex> lock(qualityMutex);dxvkConfigPath=path;}
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Graphics quality for this game session: anisotropy %u (%s, read by DXVK at Direct3DCreate9), MSAA %u requested (applied at CreateDevice/Reset)",graphics_quality::clampAnisotropy(anisotropy),path.empty()?"not forced":path.c_str(),msaaSamples);
+}
+void setD3D9Hud(const std::string& config){
+    {std::lock_guard<std::mutex> lock(qualityMutex);dxvkHud=config;}
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","DXVK HUD for this game session: %s",config.empty()?"off":config.c_str());
 }
 void configureD3D9Bridge(void* base,uint32_t (*allocator)(uint32_t),void (*deallocator)(uint32_t)){
     guestBase=base;allocateGuest=allocator;freeGuest=deallocator;
@@ -206,6 +225,7 @@ uint32_t createGuestD3D9(uint32_t sdk){
     {   // Same thread that creates the interface: DXVK reads DXVK_CONFIG_FILE inside Direct3DCreate9.
         std::lock_guard<std::mutex> lock(qualityMutex);
         if(dxvkConfigPath.empty())unsetenv("DXVK_CONFIG_FILE");else setenv("DXVK_CONFIG_FILE",dxvkConfigPath.c_str(),1);
+        if(dxvkHud.empty())unsetenv("DXVK_HUD");else setenv("DXVK_HUD",dxvkHud.c_str(),1);
     }
     auto native=Direct3DCreate9(sdk);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","DXVK native Direct3DCreate9 sdk=%u",sdk);
@@ -251,6 +271,7 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
         throw std::runtime_error("Invalid guest D3D9 COM object");
     }
     auto object=found->second.native;
+    if((kind==2&&method==17)||(kind==13&&method==3))methodTotals[((token-methodBase)/16)&4095].fetch_add(1,std::memory_order_relaxed);
     // Android may replace ANativeWindow after backgrounding, even at the same
     // pointer address. Override the destination with this surface generation so
     // DXVK recreates its presenter while keeping the game's device/resources.
@@ -262,6 +283,7 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
         return kind==2?static_cast<IDirect3DDevice9*>(object)->Present(source,destination,window,dirty):
             static_cast<IDirect3DSwapChain9*>(object)->Present(source,destination,window,dirty,args[5]);
     }
+    methodTotals[((token-methodBase)/16)&4095].fetch_add(1,std::memory_order_relaxed);
     // Log the first calls of each method; tokens span 0x7e000000..0x7e00ffff.
     static uint8_t methodCalls[4096];auto& calls=methodCalls[((token-methodBase)/16)&4095];
     if(calls<3&&++calls)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 COM kind=%u method=%u",kind,method);

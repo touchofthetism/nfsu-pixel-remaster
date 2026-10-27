@@ -3,7 +3,7 @@
 #   <parent>/nfsu2-recompiled   (DXVK recipe, libadrenotools, pcrecomp patches)
 #   <parent>/pcrecomp           (recompiler at the pinned commit + the 14 patches)
 #   <parent>/dxvk-native        (DXVK native 1.9.2b source)
-#   <parent>/nfsu2-recompiled/build/dxvk-source   (prepared + shaders generated)
+#   <parent>/nfsu2-recompiled/build/dxvk-source   (prepared + shaders generated + ci/dxvk_extra.py)
 # Idempotent: existing checkouts are reset to the pins. Needs git, python3, glslangValidator, spirv-val.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,4 +36,6 @@ rm -rf "$parent/nfsu2-recompiled/build/dxvk-source"
 python3 "$parent/nfsu2-recompiled/ports/dxvk_android/prepare.py" "$parent/dxvk-native" "$parent/nfsu2-recompiled/build/dxvk-source"
 python3 "$parent/nfsu2-recompiled/ports/dxvk_android/shaders.py" "$parent/nfsu2-recompiled/build/dxvk-source"
 test -f "$parent/nfsu2-recompiled/build/dxvk-source/ANDROID_PREPARE_SHA256"
+# This fork: DXVK info logs to logcat and pipeline-compile counters (telemetry; rendering untouched).
+python3 "$here/ci/dxvk_extra.py" "$parent/nfsu2-recompiled/build/dxvk-source"
 echo "[siblings] DXVK prepared at $parent/nfsu2-recompiled/build/dxvk-source"

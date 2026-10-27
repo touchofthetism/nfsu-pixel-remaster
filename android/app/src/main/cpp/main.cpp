@@ -358,6 +358,17 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     const char* text=configDir?env->GetStringUTFChars(configDir,nullptr):nullptr;std::string directory=text?text:"";if(text)env->ReleaseStringUTFChars(configDir,text);
     setD3D9GraphicsQuality(anisotropy<0?0u:unsigned(anisotropy),msaaSamples<0?0u:unsigned(msaaSamples),directory);
 }
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeGraphicsHud(JNIEnv* env,jclass,jstring config){
+    const char* text=config?env->GetStringUTFChars(config,nullptr):nullptr;std::string value=text?text:"";if(text)env->ReleaseStringUTFChars(config,text);
+    setD3D9Hud(value);
+}
+// Session telemetry for GameActivity (overlay every half second with live=true; the session record
+// with live=false): see guestTelemetryJson in guest_runtime.cpp.
+extern "C" JNIEXPORT jstring JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeTelemetryJson(JNIEnv* env,jclass,jboolean live){
+    std::string json;
+    try{json=guestTelemetryJson(live==JNI_TRUE);}catch(const std::exception& e){json=std::string("{\"error\":\"")+e.what()+"\"}";}
+    return env->NewStringUTF(json.c_str());
+}
 // A driver imported in the launcher replaces the system one for DXVK. The bootstrap
 // renderer, which links the system loader, is then skipped so one process never
 // drives the GPU through two Vulkan drivers.

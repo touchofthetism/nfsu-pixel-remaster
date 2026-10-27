@@ -7,11 +7,13 @@
 #include "guest_heap.h"
 #include "runtime_log.h"
 #include "frame_pacer.h"
+#include "frame_telemetry.h"
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 #include "d3d9_bridge.h"
 #include "nfs_widescreen.h"
 #endif
 #include <array>
+#include <cstdio>
 #include <vector>
 #include <map>
 #include <memory>
@@ -61,6 +63,9 @@ namespace {
 std::atomic<uint32_t> displayWidth{1280},displayHeight{720};
 std::atomic<uint32_t> renderWidth{0},renderHeight{0};
 std::atomic<unsigned> frameLimit{0};
+// Session frame telemetry (Present intervals); read as JSON by GameActivity for the overlay and the
+// session record. See frame_telemetry.h.
+FrameTelemetry frameTelemetry;
 std::string hex(uint32_t va) {
     std::ostringstream out; out << "0x" << std::hex << std::setw(8) << std::setfill('0') << va;
     return out.str();
@@ -331,7 +336,8 @@ void d3dDispatch(){
     std::chrono::steady_clock::time_point bridgeStart;if(timed)bridgeStart=std::chrono::steady_clock::now();uint32_t result;
     try{result=dispatchGuestD3D9(token,args,&count);}catch(...){
         NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","D3D9 guest caller=%08x stack=%08x token=%08x self=%08x",g_cur_func,g_esp,token,args[0]);throw;}
-    if(timed){auto spent=std::chrono::steady_clock::now()-bridgeStart;bridgeTime+=token==0x7e002110u?spent:spent*64;presentTime+=token==0x7e002110u?spent:std::chrono::nanoseconds{};}
+    if(timed){auto done=std::chrono::steady_clock::now();auto spent=done-bridgeStart;bridgeTime+=token==0x7e002110u?spent:spent*64;presentTime+=token==0x7e002110u?spent:std::chrono::nanoseconds{};
+        if(token==0x7e002110u&&result==0)frameTelemetry.present(done,std::chrono::duration_cast<std::chrono::nanoseconds>(spent),frameLimit.load(std::memory_order_relaxed));}
     if(token==0x7e002110u){nfs_widescreen_apply_frame_rate();lastPresentMs=steadyMs();startStallWatch();saveChangedOptions();}
     if(token==0x7e002110u&&result==0){
         static FramePacer pacer;
@@ -765,6 +771,7 @@ void setGuestPaused(bool paused) {
     // paused: in the background the last mixed sound repeated until the app
     // closed. Pause the output with the guest and restart it on resume.
     bool previous=guestPaused.exchange(paused);
+    if(paused&&!previous)frameTelemetry.pause();  // the next frame starts a new interval, not a 30 s "frame"
     if(previous!=paused&&soundStream){
         aaudio_result_t status=paused?AAudioStream_requestPause(soundStream):AAudioStream_requestStart(soundStream);
         if(status!=AAUDIO_OK)NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFS","Audio %s failed: %d",paused?"pause":"resume",int(status));
@@ -791,6 +798,26 @@ void setGuestResolution(unsigned width,unsigned height){
     setD3D9RenderSize(width,height);
 #endif
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Selected render resolution %ux%u",width,height);
+}
+// Pipeline-compile counters from the prepared DXVK (ci/dxvk_extra.py): graphics, compute, total ns, max ns, >10 ms.
+extern "C" void dxvkAndroidPipelineStats(uint64_t out[5]);
+std::string guestTelemetryJson(bool live){
+    uint64_t pipelines[5]{};
+#ifdef __ANDROID__
+    dxvkAndroidPipelineStats(pipelines);
+#endif
+    char tail[512];
+    int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0;
+#ifdef __ANDROID__
+    if(soundStream){xruns=AAudioStream_getXRunCount(soundStream);bufferFrames=AAudioStream_getBufferSizeInFrames(soundStream);burst=AAudioStream_getFramesPerBurst(soundStream);rate=soundMixer.rate;}
+#endif
+    std::snprintf(tail,sizeof tail,",\"pipelines\":{\"graphics\":%llu,\"compute\":%llu,\"totalMs\":%.1f,\"maxMs\":%.1f,\"over10Ms\":%llu},"
+        "\"audio\":{\"xruns\":%d,\"bufferFrames\":%d,\"burstFrames\":%d,\"rate\":%u},\"render\":{\"width\":%u,\"height\":%u,\"display\":[%u,%u]}",
+        static_cast<unsigned long long>(pipelines[0]),static_cast<unsigned long long>(pipelines[1]),pipelines[2]/1e6,pipelines[3]/1e6,
+        static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load());
+    std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail;
+    if(!live)json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
+    return json+"}";
 }
 void setGuestFrameLimit(unsigned framesPerSecond){
     frameLimit=(framesPerSecond>=30&&framesPerSecond<=240)?framesPerSecond:0;

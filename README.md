@@ -38,9 +38,12 @@ Nothing game-derived is ever committed anywhere; `work/` and `src/recomp/gen*/` 
 | Launcher | English UI with Spanish kept as `values-es`; game language follows the phone unless chosen in the launcher; **Import game files (ZIP)** (verifies `Speed.exe` by size and SHA-256, swaps folders in atomically); **Share diagnostics** (ZIP via the share sheet, includes the DXVK state cache); update check that says plainly when releases are private, release notes bundled in the APK |
 | Defaults | Native resolution on phones reporting ≥ 7.5 GiB RAM (the 8 GB class and up; 75 % otherwise), 120 FPS, widescreen on, 16× anisotropic |
 | Graphics | **Texture filtering** → `dxvk.conf` (`d3d9.samplerAnisotropy`) handed to DXVK through `DXVK_CONFIG_FILE`; **Anti-aliasing** → validated MSAA on the back buffer at `CreateDevice`/`Reset` (`android/app/src/main/cpp/graphics_quality.h`, `d3d9_bridge.cpp`) |
-| Native | English runtime messages; `nativeGraphicsQuality` JNI entry |
+| Telemetry | Per-session log file (logcat follower on the game process) and session record: frame-time histogram/percentiles/hitches at Present (`frame_telemetry.h`), DXVK pipeline-compile counters and info logs (`ci/dxvk_extra.py` on the prepared DXVK), audio underruns, D3D9 call profile, 2 s device samples (thermal, battery, memory, clocks, refresh rate) — `GameTelemetry.java`; readable `SessionSummary`; **Last session** card; **Performance overlay** (compact text or DXVK HUD); diagnostics ZIP with logs, records, summaries, caches, `dxvk.conf`, `Save/` |
+| Caches | Bundled DXVK state cache + driver pipeline cache from the target phone (`assets/graphics-cache`), merged into the device cache before PLAY (`ShaderCacheSeed.java`, format-level merge by entry hash) |
+| Saves | **Back up saves / Restore saves** (`SaveBackup.java`): ZIP of `nfsu1/Save` to Download/NFSU1 and an atomic restore |
+| Native | English runtime messages; `nativeGraphicsQuality`, `nativeGraphicsHud`, `nativeTelemetryJson` JNI entries |
 | Packaging | `applicationId com.nfsu1.remastered` (installs beside the upstream app), stable signing key, versionCode grows with the CI run |
-| CI | `.github/workflows/check.yml` here; `build.yml` + `gamedata.yml` in the private companion; `ci/` scripts; host unit test for the quality policy; JUnit tests for options, versions and the importer |
+| CI | `.github/workflows/check.yml` here; `build.yml` + `gamedata.yml` in the private companion; `ci/` scripts; host unit tests for the quality policy and frame telemetry; JUnit tests for options, versions, the importer, the cache merge, save backups and session summaries |
 
 ## Working on it
 

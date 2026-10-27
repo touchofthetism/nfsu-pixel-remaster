@@ -40,14 +40,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * This edition adds importing the game folder from a ZIP and sharing the diagnostics ZIP directly.
  */
 public final class LauncherActivity extends Activity {
-    private static final int REQUEST_DRIVER_ZIP = 45, REQUEST_DRIVER_PROBE = 46, REQUEST_GAME_ZIP = 47;
+    private static final int REQUEST_DRIVER_ZIP = 45, REQUEST_DRIVER_PROBE = 46, REQUEST_GAME_ZIP = 47, REQUEST_SAVE_ZIP = 48;
     // Launcher accent: Underground orange/red (the NFSU2 port is green).
     private static final int ACCENT = 0xFFFF7A1A;
 
-    private LinearLayout checksList, optionsList;
-    private TextView status;
+    private LinearLayout checksList, optionsList, sessionCard;
+    private TextView status, sessionLine;
     private Button play, access, importButton;
-    private boolean playAfterProbe, checkingUpdates, resumed;
+    private boolean playAfterProbe, checkingUpdates, resumed, gameLaunched;
+    private SessionSummary lastSession;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean importCancelled = new AtomicBoolean();
@@ -88,6 +89,13 @@ public final class LauncherActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (gameLaunched) {
+            // Back from the game: keep the log buffer's last minutes before Android prunes them.
+            gameLaunched = false;
+            worker.execute(() -> {
+                try { Diagnostics.captureLogTail(this); } catch (Exception error) { android.util.Log.w("NFSU1", "Log tail: " + error); }
+            });
+        }
         refresh();
         String crash = Diagnostics.unreportedCrash(this);
         if (crash != null) {
@@ -126,7 +134,7 @@ public final class LauncherActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo = new ImageView(this);
-        logo.setImageResource(R.drawable.icono);
+        logo.setImageResource(R.drawable.ic_logo);
         logo.setAdjustViewBounds(true);
         header.addView(logo, new LinearLayout.LayoutParams(dp(76), dp(76)));
         LinearLayout titles = new LinearLayout(this);
@@ -148,6 +156,19 @@ public final class LauncherActivity extends Activity {
         checksList = new LinearLayout(this);
         checksList.setOrientation(LinearLayout.VERTICAL);
         card.addView(checksList);
+
+        // Last session: what the recorder measured while the game ran (GameTelemetry); tap for the details.
+        sessionCard = card();
+        LinearLayout.LayoutParams sessionParams = new LinearLayout.LayoutParams(-1, -2);
+        sessionParams.topMargin = dp(8);
+        sessionCard.addView(label(getString(R.string.session_header), 12, ACCENT, true));
+        sessionLine = label("", 13, 0xDDFFFFFF, false);
+        sessionLine.setPadding(0, dp(4), 0, 0);
+        sessionCard.addView(sessionLine);
+        sessionCard.setClickable(true);
+        sessionCard.setOnClickListener(view -> showSessionDetails());
+        sessionCard.setVisibility(View.GONE);
+        left.addView(sessionCard, sessionParams);
 
         play = actionButton(getString(R.string.play), true);
         play.setOnClickListener(view -> play());
@@ -203,6 +224,41 @@ public final class LauncherActivity extends Activity {
         importButton.setEnabled(allowed && !importing);
         importButton.setAlpha(allowed && !importing ? 1f : .45f);
         refreshOptions();
+        refreshSession();
+    }
+
+    /** Reads the newest session record off the UI thread and shows its one-line summary. */
+    private void refreshSession() {
+        worker.execute(() -> {
+            SessionSummary summary = null;
+            List<File> sessions = GameTelemetry.sessionFiles(this);
+            if (!sessions.isEmpty()) {
+                try { summary = SessionSummary.parse(Diagnostics.readText(sessions.get(0), 4 * 1024 * 1024)); }
+                catch (Exception ignored) { }
+            }
+            SessionSummary found = summary;
+            main.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                lastSession = found;
+                sessionCard.setVisibility(found == null ? View.GONE : View.VISIBLE);
+                if (found != null) sessionLine.setText(found.shortLine() + "  ›");
+            });
+        });
+    }
+
+    private void showSessionDetails() {
+        if (lastSession == null) return;
+        ScrollView scroll = new ScrollView(this);
+        TextView text = label(lastSession.report, 11, 0xDDFFFFFF, false);
+        text.setTypeface(Typeface.MONOSPACE);
+        text.setPadding(dp(16), dp(8), dp(16), dp(8));
+        text.setTextIsSelectable(true);
+        scroll.addView(text);
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(getString(R.string.session_details_title, lastSession.session))
+                .setView(scroll)
+                .setPositiveButton(R.string.opt_share_diagnostics, (dialog, which) -> prepareReport())
+                .setNegativeButton(R.string.close, null).show();
     }
 
     private void refreshOptions() {
@@ -218,6 +274,8 @@ public final class LauncherActivity extends Activity {
         for (GameOptions.Option option : GameOptions.ALL)
             optionsList.addView(optionRow(option.title(this), option.label(this, GameOptions.get(this, option.key)), () -> chooseOption(option)));
         optionsList.addView(optionRow(getString(R.string.opt_online_server), GameOptions.onlineServer(this), this::chooseOnlineServer));
+        optionsList.addView(optionRow(getString(R.string.opt_saves_backup), getString(R.string.opt_saves_backup_value), this::backupSaves));
+        optionsList.addView(optionRow(getString(R.string.opt_saves_restore), getString(R.string.opt_saves_restore_value), this::restoreSaves));
         optionsList.addView(optionRow(getString(R.string.opt_check_updates),
                 checkingUpdates ? getString(R.string.opt_check_updates_checking) : getString(R.string.opt_version, ReleaseUpdates.installed(this)),
                 () -> checkUpdates(true)));
@@ -380,7 +438,58 @@ public final class LauncherActivity extends Activity {
             });
         } else if (requestCode == REQUEST_GAME_ZIP && resultCode == RESULT_OK && data != null && data.getData() != null) {
             runImport(data.getData());
+        } else if (requestCode == REQUEST_SAVE_ZIP && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            runSaveRestore(data.getData());
         }
+    }
+
+    // ---- Save backup -----------------------------------------------------------------------------------
+
+    private void backupSaves() {
+        if (!allowed()) { message(getString(R.string.saves_title), getString(R.string.import_err_access)); return; }
+        status.setText(R.string.saves_working);
+        worker.execute(() -> {
+            try {
+                SaveBackup.Result result = SaveBackup.backup(this, gameRoot());
+                main.post(() -> {
+                    refresh();
+                    new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                            .setTitle(R.string.saves_title)
+                            .setMessage(getString(R.string.saves_backup_done, result.files, result.location))
+                            .setPositiveButton(R.string.share, (dialog, which) -> startActivity(Intent.createChooser(
+                                    new Intent(Intent.ACTION_SEND).setType("application/zip").putExtra(Intent.EXTRA_STREAM, result.uri)
+                                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), getString(R.string.saves_share_chooser))))
+                            .setNegativeButton(R.string.close, null).show();
+                });
+            } catch (Exception error) {
+                main.post(() -> { refresh(); message(getString(R.string.saves_title), getString(R.string.saves_failed, error.getMessage())); });
+            }
+        });
+    }
+
+    private void restoreSaves() {
+        if (!allowed()) { message(getString(R.string.saves_title), getString(R.string.import_err_access)); return; }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(R.string.saves_title).setMessage(R.string.saves_restore_message)
+                .setPositiveButton(R.string.import_choose, (dialog, which) -> startActivityForResult(
+                        new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
+                                .putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed", "application/octet-stream"})
+                                .addCategory(Intent.CATEGORY_OPENABLE), REQUEST_SAVE_ZIP))
+                .setNegativeButton(R.string.cancel, null).show();
+    }
+
+    private void runSaveRestore(Uri zip) {
+        killGameProcess();
+        status.setText(R.string.saves_working);
+        worker.execute(() -> {
+            try (java.io.InputStream input = getContentResolver().openInputStream(zip)) {
+                if (input == null) throw new java.io.IOException(getString(R.string.saves_err_open));
+                SaveBackup.Result result = SaveBackup.restore(this, input, gameRoot());
+                main.post(() -> { refresh(); message(getString(R.string.saves_title), getString(R.string.saves_restore_done, result.files)); });
+            } catch (Exception error) {
+                main.post(() -> { refresh(); message(getString(R.string.saves_title), getString(R.string.saves_failed, error.getMessage())); });
+            }
+        });
     }
 
     // ---- Game files import -----------------------------------------------------------------------------
@@ -528,13 +637,20 @@ public final class LauncherActivity extends Activity {
         else launch();
     }
 
-    private void launch() {
-        // Each launch uses a fresh guest machine in the dedicated :game process.
+    private void killGameProcess() {
         android.app.ActivityManager manager = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
-        List<android.app.ActivityManager.RunningAppProcessInfo> processes = manager.getRunningAppProcesses();
+        List<android.app.ActivityManager.RunningAppProcessInfo> processes = manager == null ? null : manager.getRunningAppProcesses();
         if (processes != null) for (android.app.ActivityManager.RunningAppProcessInfo process : processes)
             if (process.uid == android.os.Process.myUid() && process.processName.equals(getPackageName() + ":game"))
                 android.os.Process.killProcess(process.pid);
+    }
+
+    private void launch() {
+        // Each launch uses a fresh guest machine in the dedicated :game process.
+        killGameProcess();
+        // The bundled shader caches go in before DXVK opens the cache directory (ShaderCacheSeed).
+        android.util.Log.i("NFSU1", "Graphics cache: " + ShaderCacheSeed.seed(this));
+        gameLaunched = true;
         DisplayMetrics metrics = new DisplayMetrics();
         getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
         int[] size = GameOptions.renderSize(this, Math.max(metrics.widthPixels, metrics.heightPixels),
@@ -552,6 +668,8 @@ public final class LauncherActivity extends Activity {
                 .putExtra("cpuTextures", GameOptions.get(this, GameOptions.TEXTURES).equals("cpu"))
                 .putExtra("padJoystick", GameOptions.get(this, GameOptions.GAMEPAD).equals("directinput"))
                 .putExtra("onlineServer", GameOptions.onlineServer(this))
+                .putExtra("overlay", GameOptions.get(this, GameOptions.OVERLAY))
+                .putExtra("gfxlog", GameOptions.get(this, GameOptions.GFXLOG))
                 .putExtra("driverLoader", loader));
     }
 

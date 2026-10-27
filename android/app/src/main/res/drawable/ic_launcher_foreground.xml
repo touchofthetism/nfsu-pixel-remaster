@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original icon for this build: a neon tunnel mouth over a road vanishing into it, twin headlights
+     coming out. No logos, no car models, no brand marks: the look of the underground, not its names.
+     Everything sits inside the 66 dp safe circle of an adaptive icon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Road edges converging on the vanishing point, with the centre dashes. -->
+    <path android:pathData="M36,81 L50,60" android:strokeColor="#99FF7A1A" android:strokeWidth="2.2" android:strokeLineCap="round"/>
+    <path android:pathData="M72,81 L58,60" android:strokeColor="#99FF7A1A" android:strokeWidth="2.2" android:strokeLineCap="round"/>
+    <path android:pathData="M54,80 L54,76 M54,72.5 L54,69.5 M54,66.5 L54,64.5" android:strokeColor="#CCFFB13D" android:strokeWidth="2" android:strokeLineCap="round"/>
+    <!-- Tunnel arch: outer glow, neon tube, inner highlight. -->
+    <path android:pathData="M31,70 C31,42 77,42 77,70" android:strokeColor="#40FF7A1A" android:strokeWidth="11" android:strokeLineCap="round"/>
+    <path android:pathData="M31,70 C31,42 77,42 77,70" android:strokeColor="#FFFF7A1A" android:strokeWidth="5" android:strokeLineCap="round"/>
+    <path android:pathData="M31,70 C31,42 77,42 77,70" android:strokeColor="#FFFFC46B" android:strokeWidth="1.6" android:strokeLineCap="round"/>
+    <!-- Arch feet. -->
+    <path android:pathData="M31,70 L31,76 M77,70 L77,76" android:strokeColor="#FFFF7A1A" android:strokeWidth="5" android:strokeLineCap="round"/>
+    <!-- Headlights: glow discs and hot cores. -->
+    <path android:pathData="M47,66 m-5.5,0 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0" android:fillColor="#55FFE9B8"/>
+    <path android:pathData="M61,66 m-5.5,0 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0" android:fillColor="#55FFE9B8"/>
+    <path android:pathData="M47,66 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" android:fillColor="#FFFFF6E0"/>
+    <path android:pathData="M61,66 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" android:fillColor="#FFFFF6E0"/>
+</vector>

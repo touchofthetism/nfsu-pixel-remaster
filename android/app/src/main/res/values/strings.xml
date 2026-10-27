@@ -147,7 +147,10 @@
     <string name="crash_anr">The game stopped responding</string>
     <string name="crash_native">The game closed unexpectedly</string>
     <string name="report_preparing">Preparing the log…</string>
-    <string name="report_message">The full log was saved to:\n%1$s\n\nShare it to Drive, email or a chat so it can be looked at.</string>
+    <string name="report_message">The report was saved to:
+%1$s
+
+It holds this app\'s logs and session telemetry (frame times, heat, memory), the graphics caches, the launcher options and the small nfsu1/Save folder; never the game\'s data files. Share it to Drive, email or a chat so it can be looked at.</string>
     <string name="report_failed">Could not prepare the log: %1$s</string>
     <string name="report_err_create">Could not create the report.</string>
     <string name="report_err_downloads_create">Could not create the file in Downloads.</string>
@@ -228,4 +231,35 @@
     <string name="layout_none">No saved layouts for this mode yet</string>
     <string name="layout_load_title">Load layout</string>
     <string name="layout_load_failed">Could not load the layout</string>
+    <string name="opt_overlay">Performance overlay</string>
+    <string name="overlay_off">Off</string>
+    <string name="overlay_compact">Compact · FPS, frame time, heat</string>
+    <string name="overlay_full">Full · adds DXVK graphs (GPU load, pipelines)</string>
+    <string name="opt_gfxlog">Graphics log detail</string>
+    <string name="gfxlog_info">Normal</string>
+    <string name="gfxlog_debug">Verbose · every shader compile (slower)</string>
+    <string name="session_header">LAST SESSION</string>
+    <string name="session_details_title">Session %1$s</string>
+    <string name="opt_saves_backup">Back up saves</string>
+    <string name="opt_saves_backup_value">ZIP to Download/NFSU1</string>
+    <string name="opt_saves_restore">Restore saves</string>
+    <string name="opt_saves_restore_value">From a backup ZIP</string>
+    <string name="saves_title">Saves</string>
+    <string name="saves_working">Working on the save folder…</string>
+    <string name="saves_none">No save folder yet: the game creates nfsu1/Save when a profile is saved.</string>
+    <string name="saves_backup_done">%1$d files backed up to:
+%2$s
+
+Share the ZIP to Drive to keep a copy off the phone.</string>
+    <string name="saves_share_chooser">Share the save backup</string>
+    <string name="saves_restore_message">Choose a save backup ZIP (made with Back up saves). The current nfsu1/Save folder is replaced; the game is closed first.</string>
+    <string name="saves_restore_done">%1$d files restored to nfsu1/Save.</string>
+    <string name="saves_failed">Could not finish: %1$s</string>
+    <string name="saves_err_open">The chosen file could not be opened.</string>
+    <string name="saves_err_staging">Could not write next to the save folder.</string>
+    <string name="saves_err_entry">The ZIP holds a file that does not belong in a save backup: %1$s</string>
+    <string name="saves_err_too_many">Too many files for a save backup.</string>
+    <string name="saves_err_too_large">Too large for a save backup.</string>
+    <string name="saves_err_empty">The ZIP holds no files.</string>
+    <string name="saves_err_replace">Could not replace the save folder.</string>
 </resources>

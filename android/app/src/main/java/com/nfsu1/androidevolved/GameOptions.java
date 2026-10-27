@@ -43,7 +43,7 @@ final class GameOptions {
 
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
-            ANISOTROPY = "anisotropy", ANTIALIAS = "antialias";
+            ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -76,6 +76,15 @@ final class GameOptions {
             new Option(GAMEPAD, R.string.opt_gamepad,
                     new String[] {"keys", "directinput"},
                     new int[] {R.string.gamepad_keys, R.string.gamepad_directinput}),
+            // Performance overlay: a compact line (FPS, p99 frame time, thermal state, battery temperature)
+            // top-right, or that plus DXVK's HUD (frame-time graph, GPU load, pipelines) top-left.
+            new Option(OVERLAY, R.string.opt_overlay,
+                    new String[] {"off", "compact", "full"},
+                    new int[] {R.string.overlay_off, R.string.overlay_compact, R.string.overlay_full}),
+            // DXVK_LOG_LEVEL for the session log: debug lists every pipeline compile and resource event.
+            new Option(GFXLOG, R.string.opt_gfxlog,
+                    new String[] {"info", "debug"},
+                    new int[] {R.string.gfxlog_info, R.string.gfxlog_debug}),
     };
 
     private static final String PREFS = "nfsu1_game";
@@ -125,6 +134,8 @@ final class GameOptions {
             case LATENCY: return "2";
             case TEXTURES: return "auto";
             case GAMEPAD: return "keys";
+            case OVERLAY: return "off";
+            case GFXLOG: return "info";
             default: throw new IllegalArgumentException(key);
         }
     }
@@ -143,6 +154,9 @@ final class GameOptions {
     }
 
     static int intValue(Context context, String key) { return Integer.parseInt(get(context, key)); }
+
+    /** DXVK_HUD for the full overlay: FPS, frame-time graph, draw calls, pipelines, memory, GPU load, compiler. */
+    static final String DXVK_HUD_FULL = "fps,frametimes,drawcalls,pipelines,memory,gpuload,compiler,scale=2.5";
 
     static final String ONLINE_SERVER = "online_server", DEFAULT_ONLINE_SERVER = "eahub.eu";
 
