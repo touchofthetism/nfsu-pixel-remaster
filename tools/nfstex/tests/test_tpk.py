@@ -62,6 +62,49 @@ class ChunkTests(unittest.TestCase):
             for texture in parsed.textures:
                 self.assertEqual(0, struct.unpack_from("<I", texture.record, 0x30)[0] % 128)
 
+    def test_texture_data_may_start_with_filler_bytes(self):
+        # Global/INGAMEB.BUN's first texture begins with 0x11 bytes: the data base comes from the 128-byte
+        # alignment of the body's payload, never from counting filler (v1-v3 shifted every texture by 3).
+        for file_offset in (0, 4096 + 16):
+            pack = synthetic_pack()
+            pack.textures[0].pixels = b"\x11\x11\x11" + bytes(range(157))
+            data = b"\0" * file_offset + pack.serialize(file_offset)
+            parsed = tpk.TexturePack.parse(tpk.find_texture_packs(data)[0][1], data, file_offset)
+            self.assertEqual(pack.textures[0].pixels, parsed.textures[0].pixels)
+            self.assertEqual(pack.textures[1].pixels, parsed.textures[1].pixels)
+            self.assertEqual(pack.textures[1].palette, parsed.textures[1].palette)
+        # A body whose filler is not where the alignment says is refused rather than guessed at.
+        broken = bytearray(synthetic_pack().serialize(0))
+        position = broken.find(b"\x11" * 120)
+        broken[position] = 0
+        with self.assertRaises(ValueError):
+            tpk.TexturePack.parse(tpk.find_texture_packs(bytes(broken))[0][1], bytes(broken), 0)
+
+    def test_record_layout_fields_by_pack_kind(self):
+        # Bundles: palettes first (field 0x34 = palette cursor), textures 128-byte aligned after them.
+        bundle = synthetic_pack()
+        data = bundle.serialize(0)
+        parsed = tpk.TexturePack.parse(tpk.find_texture_packs(data)[0][1], data, 0)
+        square, paletted = parsed.textures
+        self.assertEqual((1024, 0, 160, 0), struct.unpack_from("<IIII", square.record, 0x30))      # after the 1 KB palette area
+        self.assertEqual((1024 + 256, 0, 320, 1024), struct.unpack_from("<IIII", paletted.record, 0x30))
+        # Streaming packs: offsets count pixel data only, 0x34 is the aligned end of the texture's pixels,
+        # and a paletted texture's palette follows those pixels (stock CIVIC/CELICA/GOLF TEXTURES.BIN).
+        streaming = synthetic_pack()
+        streaming.compressed_source = True
+        data = streaming.serialize(0)
+        parsed = tpk.TexturePack.parse(tpk.find_texture_packs(data)[0][1], data, 0)
+        square, paletted = parsed.textures
+        self.assertEqual((0, 256, 160, 0), struct.unpack_from("<IIII", square.record, 0x30))
+        self.assertEqual((256, 256 + 384, 320, 1024), struct.unpack_from("<IIII", paletted.record, 0x30))
+        # Three textures: the one after a paletted texture starts past its palette as well.
+        third = tpk.Texture(make_record("THIRD", 16, 16, tpk.COMP_DXT1, 1, 128, 128, 0x33333333), make_format(b"DXT1"), bytes(128), b"")
+        streaming.textures.append(third)
+        data = streaming.serialize(0)
+        parsed = tpk.TexturePack.parse(tpk.find_texture_packs(data)[0][1], data, 0)
+        self.assertEqual(256 + 384 + 1024, struct.unpack_from("<I", parsed.textures[2].record, 0x30)[0])
+        self.assertEqual([t.pixels for t in streaming.textures], [t.pixels for t in parsed.textures])
+
     def test_padding_between_packs_is_preserved_or_recomputed(self):
         pack = synthetic_pack()
         first = pack.serialize(0)
@@ -114,19 +157,53 @@ class ChunkTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tpk.jdlz_decompress(b"nope")
 
+    def test_jdlz_game_decode_follows_speed_exe(self):
+        # EA's shape: flags1, flags2, 8 literals, the flags1 byte the decoder refills right after the 8th
+        # token, then the dummy literal's data byte that it counts but never reads.
+        stock = b"JDLZ\x02\x10\x00\x00" + struct.pack("<II", 8, 28) + b"\x00\x00" + b"12345678" + b"\x00" + b"\x00"
+        self.assertEqual((b"12345678", 27), tpk.jdlz_game_decode(stock))
+        # The pre-fix shape, no terminator: after the 8th token the decoder reads a flags byte past the blob
+        # and its count goes negative. This is what overran the heap on the phone (HD packs v1-v5).
+        short = b"JDLZ\x02\x10\x00\x00" + struct.pack("<II", 8, 26) + b"\x00\x00" + b"12345678"
+        with self.assertRaises(tpk.JdlzError):
+            tpk.jdlz_game_decode(short)
+        self.assertEqual(b"12345678", tpk.jdlz_decompress(short))      # the lenient reader is happy with it
+        # A back-reference is copied without regard to the output size.
+        overrun = b"JDLZ\x02\x10\x00\x00" + struct.pack("<II", 6, 25) + b"\x10\x01" + b"ABCD" + b"\x03\x01" + b"\x00"
+        with self.assertRaises(tpk.JdlzError):
+            tpk.jdlz_game_decode(overrun)
+        with self.assertRaises(tpk.JdlzError):
+            tpk.jdlz_game_decode(b"nope" * 8)
+        self.assertEqual((b"", 18), tpk.jdlz_game_decode(tpk.jdlz_compress(b"")))
+
     def test_jdlz_compress_round_trips(self):
         import random
         random.seed(7)
         cases = [b"", b"a", b"abc", b"\0" * 5000, bytes(range(256)) * 40, bytes(random.randrange(256) for _ in range(6000)),
                  b"abcabcabcabcabcabd" * 300, bytes(random.choice(b"ab") for _ in range(7000)),
                  bytes(random.randrange(256) for _ in range(3000)) + b"\0" * 4100 + bytes(random.randrange(256) for _ in range(100))]
+        # Every token count modulo 8 (random bytes are all literals) and every reference count modulo 8
+        # (a 40-byte unit repeated: far references of up to 34 bytes): the ends that tripped the game.
+        cases += [bytes(random.randrange(256) for _ in range(n)) for n in range(0, 70)]
+        unit = bytes(random.randrange(256) for _ in range(40))
+        cases += [unit * m for m in range(1, 60)]
+        cases += [b"\0" * n for n in range(1, 40)] + [b"ab" * n for n in range(1, 40)]
         for raw in cases:
             packed = tpk.jdlz_compress(raw)
             self.assertEqual(b"JDLZ\x02\x10\x00\x00", packed[:8])
             self.assertEqual((len(raw), len(packed)), struct.unpack_from("<II", packed, 8))
             self.assertEqual(raw, tpk.jdlz_decompress(packed))
+            # The game's decoder finishes with its count at zero and, as with EA's streams, one byte unread.
+            self.assertEqual((raw, len(packed) - 1), tpk.jdlz_game_decode(packed), raw[:16])
         self.assertLess(len(tpk.jdlz_compress(b"\0" * 5000)), 40)          # runs use the near, long form
         self.assertLess(len(tpk.jdlz_compress(b"abcabcabcabcabcabd" * 300)), 700)
+        # verify_jdlz_blobs walks a file of blobs and rejects the first bad one.
+        good = tpk.jdlz_compress(b"x" * 100) + b"\x11" * 5 + tpk.jdlz_compress(bytes(range(64)))
+        self.assertEqual(2, tpk.verify_jdlz_blobs(good))
+        bad = tpk.jdlz_compress(b"x" * 100)
+        bad = bad[:12] + struct.pack("<I", len(bad) - 1) + bad[16:-1]        # terminator dropped, count adjusted
+        with self.assertRaises(tpk.JdlzError):
+            tpk.verify_jdlz_blobs(good + bad)
 
     def test_streaming_pack_keeps_table_and_blobs(self):
         # A pack parsed from a stock streaming .BIN (HUDTEX, TSELECT, Cars/*/TEXTURES.BIN) must come back as

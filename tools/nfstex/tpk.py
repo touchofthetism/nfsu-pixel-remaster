@@ -139,25 +139,105 @@ def is_jdlz(data: bytes) -> bool:
     return data[:4] == b"JDLZ"
 
 
+class JdlzError(ValueError):
+    """A JDLZ stream Speed.exe's decoder would not finish cleanly."""
+
+
+def jdlz_game_decode(data: bytes, start: int = 0) -> Tuple[bytes, int]:
+    """Decodes the blob at ``data[start:]`` exactly as Speed.exe does (sub_58D190) and returns
+    ``(raw, consumed)``, where ``consumed`` is the number of stream bytes the decoder read.
+
+    The game's decoder differs from the lenient ``jdlz_decompress`` in three ways that matter for anything
+    we write: it loops on the header's packed size (``ebx = packed - 0x12``), it reads the next flags1 byte
+    the moment 8 tokens are used up and the next flags2 byte the moment 8 references are used up (even
+    when no token follows), and its back-reference copies are not bounded by the output size. A stream
+    whose final token completes a flag group therefore makes it read one byte past the blob and run on
+    with a negative count, copying garbage over whatever follows the destination buffer in the heap.
+    EA's streams always end with a dummy literal token (flag bit 0 plus one data byte that is counted but,
+    the output being complete, never read): the decoder leaves exactly one unread byte in every stock blob.
+
+    Raises ``JdlzError`` for anything the game's decoder would get wrong: a read past the blob, a count
+    that goes negative, a copy past the output, a reference before any output, or an incomplete output.
+    """
+    if data[start:start + 4] != b"JDLZ" or data[start + 4] != 2:
+        raise JdlzError("not a JDLZ version 2 stream")
+    raw_size, packed = struct.unpack_from("<II", data, start + 8)
+    blob = data[start:start + packed]
+    if len(blob) != packed:
+        raise JdlzError(f"packed size {packed} runs past the data")
+    out = bytearray(raw_size)
+    if packed < 0x12:
+        raise JdlzError(f"packed size {packed} is smaller than the header")
+    flags1, flags2 = blob[0x10] | 0x100, blob[0x11] | 0x100
+    pos, remaining, written = 0x12, packed - 0x12, 0
+    while remaining:
+        if flags1 & 1:
+            if pos + 2 > packed:
+                raise JdlzError(f"reference token read past the blob at {pos}")
+            b1, b0 = blob[pos], blob[pos + 1]
+            if flags2 & 1:
+                length, distance = (((b1 & 0xF0) << 4) | b0) + 3, (b1 & 0x0F) + 1
+            else:
+                length, distance = (b1 & 0x1F) + 3, (((b1 & 0xE0) << 3) | b0) + 0x11
+            if distance > written:
+                raise JdlzError(f"reference reaches before the output at {pos}")
+            if written + length > raw_size:
+                raise JdlzError(f"copy of {length} at output {written} runs past the {raw_size}-byte output")
+            if distance >= length:
+                out[written:written + length] = out[written - distance:written - distance + length]
+            else:                       # overlapping copy repeats the last `distance` bytes
+                period = out[written - distance:written]
+                reps, rest = divmod(length, distance)
+                out[written:written + length] = period * reps + period[:rest]
+            written += length
+            flags2 >>= 1
+            pos += 2
+            remaining -= 2
+        else:
+            if written < raw_size:
+                if pos >= packed:
+                    raise JdlzError(f"literal read past the blob at {pos}")
+                out[written] = blob[pos]
+                written += 1
+                pos += 1
+            remaining -= 1
+        flags1 >>= 1
+        if flags1 == 1:
+            if pos >= packed:
+                raise JdlzError(f"flags1 refill past the blob at {pos}")
+            flags1 = blob[pos] | 0x100
+            pos += 1
+            remaining -= 1
+        if flags2 == 1:
+            if pos >= packed:
+                raise JdlzError(f"flags2 refill past the blob at {pos}")
+            flags2 = blob[pos] | 0x100
+            pos += 1
+            remaining -= 1
+        if remaining < 0:
+            raise JdlzError("the decoder's byte count went negative (it would run on into the next blob)")
+    if written != raw_size:
+        raise JdlzError(f"output incomplete: {written} of {raw_size} bytes")
+    return bytes(out), pos
+
+
 def jdlz_compress(raw: bytes) -> bytes:
-    """A JDLZ stream the game's decoder (``jdlz_decompress``) turns back into ``raw``.
+    """A JDLZ stream Speed.exe's decoder (``jdlz_game_decode``) turns back into ``raw``.
 
     Greedy LZ77 with one hash-chain candidate per 3-byte key: near references (distance 1..16, up to
     4098 bytes) for runs and flat areas, far references (17..2064, up to 34 bytes) for repeats, literals
-    otherwise. The two flag streams are laid out exactly as the decoder consumes them: a flags1 byte before
-    every 8 tokens, a flags2 byte at the first token and again at the first token after every 8 references.
+    otherwise. The flag bytes are placed where the decoder refills them: a new flags1 byte right after
+    every 8th token and a new flags2 byte right after every 8th reference, whether or not a token follows.
+    The stream ends the way EA's do, with a dummy literal token the decoder counts but never reads (its
+    output is already complete), so the byte count reaches zero exactly at the end of the blob.
     """
     n = len(raw)
-    out = bytearray(16)
+    out = bytearray(18)             # header, then the first flags1 and flags2 bytes
     head = [-1] * 65536
-    f1_pos = f2_pos = 0
-    f1_bits = f2_bits = 8          # 8 = a fresh flag byte is due at the next token
+    f1_pos, f2_pos = 16, 17
+    f1_bits = f2_bits = 0
     pos = 0
     while pos < n:
-        if f1_bits == 8:
-            f1_pos = len(out); out.append(0); f1_bits = 0
-        if f2_bits == 8:
-            f2_pos = len(out); out.append(0); f2_bits = 0
         length = 0
         if pos + 3 <= n:
             key = (((raw[pos] << 16) | (raw[pos + 1] << 8) | raw[pos + 2]) * 0x9E3779B1 >> 8) & 0xFFFF
@@ -185,8 +265,40 @@ def jdlz_compress(raw: bytes) -> bytes:
             out.append(raw[pos])
             pos += 1
         f1_bits += 1
+        # The decoder's refill step: it reads these bytes now, before it even checks for another token.
+        if f1_bits == 8:
+            f1_pos = len(out); out.append(0); f1_bits = 0
+        if f2_bits == 8:
+            f2_pos = len(out); out.append(0); f2_bits = 0
+    # EA's terminator: a dummy literal (flag bit already 0) whose data byte is counted, never read.
+    out.append(0)
+    f1_bits += 1
+    if f1_bits == 8:
+        out.append(0)                # the decoder refills flags1 once more after that 8th token
     struct.pack_into("<4sBBHII", out, 0, b"JDLZ", 2, 16, 0, n, len(out))
     return bytes(out)
+
+
+def verify_jdlz_blobs(data: bytes) -> int:
+    """Checks every JDLZ blob in ``data`` with the game's decoder semantics; returns how many it found.
+
+    Each blob must decode completely, leave the decoder's count at zero exactly at its end and, as in
+    every stock blob, leave exactly one byte unread (the dummy literal's data byte). Raises ``JdlzError``
+    naming the first offending blob.
+    """
+    count = 0
+    offset = data.find(b"JDLZ\x02\x10\x00\x00")
+    while offset >= 0:
+        packed = struct.unpack_from("<I", data, offset + 12)[0]
+        try:
+            _, consumed = jdlz_game_decode(data, offset)
+        except JdlzError as e:
+            raise JdlzError(f"blob at {offset:#x}: {e}") from None
+        if consumed != packed - 1:
+            raise JdlzError(f"blob at {offset:#x}: the decoder stops {packed - consumed} byte(s) before the end, EA's streams leave exactly 1")
+        count += 1
+        offset = data.find(b"JDLZ\x02\x10\x00\x00", offset + max(packed, 16))
+    return count
 
 
 # ---- Textures ---------------------------------------------------------------------------------------------
@@ -371,9 +483,23 @@ class TexturePack:
             for i in range(len(compressed.data) // 20):
                 tex_hash, offset, size, flags, _ = struct.unpack_from("<IIIII", compressed.data, i * 20)
                 entries[tex_hash] = (offset, size, flags)
-        base_in_body = 0
-        while base_in_body < len(body.data) and body.data[base_in_body] == 0x11:
-            base_in_body += 1
+        # The engine aligns the body's payload pointer up to the next 128-byte file boundary; the bytes before
+        # it are 0x11 filler. Counting 0x11 bytes instead is wrong when the first texture's data itself starts
+        # with 0x11 (Global/INGAMEB.BUN: three such bytes shifted every texture in HD interface packs v1-v3).
+        payload_offset = chunk_file_offset + 8
+        for child in chunk.children:
+            if child is data:
+                payload_offset += 8
+                for grandchild in data.children:
+                    if grandchild is body:
+                        break
+                    payload_offset += len(grandchild.serialize())
+                break
+            payload_offset += len(child.serialize())
+        payload_offset += 8                     # past the body chunk's own header
+        base_in_body = (-payload_offset) % ALIGN
+        if base_in_body > len(body.data) or any(b != 0x11 for b in body.data[:base_in_body]):
+            raise ValueError(f"texture data body at {payload_offset:#x}: expected {base_in_body} bytes of 0x11 filler")
         for i in range(count):
             record = bytearray(records[i * RECORD_SIZE:(i + 1) * RECORD_SIZE])
             fmt = bytearray(formats[i * FORMAT_SIZE:(i + 1) * FORMAT_SIZE])
@@ -393,10 +519,7 @@ class TexturePack:
             if len(pixels) > size:
                 pixels = pixels[:size]
             elif len(pixels) < size:
-                # Global/INGAMEB.BUN ships its last texture 3 bytes short; the game reads past the chunk.
-                if size - len(pixels) > 64:
-                    raise ValueError(f"texture {i} short data: {len(pixels)} of {size}")
-                pixels = pixels + b"\0" * (size - len(pixels))
+                raise ValueError(f"texture {i} short data: {len(pixels)} of {size}")
             textures.append(Texture(record, fmt, pixels, palette))
         return TexturePack(header, textures, data_header, compressed is not None)
 
@@ -406,9 +529,12 @@ class TexturePack:
         parsed from a streaming pack (``compressed_source``) are written as one again; the rest uncompressed."""
         count = len(self.textures)
         hashes = b"".join(struct.pack("<II", t.hash, 0) for t in self.textures)
-        # Lay out palettes first, then textures, 128-byte aligned, exactly as the game's files do.
-        # Field 0x34 is the writer's palette cursor when the texture was written: its own palette offset
-        # for paletted textures, the running total for the others (reproduced for byte-identical output).
+        # Bundles lay out palettes first, then textures, 128-byte aligned, exactly as the game's files do;
+        # field 0x34 is the writer's palette cursor there (the texture's own palette offset when it has one,
+        # the running total otherwise). Streaming packs count pixel data only, each texture's palette sitting
+        # after its aligned pixel data, and field 0x34 is that aligned end (every stock HUDTEX, TSELECT and
+        # Cars/*/TEXTURES.BIN record, paletted CIVIC/CELICA/GOLF ones included). Both are reproduced so a
+        # re-serialized stock pack has byte-identical info chunks.
         cursor = 0
         palette_blob = bytearray()
         for texture in self.textures:
@@ -417,14 +543,20 @@ class TexturePack:
             if texture.palette:
                 palette_blob += texture.palette
                 cursor += len(texture.palette)
-        cursor = (cursor + ALIGN - 1) // ALIGN * ALIGN
-        pixel_blob = bytearray(b"\0" * (cursor - len(palette_blob)))
+        if self.compressed_source:
+            cursor = 0              # streaming packs: palettes travel inside the blobs; offsets count pixel data only
+        else:
+            cursor = (cursor + ALIGN - 1) // ALIGN * ALIGN
+        pixel_blob = bytearray(b"\0" * max(0, cursor - len(palette_blob)))
         for index, texture in enumerate(self.textures):
             struct.pack_into("<I", texture.record, 0x30, cursor)
             struct.pack_into("<I", texture.record, 0x38, len(texture.pixels))
             pixel_blob += texture.pixels
             cursor += len(texture.pixels)
             aligned = (cursor + ALIGN - 1) // ALIGN * ALIGN
+            if self.compressed_source:
+                struct.pack_into("<I", texture.record, 0x34, aligned)
+                aligned += len(texture.palette)                          # the palette follows its pixels
             if index + 1 < len(self.textures):                          # the body ends with the last texture
                 pixel_blob += b"\0" * (aligned - cursor)
                 cursor = aligned

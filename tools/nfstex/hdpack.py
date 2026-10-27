@@ -185,21 +185,86 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
         log(f"{relative}: nothing to upscale under policy {policy_name} ({stats['skipped']} textures kept); not shipped")
         return None
     out = tpk.replace_texture_packs(data, packs, rebuilt)
-    log(f"{relative}: {stats['upscaled']} upscaled, {stats['skipped']} kept, texture bytes {stats['bytes_in'] >> 10} KB -> {stats['bytes_out'] >> 10} KB, file {len(out) >> 10} KB")
+    blobs = verify_rebuilt(relative, data, out)
+    log(f"{relative}: {stats['upscaled']} upscaled, {stats['skipped']} kept, texture bytes {stats['bytes_in'] >> 10} KB -> {stats['bytes_out'] >> 10} KB, "
+        f"file {len(out) >> 10} KB, {blobs} JDLZ blobs pass the game's decoder")
     return out
+
+
+def verify_rebuilt(relative: str, source: bytes, out: bytes) -> int:
+    """Every JDLZ blob of a rebuilt file must decode under Speed.exe's own rules (tpk.jdlz_game_decode),
+    and the file must parse back into texture packs with the same textures by name. Returns the blob count.
+
+    HD packs v1-v5 shipped blobs the game's decoder ran off the end of (one terminator token short), which
+    overwrote the heap on the phone; this is the check that would have caught them."""
+    try:
+        blobs = tpk.verify_jdlz_blobs(out)
+    except tpk.JdlzError as e:
+        raise SystemExit(f"{relative}: {e}")
+    before = [t.name for offset, chunk in tpk.find_texture_packs(source) for t in tpk.TexturePack.parse(chunk, source, offset).textures]
+    after = [t.name for offset, chunk in tpk.find_texture_packs(out) for t in tpk.TexturePack.parse(chunk, out, offset).textures]
+    if sorted(before) != sorted(after):
+        raise SystemExit(f"{relative}: the rebuilt file lists different textures ({len(before)} -> {len(after)})")
+    return blobs
+
+
+def repack_file(relative: str, data: bytes, log) -> bytes:
+    """A pack file from an earlier HD pack, written again by the current serializer (no upscaling): the way
+    to re-ship a pack after a fix in the container or compression code."""
+    if tpk.is_jdlz(data):
+        data = tpk.jdlz_decompress(data)
+    try:
+        packs = tpk.find_texture_packs(data)
+    except ValueError:
+        packs = []                                  # not a chunk stream at all
+    if not packs:
+        log(f"{relative}: no texture packs, copied as is")
+        return data
+    rebuilt = {offset: (lambda base, p=tpk.TexturePack.parse(chunk, data, offset): p.serialize(base)) for offset, chunk in packs}
+    out = tpk.replace_texture_packs(data, packs, rebuilt)
+    blobs = verify_rebuilt(relative, data, out)
+    log(f"{relative}: repacked, {len(data) >> 10} KB -> {len(out) >> 10} KB, {blobs} JDLZ blobs pass the game's decoder")
+    return out
+
+
+def repack(source_zip: str, out_zip: str, version: str, name: str | None, log) -> None:
+    """Rebuilds every file of an existing HD pack ZIP with the current code and writes a new pack."""
+    with zipfile.ZipFile(source_zip) as src:
+        manifest = json.loads(src.read("nfsu-modpack.json"))
+        files = {info.filename: repack_file(info.filename, src.read(info), log)
+                 for info in src.infolist() if info.filename != "nfsu-modpack.json" and not info.is_dir()}
+    previous = manifest.get("version", "?")
+    manifest["version"] = version
+    if name:
+        manifest["name"] = name
+    manifest["files"] = [{"path": p, "bytes": len(b)} for p, b in files.items()]
+    manifest["notes"] = manifest.get("notes", "") + f" Repacked from version {previous}."
+    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p, b in files.items():
+            zf.writestr(p, b)
+        zf.writestr("nfsu-modpack.json", json.dumps(manifest, indent=2))
+    log(f"wrote {out_zip}: {len(files)} files, {sum(len(b) for b in files.values()) >> 20} MB uncompressed")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--game", required=True, help="game folder (holds Speed.exe)")
+    parser.add_argument("--game", help="game folder (holds Speed.exe)")
     parser.add_argument("--out", required=True, help="output ZIP")
-    parser.add_argument("--models", required=True, help="directory with the Real-ESRGAN .pth files")
+    parser.add_argument("--models", help="directory with the Real-ESRGAN .pth files")
     parser.add_argument("--profile", default="ui", choices=sorted(PROFILES))   # hud | ui | cars | all
-    parser.add_argument("--name", default="HD interface pack")
+    parser.add_argument("--name", default=None, help="pack name in the manifest (default: HD interface pack, or the repacked pack's own)")
     parser.add_argument("--version", default="1")
     parser.add_argument("--only", help="comma-separated bundle names to build (others skipped)")
     parser.add_argument("--limit", type=int, default=0, help="upscale at most N textures per bundle (policy checks)")
+    parser.add_argument("--repack", metavar="PACK.zip", help="rewrite an existing HD pack with the current code instead of upscaling (no game folder or models needed)")
     args = parser.parse_args()
+    if args.repack:
+        repack(args.repack, args.out, args.version, args.name, print)
+        return
+    if not args.game or not args.models:
+        parser.error("--game and --models are required unless --repack is given")
+    if args.name is None:
+        args.name = "HD interface pack"
     game = pathlib.Path(args.game)
     files = {}
     processed = {}     # one upscale per input, however many names it is written under
