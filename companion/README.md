@@ -1,6 +1,6 @@
 # Private companion repository — complete contents, mirrored here for review
 
-The APK is built by a second, **private** repository (`touchofthetism/nfsu-pixel-remaster-private`) because it
+The APK is built by a second, **private** repository (`touchofthetism/Nfsu-pixel-remaster-private-`) because it
 holds binary assets that must not sit in a public repository: the owner's game folder and `Speed.exe` + sound
 banks (as release assets), the APK signing key, and the built APKs. Everything that repository *does* is in
 this folder, byte for byte, so the whole system can be read and audited from the public code alone:
