@@ -61,7 +61,7 @@ POLICIES = {
 }
 
 
-def should_skip(texture: tpk.Texture) -> str:
+def should_skip(texture: tpk.Texture, policy_name: str = "") -> str:
     w, h = texture.width, texture.height
     if w < 8 or h < 8:
         return "tiny"
@@ -69,6 +69,12 @@ def should_skip(texture: tpk.Texture) -> str:
         return "already large"
     if texture.compression not in (tpk.COMP_DXT1, tpk.COMP_DXT3, tpk.COMP_DXT5, tpk.COMP_P8, tpk.COMP_A8R8G8B8):
         return "unsupported format"
+    # Car bundles: the game keeps lights, badges and rims uncompressed and works on some of them on the
+    # CPU; a pack that re-encoded them as DXT (cars v4) overflowed a buffer at the profile menu
+    # (ICALL unresolved into the heap from the sound service thread). Only the DXT-stored car textures are
+    # touched, and they stay DXT.
+    if policy_name == "car" and texture.compression not in (tpk.COMP_DXT1, tpk.COMP_DXT3):
+        return "uncompressed or paletted car texture (left as stored)"
     return ""
 
 
@@ -151,7 +157,7 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
         for texture in pack.textures:
             stats["textures"] += 1
             stats["bytes_in"] += len(texture.pixels)
-            reason = should_skip(texture)
+            reason = should_skip(texture, policy_name)
             if reason:
                 stats["skipped"] += 1
                 stats["bytes_out"] += len(texture.pixels)
@@ -163,8 +169,9 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
                 continue
             image = Image.open(io.BytesIO(texture.to_dds())).convert("RGBA")
             up = upscale.upscale_image(image, policy[0], models_dir, factor)
-            # Uncompressed sources whose alpha is a soft gradient (badge glows, door lines) stay uncompressed:
-            # DXT3's 4-bit alpha would band them. Hard or absent alpha (rims, lenses) takes DXT like the rest.
+            # The output keeps the stored format family: DXT sources stay DXT (DXT3 when there is alpha),
+            # uncompressed sources (interface bundles only; cars skip them above) stay A8R8G8B8 when their
+            # alpha is a gradient and go DXT when it is a hard mask or absent.
             compression = tpk.COMP_A8R8G8B8 if texture.compression == tpk.COMP_A8R8G8B8 and soft_alpha(image) \
                 else tpk.COMP_DXT3 if has_alpha(image) else tpk.COMP_DXT1
             texture.replace_with_dds(mip_chain_dds(up, compression))
