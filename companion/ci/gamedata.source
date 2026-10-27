@@ -1,9 +1,9 @@
-# Where the one-time "gamedata" workflow finds the owner's game copy.
+# Where the one-time "gamedata" workflow finds the owner's game copy. Sourced by bash: quote values with spaces.
 # A Google Drive file id (shared as "anyone with the link" while the workflow runs);
 # the ZIP holds the install as 7z archives. Nothing from it is committed to git:
 # the workflow turns it into two private release assets (lift-inputs.zip, nfsu-gamedata.zip).
-drive_id=<the owner's Google Drive file id — set only in the private companion>
-archive=Need For Speed Underground - Clean Edition.7z
-game_root=Need For Speed Underground
+drive_id="<the owner's Google Drive file id — set only in the private companion>"
+archive="Need For Speed Underground - Clean Edition.7z"
+game_root="Need For Speed Underground"
 # Speed.exe 1.4, the only build the port targets (SizeOfImage 0x394368, entry 0x270CB5, 3178496 bytes).
-speed_exe_sha256=c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7
+speed_exe_sha256="c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7"

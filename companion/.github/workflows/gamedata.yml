@@ -40,7 +40,11 @@ jobs:
       - name: Extract
         run: |
           cd /tmp/gd
-          7z x -y game.zip -o/tmp/gd/outer "${{ steps.source.outputs.archive }}"
+          # The outer ZIP (an archive.org-style download) carries a few hundred prefix bytes; 7z copes,
+          # unzip warns but extracts, so try both and check the result.
+          7z x -y game.zip -o/tmp/gd/outer "${{ steps.source.outputs.archive }}" \
+            || unzip -o game.zip "${{ steps.source.outputs.archive }}" -d /tmp/gd/outer || true
+          test -s "/tmp/gd/outer/${{ steps.source.outputs.archive }}" || { echo "inner archive not extracted"; 7z l game.zip | tail -20; exit 1; }
           rm -f game.zip
           7z x -y "/tmp/gd/outer/${{ steps.source.outputs.archive }}" -o/tmp/gd/inner
           rm -rf /tmp/gd/outer
