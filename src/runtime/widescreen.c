@@ -123,10 +123,13 @@ void nfs_widescreen_set_resolution(unsigned width, unsigned height) {
 }
 int nfs_widescreen_hud_entries(void) { return 0; }
 void nfs_widescreen_set_minimap_offset(float dy) { (void)dy; }
-void nfs_widescreen_set_frame_rate(unsigned fps) { (void)fps; }
-void nfs_widescreen_apply_frame_rate(void) {}
+/* Frame pacing (nfs_widescreen_set_frame_rate / apply) and its hooks live in
+ * framerate.c; recomp_hook hands it every VA it does not know itself. */
+int nfs_framerate_hook(uint32_t va);
 
 void recomp_hook(uint32_t va) {
+    /* Frame pacing hooks (framerate.c) apply whatever the display aspect. */
+    if (nfs_framerate_hook(va)) return;
     /* Arrow draw calls: X/Y loaded, about to be pushed for sub_004F3030. */
     /* Arrow draw calls: superseded (the touch cursor is already in FE units);
      * the lifted code still calls here, so they stay accepted and inert. */

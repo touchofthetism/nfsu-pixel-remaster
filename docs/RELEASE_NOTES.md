@@ -7,7 +7,8 @@
 
 ## What's new
 
-### Build 7 — overlapped reads, and the optimised build
+### Build 7 — 120 FPS, overlapped reads, and the optimised build
+- **The game ran at 60 because it chose to.** The build‑6 profile showed 13.3 billion `QueryPerformanceCounter` calls in three minutes: Speed.exe busy‑waits every frame until 1/60 s has passed (`PrepareRealTimestep`, target at `0x6F0890`), clamps the frame's time step to at least 1/60 s and adds at least one 1/60 tick per frame, so lifting the cap alone would have run the game fast. ThirteenAG's NFSUnderground.WidescreenFix carries the complete correction (on by default at the monitor's refresh rate on PC); its six patches are ported here as hooks and one data write: the limiter follows the **FPS limit** option (*Unlimited* = the 120 Hz panel), the time‑step floor becomes 1/cap, a frame shorter than 1/60 adds no tick (the remainder carries), the sound library is updated in ≥ 1/60 batches, particles step by the frame's real time, and the steering snap‑to‑zero below one degree (which stuck the wheels at high rates) is skipped. *60 FPS* in the launcher is the stock game's pacing.
 - **Loader reads: Overlapped (default).** Reads of 64 KB and more — the loader's whole‑file reads and the 64–256 KB music/stream blocks mid‑race — now hand the guest machine to the other guest threads while the kernel copies, so they no longer freeze the render thread (build‑3 telemetry: 443 frame spikes of 20–50 ms in 27 minutes, GPU idle). This is the build‑4 change, back: it was pulled on suspicion of the profile‑menu crash that turned out to be the texture pack (below). *Hold the game during every read* restores the old behaviour for comparison.
 - Built from the build‑6 profile (`pgo=use`) when a real session's profile is in; otherwise this entry describes the option alone.
 
