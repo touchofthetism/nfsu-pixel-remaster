@@ -120,6 +120,12 @@ def has_alpha(image: Image.Image) -> bool:
     return extrema[0] < 250
 
 
+def soft_alpha(image: Image.Image) -> bool:
+    """More distinct alpha values than a 4-bit channel can hold (a gradient rather than a mask)."""
+    histogram = image.getchannel("A").histogram()
+    return sum(1 for count in histogram if count) > 17
+
+
 def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_dir: str, log,
                    limit: int = 0) -> bytes | None:
     """The rebuilt bundle, or None when no texture qualified (the stock file is then left alone).
@@ -157,8 +163,9 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
                 continue
             image = Image.open(io.BytesIO(texture.to_dds())).convert("RGBA")
             up = upscale.upscale_image(image, policy[0], models_dir, factor)
-            # Uncompressed sources stay uncompressed (their alpha is usually a soft glow); the rest DXT3/DXT1.
-            compression = tpk.COMP_A8R8G8B8 if texture.compression == tpk.COMP_A8R8G8B8 \
+            # Uncompressed sources whose alpha is a soft gradient (badge glows, door lines) stay uncompressed:
+            # DXT3's 4-bit alpha would band them. Hard or absent alpha (rims, lenses) takes DXT like the rest.
+            compression = tpk.COMP_A8R8G8B8 if texture.compression == tpk.COMP_A8R8G8B8 and soft_alpha(image) \
                 else tpk.COMP_DXT3 if has_alpha(image) else tpk.COMP_DXT1
             texture.replace_with_dds(mip_chain_dds(up, compression))
             stats["upscaled"] += 1
