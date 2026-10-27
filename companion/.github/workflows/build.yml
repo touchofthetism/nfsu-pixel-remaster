@@ -182,8 +182,13 @@ jobs:
           mkdir -p /tmp/release
           cp android/app/build/outputs/apk/release/*.apk "/tmp/release/NFSU-Remastered-${version}-arm64.apk"
           # Unstripped libraries for symbolising crash reports from the phone (ndk-stack / llvm-symbolizer).
-          mapfile -t libs < <(find android/app/build/intermediates -path '*arm64-v8a*' -name 'libnfsu1_*.so' 2>/dev/null)
-          if [ "${#libs[@]}" -gt 0 ]; then zip -j -q "/tmp/release/symbols-${version}.zip" "${libs[@]}"; else echo "::warning::no unstripped libnfsu1_*.so found for the symbols archive"; fi
+          # AGP keeps several copies (cxx build dir, merged, stripped); take one per name, the CMake output first.
+          mkdir -p /tmp/symbols
+          while IFS= read -r lib; do
+            name="$(basename "$lib")"
+            [ -e "/tmp/symbols/$name" ] || cp "$lib" "/tmp/symbols/$name"
+          done < <(find android/app/build/intermediates -path '*arm64-v8a*' -name 'libnfsu1_*.so' 2>/dev/null | awk '{ print (index($0, "/cxx/") ? "0 " : "1 ") $0 }' | sort | cut -d' ' -f2-)
+          if [ -n "$(ls -A /tmp/symbols)" ]; then (cd /tmp/symbols && zip -q -r "/tmp/release/symbols-${version}.zip" .); else echo "::warning::no unstripped libnfsu1_*.so found for the symbols archive"; fi
           (cd /tmp/release && sha256sum * > SHA256SUMS)
           { cat docs/RELEASE_NOTES.md; echo; echo "---"; echo "Source: ${CODE_REPO}@${{ steps.pins.outputs.code_sha }} · ThinLTO ${{ steps.manifest.outputs.lto }} · run ${GITHUB_RUN_NUMBER} attempt ${GITHUB_RUN_ATTEMPT}"; } > /tmp/notes.md
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
