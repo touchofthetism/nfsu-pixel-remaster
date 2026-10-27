@@ -28,7 +28,7 @@ def synthetic_pack(file_offset: int = 0) -> tpk.TexturePack:
     header = bytearray(tpk.HEADER_SIZE)
     struct.pack_into("<I", header, 0, 4)
     header[4:8] = b"TEST"
-    header[32:52] = b"Global\\TestPack.tpk"
+    header[32:51] = b"Global\\TestPack.tpk"
     struct.pack_into("<I", header, 96, 0xDEADBEEF)
     textures = []
     # 16x16 DXT1 with 2 mips (16x16=128 B, 8x8=32 B) and a 16x16 P8 with 2 mips + palette.
@@ -113,6 +113,52 @@ class ChunkTests(unittest.TestCase):
         self.assertTrue(tpk.is_jdlz(backref))
         with self.assertRaises(ValueError):
             tpk.jdlz_decompress(b"nope")
+
+    def test_jdlz_compress_round_trips(self):
+        import random
+        random.seed(7)
+        cases = [b"", b"a", b"abc", b"\0" * 5000, bytes(range(256)) * 40, bytes(random.randrange(256) for _ in range(6000)),
+                 b"abcabcabcabcabcabd" * 300, bytes(random.choice(b"ab") for _ in range(7000)),
+                 bytes(random.randrange(256) for _ in range(3000)) + b"\0" * 4100 + bytes(random.randrange(256) for _ in range(100))]
+        for raw in cases:
+            packed = tpk.jdlz_compress(raw)
+            self.assertEqual(b"JDLZ\x02\x10\x00\x00", packed[:8])
+            self.assertEqual((len(raw), len(packed)), struct.unpack_from("<II", packed, 8))
+            self.assertEqual(raw, tpk.jdlz_decompress(packed))
+        self.assertLess(len(tpk.jdlz_compress(b"\0" * 5000)), 40)          # runs use the near, long form
+        self.assertLess(len(tpk.jdlz_compress(b"abcabcabcabcabcabd" * 300)), 700)
+
+    def test_streaming_pack_keeps_table_and_blobs(self):
+        # A pack parsed from a stock streaming .BIN (HUDTEX, TSELECT, Cars/*/TEXTURES.BIN) must come back as
+        # one: per-texture JDLZ blobs and the 0x33310003 table the engine walks when unloading it.
+        for file_offset in (0, 23424):
+            pack = synthetic_pack()
+            pack.compressed_source = True
+            pack.textures.reverse()                      # records need not be hash-sorted; the table is
+            data = b"\0" * file_offset + pack.serialize(file_offset)
+            packs = tpk.find_texture_packs(data)
+            chunk = packs[0][1]
+            info = chunk.find(tpk.TPK_INFO)
+            self.assertEqual([tpk.TPK_HEADER, tpk.TPK_HASHES, tpk.TPK_COMPRESSED, tpk.TPK_RECORDS, tpk.TPK_FORMATS],
+                             [c.id for c in info.children])
+            table = info.find(tpk.TPK_COMPRESSED).data
+            entries = [struct.unpack_from("<IIIII", table, i * 20) for i in range(len(table) // 20)]
+            self.assertEqual([0x11111111, 0x22222222], [e[0] for e in entries])      # sorted by hash
+            self.assertEqual(0, entries[0][1] % 128)                                   # first blob on a boundary
+            self.assertEqual(entries[0][1] + entries[0][2], entries[1][1])             # contiguous
+            self.assertTrue(all(e[3] == 0x100 and e[4] == 0 for e in entries))
+            for tex_hash, offset, size, _flags, _zero in entries:
+                blob = data[offset:offset + size]
+                self.assertTrue(tpk.is_jdlz(blob))
+                texture = pack.find(tex_hash)
+                self.assertEqual(texture.palette + texture.pixels, tpk.jdlz_decompress(blob))
+            parsed = tpk.TexturePack.parse(chunk, data, file_offset)
+            self.assertTrue(parsed.compressed_source)
+            self.assertEqual([(t.name, t.pixels, t.palette) for t in pack.textures], [(t.name, t.pixels, t.palette) for t in parsed.textures])
+            # The uncompressed layout in the records is kept as in the stock files.
+            self.assertEqual(0, struct.unpack_from("<I", parsed.textures[0].record, 0x30)[0] % 128)
+            # Rebuilding the parsed pack again gives the same bytes.
+            self.assertEqual(data[file_offset:], parsed.serialize(file_offset))
 
 
 if __name__ == "__main__":

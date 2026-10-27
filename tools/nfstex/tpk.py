@@ -139,6 +139,56 @@ def is_jdlz(data: bytes) -> bool:
     return data[:4] == b"JDLZ"
 
 
+def jdlz_compress(raw: bytes) -> bytes:
+    """A JDLZ stream the game's decoder (``jdlz_decompress``) turns back into ``raw``.
+
+    Greedy LZ77 with one hash-chain candidate per 3-byte key: near references (distance 1..16, up to
+    4098 bytes) for runs and flat areas, far references (17..2064, up to 34 bytes) for repeats, literals
+    otherwise. The two flag streams are laid out exactly as the decoder consumes them: a flags1 byte before
+    every 8 tokens, a flags2 byte at the first token and again at the first token after every 8 references.
+    """
+    n = len(raw)
+    out = bytearray(16)
+    head = [-1] * 65536
+    f1_pos = f2_pos = 0
+    f1_bits = f2_bits = 8          # 8 = a fresh flag byte is due at the next token
+    pos = 0
+    while pos < n:
+        if f1_bits == 8:
+            f1_pos = len(out); out.append(0); f1_bits = 0
+        if f2_bits == 8:
+            f2_pos = len(out); out.append(0); f2_bits = 0
+        length = 0
+        if pos + 3 <= n:
+            key = (((raw[pos] << 16) | (raw[pos + 1] << 8) | raw[pos + 2]) * 0x9E3779B1 >> 8) & 0xFFFF
+            cand = head[key]
+            head[key] = pos
+            if cand >= 0:
+                dist = pos - cand
+                if dist <= 2064 and raw[cand] == raw[pos] and raw[cand + 1] == raw[pos + 1] and raw[cand + 2] == raw[pos + 2]:
+                    limit = min(4098 if dist <= 16 else 34, n - pos)
+                    length = 3
+                    while length < limit and raw[cand + length] == raw[pos + length]:
+                        length += 1
+        if length:
+            out[f1_pos] |= 1 << f1_bits
+            if dist <= 16:
+                out[f2_pos] |= 1 << f2_bits
+                out.append((((length - 3) >> 8) << 4) | (dist - 1))
+                out.append((length - 3) & 0xFF)
+            else:
+                out.append((((dist - 17) >> 8) << 5) | (length - 3))
+                out.append((dist - 17) & 0xFF)
+            f2_bits += 1
+            pos += length
+        else:
+            out.append(raw[pos])
+            pos += 1
+        f1_bits += 1
+    struct.pack_into("<4sBBHII", out, 0, b"JDLZ", 2, 16, 0, n, len(out))
+    return bytes(out)
+
+
 # ---- Textures ---------------------------------------------------------------------------------------------
 
 def mip_sizes(width: int, height: int, mips: int, compression: int) -> List[int]:
@@ -351,8 +401,9 @@ class TexturePack:
         return TexturePack(header, textures, data_header, compressed is not None)
 
     def serialize(self, file_offset: int = 0) -> bytes:
-        """The pack as an uncompressed 0xB3300000 chunk placed at ``file_offset`` in its file (needed
-        for the 128-byte alignment of the texture data, which is file-relative)."""
+        """The pack as a 0xB3300000 chunk placed at ``file_offset`` in its file (needed for the 128-byte
+        alignment of the texture data and for the absolute blob offsets of streaming packs). Packs that were
+        parsed from a streaming pack (``compressed_source``) are written as one again; the rest uncompressed."""
         count = len(self.textures)
         hashes = b"".join(struct.pack("<II", t.hash, 0) for t in self.textures)
         # Lay out palettes first, then textures, 128-byte aligned, exactly as the game's files do.
@@ -379,21 +430,45 @@ class TexturePack:
                 cursor = aligned
         records = b"".join(bytes(t.record) for t in self.textures)
         formats = b"".join(bytes(t.format) for t in self.textures)
-        info = Chunk(TPK_INFO, children=[Chunk(TPK_HEADER, bytes(self.header)), Chunk(TPK_HASHES, hashes),
-                                         Chunk(TPK_RECORDS, records), Chunk(TPK_FORMATS, formats)])
-        info_bytes = info.serialize()
+        # Standalone "streaming" packs (HUDTEX, DYNTEX, TSELECT, MAGAZINE_TEXTURES, Cars/*/TEXTURES.BIN) keep
+        # every texture as its own JDLZ blob and carry a 0x33310003 table {hash, absolute file offset,
+        # blob size, 0x100, 0} sorted by hash. The engine walks that table when it unloads the pack (the
+        # HUD at the end of every race), so a rebuilt streaming pack must stay a streaming pack: without
+        # the table the unload dereferences a null entry list. Records keep the uncompressed layout above.
+        blobs: List[bytes] = []
+        if self.compressed_source:
+            order = sorted(range(count), key=lambda i: self.textures[i].hash)
+            blobs = [jdlz_compress(self.textures[i].palette + self.textures[i].pixels) for i in order]
         # The game's files place the data parent on a 128-byte file boundary and arrange its body so the
         # payload starts 8 bytes past a boundary, followed by 120 bytes of 0x11 filler: the texture data
         # base is then aligned. Both paddings are reproduced here.
         # The game's bundles also put a padding chunk first so the info parent's header sits 16 bytes
         # past a 128-byte boundary (an empty one when already there).
         leading_pad = (16 - (file_offset + 8 + 8)) % ALIGN
-        after_info = file_offset + 8 + 8 + leading_pad + len(info_bytes)
+        info_size = 8 + (8 + len(self.header)) + (8 + len(hashes)) + (8 + count * 20 if self.compressed_source else 0) \
+            + (8 + len(records)) + (8 + len(formats))
+        after_info = file_offset + 8 + 8 + leading_pad + info_size
         outer_pad = (-(after_info + 8)) % ALIGN
         data_parent_at = after_info + 8 + outer_pad
         after_data_header = data_parent_at + 8 + 8 + len(self.data_header)
         inner_pad = (8 - (after_data_header + 8 + 8)) % ALIGN
-        body = b"\x11" * (ALIGN - 8) + bytes(palette_blob) + bytes(pixel_blob)
+        body_payload_at = after_data_header + 8 + inner_pad + 8
+        info_children = [Chunk(TPK_HEADER, bytes(self.header)), Chunk(TPK_HASHES, hashes)]
+        if self.compressed_source:
+            table = bytearray()
+            blob_at = body_payload_at + (ALIGN - 8)
+            for i, blob in zip(order, blobs):
+                table += struct.pack("<IIIII", self.textures[i].hash, blob_at, len(blob), 0x100, 0)
+                blob_at += len(blob)
+            info_children.append(Chunk(TPK_COMPRESSED, bytes(table)))
+            body_data = b"".join(blobs)
+            body_data += b"\0" * ((-len(body_data)) % 4)
+        else:
+            body_data = bytes(palette_blob) + bytes(pixel_blob)
+        info_children += [Chunk(TPK_RECORDS, records), Chunk(TPK_FORMATS, formats)]
+        info = Chunk(TPK_INFO, children=info_children)
+        assert len(info.serialize()) == info_size
+        body = b"\x11" * (ALIGN - 8) + body_data
         data = Chunk(TPK_DATA, children=[Chunk(TPK_DATA_HEADER, self.data_header), Chunk(PADDING, b"\0" * inner_pad),
                                          Chunk(TPK_DATA_BODY, body)])
         return Chunk(TPK, children=[Chunk(PADDING, b"\0" * leading_pad), info, Chunk(PADDING, b"\0" * outer_pad), data]).serialize()
@@ -442,8 +517,8 @@ def replace_texture_packs(data: bytes, packs: List[Tuple[int, Chunk]], rebuilt: 
             pad_id, pad_size = struct.unpack_from("<II", data, cursor)
             if pad_id == PADDING:
                 next_offset = cursor + 8 + pad_size
-                if len(new_bytes) == original_size:
-                    new_pad = pad_size
+                if len(new_bytes) == original_size or next_offset >= len(data):
+                    new_pad = pad_size          # unchanged size, or the file's trailing pad: keep it as it was
                 else:
                     alignment = next(a for a in (4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4) if next_offset % a == 0)
                     new_pad = (-(len(out) + 8)) % alignment
