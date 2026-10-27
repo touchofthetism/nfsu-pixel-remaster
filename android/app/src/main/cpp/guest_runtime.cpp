@@ -749,9 +749,11 @@ extern "C" void recomp_unresolved(const char* kind,uint32_t va,uint32_t from) {
         char hexbytes[80];for(unsigned i=0;i<32;++i)std::snprintf(hexbytes+2*i,3,"%02x",*static_cast<unsigned char*>(ptr(va+i,1)));
         detail+=std::string(" bytes ")+hexbytes;
     }else detail+=" (target not readable)";
-    char regs[160];std::snprintf(regs,sizeof regs," eax=%08x ecx=%08x edx=%08x esi=%08x edi=%08x esp=%08x",g_eax,g_ecx,g_edx,g_esi,g_edi,g_esp);
-    detail+=regs;
-    if(memory&&memory->readable(g_eax,16)){char node[64];std::snprintf(node,sizeof node," [eax]=%08x %08x %08x %08x",read32(g_eax),read32(g_eax+4),read32(g_eax+8),read32(g_eax+12));detail+=node;}
+    // Lifted code keeps its registers in locals and syncs the globals only around calls, so g_eax and
+    // friends are stale here; the indirect-call ring (last targets and their callers) is reliable.
+    detail+=" recent calls:";
+    unsigned count=g_icall_trace_idx<8?g_icall_trace_idx:8;
+    for(unsigned i=count;i-->0;){unsigned slot=(g_icall_trace_idx-1-i)&(ICALL_TRACE_SIZE-1);char item[32];std::snprintf(item,sizeof item," %08x<-%08x",g_icall_trace[slot],g_icall_from[slot]);detail+=item;}
     throw GuestStop(std::string(kind)+" unresolved "+hex(va)+" from "+hex(from)+detail);
 }
 extern "C" void recomp_unimpl(uint32_t va,const char* what) {
