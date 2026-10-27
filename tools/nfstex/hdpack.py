@@ -82,10 +82,11 @@ def factor_for(policy, width: int, height: int) -> int:
 
 
 def mip_chain_dds(image: Image.Image, compression: int) -> bytes:
-    """A DDS with the mip chain in the game's compression, encoded level by level (nfstex.dxt)."""
+    """A DDS with the mip chain in the game's format, encoded level by level: DXT1/DXT3 (nfstex.dxt) or
+    uncompressed A8R8G8B8 (B,G,R,A bytes) for textures the game stores uncompressed, whose 8-bit alpha
+    gradients (light glows) would band at DXT3's 4 bits."""
     import numpy as np
     from nfstex import dxt
-    fmt = {tpk.COMP_DXT1: "DXT1", tpk.COMP_DXT3: "DXT3"}[compression]
     levels = []
     w, h = image.size
     current = image.convert("RGBA")
@@ -93,15 +94,23 @@ def mip_chain_dds(image: Image.Image, compression: int) -> bytes:
     # keep that convention so the engine's size arithmetic for the chain matches the data.
     while True:
         pixels = np.array(current)
-        levels.append(dxt.encode_dxt1(pixels) if compression == tpk.COMP_DXT1 else dxt.encode_dxt3(pixels))
+        if compression == tpk.COMP_A8R8G8B8:
+            levels.append(np.ascontiguousarray(pixels[..., [2, 1, 0, 3]]).tobytes())
+        else:
+            levels.append(dxt.encode_dxt1(pixels) if compression == tpk.COMP_DXT1 else dxt.encode_dxt3(pixels))
         if min(w, h) <= 8:
             break
         w, h = max(1, w // 2), max(1, h // 2)
         current = image.convert("RGBA").resize((w, h), Image.LANCZOS)
     mips = len(levels)
-    flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000
-    pitch = max(1, (image.width + 3) // 4) * (8 if compression == tpk.COMP_DXT1 else 16)
-    pf = struct.pack("<II4sIIIII", 32, 0x4, fmt.encode(), 0, 0, 0, 0, 0)
+    if compression == tpk.COMP_A8R8G8B8:
+        flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x8
+        pitch = image.width * 4
+        pf = struct.pack("<IIIIIIII", 32, 0x41, 0, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+    else:
+        flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000
+        pitch = max(1, (image.width + 3) // 4) * (8 if compression == tpk.COMP_DXT1 else 16)
+        pf = struct.pack("<II4sIIIII", 32, 0x4, {tpk.COMP_DXT1: b"DXT1", tpk.COMP_DXT3: b"DXT3"}[compression], 0, 0, 0, 0, 0)
     header = struct.pack("<IIIIII", 0x7C, flags, image.height, image.width, pitch, 0) + struct.pack("<I", mips) + b"\0" * 44 + pf + struct.pack("<IIIII", 0x401008, 0, 0, 0, 0)
     return b"DDS " + header + b"".join(levels)
 
@@ -148,12 +157,15 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
                 continue
             image = Image.open(io.BytesIO(texture.to_dds())).convert("RGBA")
             up = upscale.upscale_image(image, policy[0], models_dir, factor)
-            compression = tpk.COMP_DXT3 if has_alpha(image) else tpk.COMP_DXT1
+            # Uncompressed sources stay uncompressed (their alpha is usually a soft glow); the rest DXT3/DXT1.
+            compression = tpk.COMP_A8R8G8B8 if texture.compression == tpk.COMP_A8R8G8B8 \
+                else tpk.COMP_DXT3 if has_alpha(image) else tpk.COMP_DXT1
             texture.replace_with_dds(mip_chain_dds(up, compression))
             stats["upscaled"] += 1
             stats["bytes_out"] += len(texture.pixels)
             log(f"  {relative}: {texture.name} {image.width}x{image.height} -> {up.width}x{up.height} "
-                f"{'DXT3' if compression == tpk.COMP_DXT3 else 'DXT1'} ({stats['upscaled']} done, {time.time() - started:.0f}s)")
+                f"{ {tpk.COMP_DXT3: 'DXT3', tpk.COMP_DXT1: 'DXT1', tpk.COMP_A8R8G8B8: 'A8R8G8B8'}[compression]} "
+                f"({stats['upscaled']} done, {time.time() - started:.0f}s)")
         rebuilt[offset] = (lambda base, p=pack: p.serialize(base))
     if not stats["upscaled"]:
         log(f"{relative}: nothing to upscale under policy {policy_name} ({stats['skipped']} textures kept); not shipped")
