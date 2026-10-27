@@ -33,8 +33,10 @@ from nfstex import tpk  # noqa: E402
 # Bundles by profile: (game-relative path, output name, default upscale policy name).
 PROFILES = {
     "hud": [("Global/HUDTEX.BIN", "Global/HUDTEX.BIN", "hud")],
+    # INGAMEB ships under both names (the engine prefers the .LZC when present): write both.
     "ui": [("Global/HUDTEX.BIN", "Global/HUDTEX.BIN", "hud"),
            ("Global/INGAMEB.BUN", "Global/InGameB.lzc", "ui"),
+           ("Global/INGAMEB.BUN", "Global/INGAMEB.BUN", "ui"),
            ("FrontEnd/FrontB.lzc", "FrontEnd/FrontB.lzc", "ui"),
            ("FrontEnd/TSELECT.BIN", "FrontEnd/TSELECT.BIN", "photo"),
            ("FrontEnd/MAGAZINE_TEXTURES.BIN", "FrontEnd/MAGAZINE_TEXTURES.BIN", "photo"),
@@ -164,6 +166,7 @@ def main() -> None:
     args = parser.parse_args()
     game = pathlib.Path(args.game)
     files = {}
+    processed = {}     # one upscale per input, however many names it is written under
     for relative, output, policy in PROFILES[args.profile]:
         if args.only and relative not in args.only.split(","):
             continue
@@ -172,7 +175,9 @@ def main() -> None:
                 rel = path.relative_to(game).as_posix()
                 files[rel] = process_bundle(game, rel, policy, args.models, print)
             continue
-        files[output] = process_bundle(game, relative, policy, args.models, print)
+        if relative not in processed:
+            processed[relative] = process_bundle(game, relative, policy, args.models, print)
+        files[output] = processed[relative]
     manifest = {
         "format": 1,
         "name": args.name,
