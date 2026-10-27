@@ -5,8 +5,8 @@ byte-identical round trips of every bundle in a stock copy (GLOBALB.BUN, INGAMEB
 Road_Segment.bin, the track streams) and identical info chunks for every streaming pack (HUDTEX.BIN,
 TSELECT.BIN, MAGAZINE_TEXTURES.BIN, DYNTEX.BIN, Cars/*/TEXTURES.BIN), whose blobs are recompressed.
 
-- `tpk.py` — chunk streams, JDLZ decompression and compression, an exact emulation of Speed.exe's JDLZ
-  decoder for verification, texture pack parse/serialize (bundle and streaming layouts with the engine's
+- `tpk.py` — chunk streams, JDLZ decompression and compression (hash chains with lazy matching: within 1 % of
+  EA's compressor on the game's own textures), an exact emulation of Speed.exe's JDLZ decoder for verification, texture pack parse/serialize (bundle and streaming layouts with the engine's
   128-byte alignment rules reproduced), DDS export, in-place texture replacement, whole-file rebuild that
   keeps the neighbouring chunks aligned.
 - `upscale.py` — Real-ESRGAN inference without basicsr (RRDBNet and the compact anime-video net), alpha

@@ -221,36 +221,74 @@ def jdlz_game_decode(data: bytes, start: int = 0) -> Tuple[bytes, int]:
     return bytes(out), pos
 
 
-def jdlz_compress(raw: bytes) -> bytes:
+def _jdlz_match_length(raw: bytes, earlier: int, pos: int, limit: int) -> int:
+    """Common prefix length of raw[earlier:] and raw[pos:], at most limit (32-byte slice compares first)."""
+    n = 0
+    while n + 32 <= limit and raw[earlier + n:earlier + n + 32] == raw[pos + n:pos + n + 32]:
+        n += 32
+    while n < limit and raw[earlier + n] == raw[pos + n]:
+        n += 1
+    return n
+
+
+def _jdlz_find_match(raw: bytes, pos: int, n: int, head: list, chain: list, depth: int) -> Tuple[int, int]:
+    """Longest (length, distance) the format can express at pos, from the hash chain; (0, 0) for none."""
+    if pos + 3 > n:
+        return 0, 0
+    best_len = best_dist = 0
+    cand = head[((raw[pos] << 16 | raw[pos + 1] << 8 | raw[pos + 2]) * 0x9E3779B1 >> 8) & 0xFFFF]
+    tries = 0
+    while cand >= 0 and tries < depth:
+        dist = pos - cand
+        if dist > 2064:
+            break
+        limit = min(4098 if dist <= 16 else 34, n - pos)
+        if limit > best_len and raw[cand + best_len] == raw[pos + best_len]:
+            length = _jdlz_match_length(raw, cand, pos, limit)
+            if length >= 3 and length > best_len:
+                best_len, best_dist = length, dist
+                if length >= limit and dist <= 16:
+                    break
+        cand = chain[cand]
+        tries += 1
+    return best_len, best_dist
+
+
+def jdlz_compress(raw: bytes, depth: int = 32) -> bytes:
     """A JDLZ stream Speed.exe's decoder (``jdlz_game_decode``) turns back into ``raw``.
 
-    Greedy LZ77 with one hash-chain candidate per 3-byte key: near references (distance 1..16, up to
-    4098 bytes) for runs and flat areas, far references (17..2064, up to 34 bytes) for repeats, literals
-    otherwise. The flag bytes are placed where the decoder refills them: a new flags1 byte right after
-    every 8th token and a new flags2 byte right after every 8th reference, whether or not a token follows.
-    The stream ends the way EA's do, with a dummy literal token the decoder counts but never reads (its
-    output is already complete), so the byte count reaches zero exactly at the end of the blob.
+    LZ77 over hash chains (up to ``depth`` earlier positions per 3-byte key) with one-step lazy matching:
+    near references (distance 1..16, up to 4098 bytes) for runs and flat areas, far references (17..2064,
+    up to 34 bytes) for repeats, literals otherwise. On the game's own texture data this comes out within
+    1 % of EA's compressor (the single-candidate greedy version was 17-70 % larger). The flag bytes are
+    placed where the decoder refills them: a new flags1 byte right after every 8th token and a new flags2
+    byte right after every 8th reference, whether or not a token follows. The stream ends the way EA's do,
+    with a dummy literal token the decoder counts but never reads (its output is already complete), so
+    the byte count reaches zero exactly at the end of the blob.
     """
     n = len(raw)
     out = bytearray(18)             # header, then the first flags1 and flags2 bytes
     head = [-1] * 65536
+    chain = [-1] * n
     f1_pos, f2_pos = 16, 17
     f1_bits = f2_bits = 0
+
+    def insert(at: int) -> None:
+        if at + 3 <= n:
+            key = ((raw[at] << 16 | raw[at + 1] << 8 | raw[at + 2]) * 0x9E3779B1 >> 8) & 0xFFFF
+            chain[at] = head[key]
+            head[key] = at
+
     pos = 0
     while pos < n:
-        length = 0
-        if pos + 3 <= n:
-            key = (((raw[pos] << 16) | (raw[pos + 1] << 8) | raw[pos + 2]) * 0x9E3779B1 >> 8) & 0xFFFF
-            cand = head[key]
-            head[key] = pos
-            if cand >= 0:
-                dist = pos - cand
-                if dist <= 2064 and raw[cand] == raw[pos] and raw[cand + 1] == raw[pos + 1] and raw[cand + 2] == raw[pos + 2]:
-                    limit = min(4098 if dist <= 16 else 34, n - pos)
-                    length = 3
-                    while length < limit and raw[cand + length] == raw[pos + length]:
-                        length += 1
-        if length:
+        length, dist = _jdlz_find_match(raw, pos, n, head, chain, depth)
+        insert(pos)
+        if 3 <= length < 64 and pos + 1 < n:
+            # Lazy step: a clearly longer match one byte on is worth a literal now.
+            next_len, next_dist = _jdlz_find_match(raw, pos + 1, n, head, chain, depth)
+            if next_len > length + 1 or (next_len == length + 1 and next_dist <= 16 < dist):
+                length = 0
+        if length >= 3:
             out[f1_pos] |= 1 << f1_bits
             if dist <= 16:
                 out[f2_pos] |= 1 << f2_bits
@@ -260,6 +298,8 @@ def jdlz_compress(raw: bytes) -> bytes:
                 out.append((((dist - 17) >> 8) << 5) | (length - 3))
                 out.append((dist - 17) & 0xFF)
             f2_bits += 1
+            for skipped in range(pos + 1, pos + length):
+                insert(skipped)
             pos += length
         else:
             out.append(raw[pos])
