@@ -745,6 +745,14 @@ public final class LauncherActivity extends Activity {
         killGameProcess();
         // The bundled shader caches go in before DXVK opens the cache directory (ShaderCacheSeed).
         android.util.Log.i("NFSU1", "Graphics cache: " + ShaderCacheSeed.seed(this));
+        if (GameOptions.get(this, GameOptions.GAMEGFX).equals("max")) {
+            try {
+                java.util.List<File> raised = GameConfig.applyMaximum(gameRoot());
+                android.util.Log.i("NFSU1", "Game graphics: maximum tier written to " + raised.size() + " profile(s)");
+            } catch (java.io.IOException e) {
+                android.util.Log.w("NFSU1", "Game graphics: profile .cfg not updated: " + e);
+            }
+        }
         gameLaunched = true;
         DisplayMetrics metrics = new DisplayMetrics();
         getWindowManager().getDefaultDisplay().getRealMetrics(metrics);

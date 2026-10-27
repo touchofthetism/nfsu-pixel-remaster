@@ -282,6 +282,9 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
         <item quantity="one">%d installed</item>
         <item quantity="other">%d installed</item>
     </plurals>
+    <string name="opt_gamegfx">Game graphics</string>
+    <string name="gamegfx_max">Maximum · reflections, streaks, blur, full detail</string>
+    <string name="gamegfx_game">As set in the game\'s own options</string>
     <string name="opt_wrongway">Wrong-way warning</string>
     <string name="wrongway_on">On · game default</string>
     <string name="wrongway_off">Off · for free roam</string>

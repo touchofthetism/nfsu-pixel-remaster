@@ -270,6 +270,9 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
         <item quantity="many">%d instalados</item>
         <item quantity="other">%d instalados</item>
     </plurals>
+    <string name="opt_gamegfx">Gráficos del juego</string>
+    <string name="gamegfx_max">Máximo · reflejos, estelas, desenfoque, detalle completo</string>
+    <string name="gamegfx_game">Como estén en las opciones del propio juego</string>
     <string name="opt_wrongway">Aviso de sentido contrario</string>
     <string name="wrongway_on">Activado · como el juego</string>
     <string name="wrongway_off">Desactivado · para free roam</string>

@@ -7,6 +7,12 @@
 
 ## What's new
 
+### Build 4 — the game's own graphics at full tier, and the profile build
+- **Game graphics: Maximum (default).** The game keeps its graphics settings per profile in `NFS Underground/<profile>.cfg`, and its 2003 auto‑detect scored the port's "hardware" into a low tier: car and world reflections, the wet‑road reflection, fog, headlights, depth of field, motion blur and light streaks were all off, car detail low. Before every launch the launcher now writes the game's top tier into every profile — the values Speed.exe initialises with before the auto‑detect lowers them (`PERFORMANCE 3, ENVMAP 3, SHADOW 2, ROADREFLECTION 2, WorldLOD 3, CarLOD 1`, every effect on); resolution, colour depth and sound lines are left alone. *As set in the game's own options* leaves the files untouched.
+- **Shader cache seed** from a 27‑minute build‑3 session (DXVK state cache and Vulkan pipeline cache), so a fresh install starts with every pipeline that session needed.
+- **HD interface pack v3**: streaming packs (HUDTEX, TSELECT) keep their per‑texture JDLZ blobs and the table the engine walks when unloading them; v1/v2 crashed on the first post‑race *Continue* for want of it.
+- Build `…-pgo` of this version is instrumented (`NFS_GUEST_PGO=GENERATE`): it plays a little slower and writes `files/pgo/*.profraw` on pause and exit, shipped in *Share diagnostics*. The optimised build that follows is compiled from that profile.
+
 ### Build 3 — the fast build
 - **The game thread runs on the big core.** Build 2's telemetry showed the race at 45–50 FPS with the game's single busy thread parked on a mid core at ~2.7 GHz while the Cortex‑X sat idle. The render guest thread is now pinned to the fastest cluster, raised in priority, and registered in an Android performance‑hint (ADPF) session with the frame cap as its target, so the governor keeps the clock up. **CPU placement** option: *Fastest core + performance hints* (default) or *System scheduler*.
 - **Fewer D3D calls reach DXVK.** A race frame issues ~45,000 device calls; render, sampler and texture‑stage states that repeat the current value are now answered in the bridge, and the device handle is resolved without a hash lookup.

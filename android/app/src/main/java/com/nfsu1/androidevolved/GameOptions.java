@@ -43,7 +43,8 @@ final class GameOptions {
 
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
-            ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu";
+            ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu",
+            GAMEGFX = "gamegfx";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -58,6 +59,11 @@ final class GameOptions {
             new Option(ANTIALIAS, R.string.opt_antialias,
                     new String[] {"0", "2", "4"},
                     new int[] {R.string.antialias_off, R.string.antialias_2, R.string.antialias_4}),
+            // The game's own graphics settings (profile .cfg): its 2003 auto-detect lands the port on a low tier
+            // with reflections, light streaks and motion blur off; "max" writes the top tier before every launch.
+            new Option(GAMEGFX, R.string.opt_gamegfx,
+                    new String[] {"max", "game"},
+                    new int[] {R.string.gamegfx_max, R.string.gamegfx_game}),
             new Option(WIDESCREEN, R.string.opt_widescreen,
                     new String[] {"on", "off"},
                     new int[] {R.string.widescreen_on, R.string.widescreen_off}),
@@ -145,6 +151,7 @@ final class GameOptions {
             case GAMEPAD: return "keys";
             case OVERLAY: return "off";
             case WRONGWAY: return "on";
+            case GAMEGFX: return "max";
             case CPU: return "fast";
             case GFXLOG: return "info";
             default: throw new IllegalArgumentException(key);
