@@ -1,6 +1,6 @@
 # HD texture pack manifest. Push a change here to build and publish hdpack-v<version> (see .github/workflows/hdpack.yml).
 # ref: commit or branch of touchofthetism/nfsu-pixel-remaster whose tools/nfstex builds the pack.
 # profile: hud (gauges only) or ui (gauges, in-game HUD, front end, track select, magazines).
-ref=0bab1c69261e334213e54933d3cbacd7b1c9ea05
+ref=f1fa2f541c2e26dfc6a28b6d727e40884809e983
 profile=ui
 version=1

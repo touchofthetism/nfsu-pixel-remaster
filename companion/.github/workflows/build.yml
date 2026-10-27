@@ -19,6 +19,11 @@ on:
         type: choice
         options: ["ON", "OFF"]
         default: "ON"
+      pgo:
+        description: Profile-guided optimisation (generate = instrumented APK; use = optimise with pgo/nfsu1.profdata)
+        type: choice
+        options: ["off", "generate", "use"]
+        default: "off"
 permissions:
   contents: write
 concurrency:
@@ -41,9 +46,17 @@ jobs:
           set -a; source BUILD; set +a
           input_ref="${{ github.event.inputs.ref }}"; ref="${input_ref:-${ref:-main}}"
           input_lto="${{ github.event.inputs.lto }}"; lto="${input_lto:-${lto:-ON}}"
+          input_pgo="${{ github.event.inputs.pgo }}"; pgo="${input_pgo:-${pgo:-off}}"
+          profile=""
+          if [ "$pgo" = "use" ]; then
+            profile="$GITHUB_WORKSPACE/private/pgo/nfsu1.profdata"
+            test -s "$profile" || { echo "pgo=use but $profile is missing"; exit 1; }
+          fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "lto=$lto" >> "$GITHUB_OUTPUT"
-          echo "Building $CODE_REPO @ $ref (LTO $lto)"
+          echo "pgo=$pgo" >> "$GITHUB_OUTPUT"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "Building $CODE_REPO @ $ref (LTO $lto, PGO $pgo)"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ${{ env.CODE_REPO }}
@@ -170,7 +183,8 @@ jobs:
           export CCACHE_DIR="$HOME/.cache/ccache"
           ccache --zero-stats
           bash ./gradlew --no-daemon --console=plain :app:assembleRelease \
-            -PguestLto="${{ steps.manifest.outputs.lto }}" -PbuildNumber="${{ steps.number.outputs.number }}" -PreleaseRepo="$GITHUB_REPOSITORY"
+            -PguestLto="${{ steps.manifest.outputs.lto }}" -Ppgo="${{ steps.manifest.outputs.pgo }}" -PpgoProfile="${{ steps.manifest.outputs.profile }}" \
+            -PbuildNumber="${{ steps.number.outputs.number }}" -PreleaseRepo="$GITHUB_REPOSITORY"
           ccache --show-stats
           ls -la app/build/outputs/apk/release/
       - name: Collect outputs
@@ -190,7 +204,7 @@ jobs:
           done < <(find android/app/build/intermediates -path '*arm64-v8a*' -name 'libnfsu1_*.so' 2>/dev/null | awk '{ print (index($0, "/cxx/") ? "0 " : "1 ") $0 }' | sort | cut -d' ' -f2-)
           if [ -n "$(ls -A /tmp/symbols)" ]; then (cd /tmp/symbols && zip -q -r "/tmp/release/symbols-${version}.zip" .); else echo "::warning::no unstripped libnfsu1_*.so found for the symbols archive"; fi
           (cd /tmp/release && sha256sum * > SHA256SUMS)
-          { cat docs/RELEASE_NOTES.md; echo; echo "---"; echo "Source: ${CODE_REPO}@${{ steps.pins.outputs.code_sha }} · ThinLTO ${{ steps.manifest.outputs.lto }} · run ${GITHUB_RUN_NUMBER} attempt ${GITHUB_RUN_ATTEMPT}"; } > /tmp/notes.md
+          { cat docs/RELEASE_NOTES.md; echo; echo "---"; echo "Source: ${CODE_REPO}@${{ steps.pins.outputs.code_sha }} · ThinLTO ${{ steps.manifest.outputs.lto }} · PGO ${{ steps.manifest.outputs.pgo }} · run ${GITHUB_RUN_NUMBER} attempt ${GITHUB_RUN_ATTEMPT}"; } > /tmp/notes.md
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           ls -la /tmp/release

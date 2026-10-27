@@ -126,6 +126,9 @@ final class Diagnostics {
             for (int i = 0; i < Math.min(SESSIONS_IN_REPORT, sessions.size()); i++) addFile(zip, "telemetry/" + sessions.get(i).getName(), sessions.get(i), LIMIT);
             File config = new File(context.getFilesDir(), "dxvk.conf");
             if (config.isFile()) addFile(zip, "dxvk.conf", config, 65536);
+            // Instrumented builds: the PGO profiles (merged by the maintainer with llvm-profdata).
+            File[] profiles = new File(context.getFilesDir(), "pgo").listFiles((dir, name) -> name.endsWith(".profraw"));
+            if (profiles != null) for (File profile : profiles) addFile(zip, "pgo/" + profile.getName(), profile, CACHE_LIMIT);
             addGraphicsCache(zip, context);
             addSaveFolder(zip, LauncherActivity.gameRoot());
         } catch (Exception error) {

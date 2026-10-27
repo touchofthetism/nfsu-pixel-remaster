@@ -47,6 +47,13 @@ Nothing game-derived is ever committed anywhere; `work/` and `src/recomp/gen*/` 
 | Packaging | `applicationId com.nfsu1.remastered` (installs beside the upstream app), stable signing key, versionCode grows with the CI run |
 | CI | `.github/workflows/check.yml` here; `build.yml` + `gamedata.yml` in the private companion; `ci/` scripts; host unit tests for the quality policy and frame telemetry; JUnit tests for options, versions, the importer, the cache merge, save backups and session summaries |
 
+## Profile-guided optimisation (PGO) round
+The lifted game code is the frame's biggest cost, and it is branchy enough that a profile helps the compiler more than flags do.
+1. Private `BUILD`: `pgo=generate` → an instrumented APK (`…-pgo` versionName) that writes `files/pgo/game-*.profraw` on pause/exit.
+2. Play a long session (front end, several races, a drift event), then **Share diagnostics**: the ZIP carries `pgo/*.profraw`.
+3. `llvm-profdata merge -o nfsu1.profdata pgo/game-*.profraw` (the NDK's `llvm-profdata`), commit it as `pgo/nfsu1.profdata` in the private repo, set `pgo=use`.
+Profiles stay valid while the lift inputs and scripts are unchanged (the function set is the same); a changed lift just loses coverage with a warning, never correctness.
+
 ## Working on it
 
 Pins live in `ci/pins.env`. Fast feedback without a device:

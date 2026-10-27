@@ -117,6 +117,32 @@ if(NFS_GUEST_LTO)
     target_link_options(nfsu1_android PRIVATE -flto=thin "-Wl,--thinlto-jobs=4"
         "-Wl,--thinlto-cache-dir=${CMAKE_BINARY_DIR}/thinlto-cache")
 endif()
+# Profile-guided optimisation of the lifted game and the host runtime. GENERATE builds an instrumented
+# APK that writes files/pgo/*.profraw when the game pauses or ends (main.cpp, included in the
+# diagnostics ZIP); USE compiles with a merged .profdata (llvm-profdata merge) from such a session.
+set(NFS_GUEST_PGO "OFF" CACHE STRING "OFF, GENERATE or USE")
+set(NFS_GUEST_PROFILE "" CACHE FILEPATH "Merged .profdata for NFS_GUEST_PGO=USE")
+if(NFS_GUEST_PGO STREQUAL "GENERATE")
+    foreach(target nfs_guest nfsu1_android)
+        target_compile_options(${target} PRIVATE -fprofile-generate)
+    endforeach()
+    target_link_options(nfsu1_android PRIVATE -fprofile-generate)
+    target_compile_definitions(nfsu1_android PRIVATE NFS_PGO_GENERATE)
+    message(STATUS "PGO: instrumented build")
+elseif(NFS_GUEST_PGO STREQUAL "USE")
+    if(NOT EXISTS "${NFS_GUEST_PROFILE}")
+        message(FATAL_ERROR "NFS_GUEST_PGO=USE needs NFS_GUEST_PROFILE (a .profdata file); got '${NFS_GUEST_PROFILE}'")
+    endif()
+    foreach(target nfs_guest nfsu1_android)
+        target_compile_options(${target} PRIVATE "-fprofile-use=${NFS_GUEST_PROFILE}"
+            -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-backend-plugin)
+    endforeach()
+    target_link_options(nfsu1_android PRIVATE "-fprofile-use=${NFS_GUEST_PROFILE}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NFS_GUEST_PROFILE}")
+    message(STATUS "PGO: optimising with ${NFS_GUEST_PROFILE}")
+elseif(NOT NFS_GUEST_PGO STREQUAL "OFF")
+    message(FATAL_ERROR "NFS_GUEST_PGO must be OFF, GENERATE or USE")
+endif()
 # linkernsbypass has data symbols named like libdl's functions; exporting them breaks
 # the system loader when it opens the vendor namespace (MW port note).
 # Only adrenotools' archives: excluding ALL would also hide native_app_glue's

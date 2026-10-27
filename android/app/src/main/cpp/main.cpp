@@ -387,6 +387,33 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     if(!entry){customVulkanError="Could not load the Vulkan driver "+l+". Choose the system driver in the launcher.";return;}
     dxvkAndroidSetInstanceProcAddr(entry);
 }
+// Instrumented builds (CMake NFS_GUEST_PGO=GENERATE): the profile goes to files/pgo, written when the
+// activity pauses or ends (GameActivity.nativeWriteProfile), since the process is killed, never exited.
+#ifdef NFS_PGO_GENERATE
+extern "C" void __llvm_profile_set_filename(const char*);
+extern "C" int __llvm_profile_write_file(void);
+#endif
+static void configureProfile(android_app* app){
+#ifdef NFS_PGO_GENERATE
+    const char* files=app->activity->internalDataPath;if(!files||!*files)return;
+    auto directory=std::filesystem::path(files)/"pgo";
+    std::error_code error;std::filesystem::create_directories(directory,error);
+    static std::string pattern=(directory/"game-%m.profraw").string();
+    __llvm_profile_set_filename(pattern.c_str());
+    __android_log_print(ANDROID_LOG_INFO,"NFSU1","PGO instrumented build: profile pattern %s",pattern.c_str());
+#else
+    (void)app;
+#endif
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeWriteProfile(JNIEnv*,jclass){
+#ifdef NFS_PGO_GENERATE
+    int status=__llvm_profile_write_file();
+    __android_log_print(status==0?ANDROID_LOG_INFO:ANDROID_LOG_WARN,"NFSU1","PGO profile write: %d",status);
+    return status==0?JNI_TRUE:JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
 static void configurePipelineCache(android_app* app){
     const char* files=app->activity->internalDataPath;
     setenv("DXVK_STATE_CACHE","0",1); // Keep startup usable if cache storage is unavailable.
@@ -403,6 +430,7 @@ static void configurePipelineCache(android_app* app){
     __android_log_print(ANDROID_LOG_INFO,"NFSU1","DXVK persistent pipeline state cache: %s",directory.c_str());
 }
 void android_main(android_app* app) {
+    configureProfile(app);
     configurePipelineCache(app);
     Host host; app->userData = &host; app->onAppCmd = onCommand;app->onInputEvent=onInput;
     try {

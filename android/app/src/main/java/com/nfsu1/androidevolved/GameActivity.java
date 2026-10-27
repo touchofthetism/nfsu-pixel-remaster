@@ -166,6 +166,8 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeWidescreen(boolean enabled);
     private static native void nativeWrongWayWarning(boolean enabled);
     private static native void nativeCpuPlacement(int placement);
+    /** Instrumented (PGO) builds write their profile; false in ordinary builds. */
+    private static native boolean nativeWriteProfile();
     private static native void nativeOnlineServer(String host);
     private static native void nativeGamepadConnected(boolean connected);
     private static native void nativeGamepadDevices(int[] ids);
@@ -360,6 +362,7 @@ public final class GameActivity extends NativeActivity {
         if (overlay != null) overlay.removeCallbacks(overlayTask);
         if (overlayWindow != null) overlayWindow.dismiss();
         if (telemetry != null) { telemetry.event("pause", null); telemetry.flushAsync(); }
+        nativeWriteProfile();
         super.onPause();
     }
     @Override protected void onResume() {
@@ -394,6 +397,7 @@ public final class GameActivity extends NativeActivity {
         super.onDestroy();
         // The session record first: the process ends right after this.
         if (telemetry != null) telemetry.stop();
+        nativeWriteProfile();
         // Each launch uses a fresh guest machine in the dedicated :game process.
         android.os.Process.killProcess(android.os.Process.myPid());
     }

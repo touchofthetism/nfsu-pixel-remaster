@@ -11,6 +11,10 @@ def releaseRepo = project.findProperty('releaseRepo') ?: 'touchofthetism/nfsu-pi
 // ThinLTO over the lifted game code (CMake option NFS_GUEST_LTO). OFF roughly halves the native
 // build time for iteration builds; releases keep it ON.
 def guestLto = (project.findProperty('guestLto') ?: 'ON').toString().toUpperCase() == 'OFF' ? 'OFF' : 'ON'
+// Profile-guided optimisation (CMake NFS_GUEST_PGO): -Ppgo=generate builds the instrumented APK,
+// -Ppgo=use -PpgoProfile=<merged .profdata> the optimised one.
+def guestPgo = (project.findProperty('pgo') ?: 'off').toString().toUpperCase()
+def guestPgoProfile = (project.findProperty('pgoProfile') ?: '').toString()
 // CI passes a monotonic build number: versionCode grows with every build (Android only installs updates
 // with a higher or equal code) and the tag/versionName carries it (v1.0.0-build.12, see ReleaseVersion).
 def baseVersion = '1.0.0'
@@ -48,12 +52,12 @@ android {
         minSdk 29
         targetSdk pinnedSdk
         versionCode 1000 + buildNumber
-        versionName buildNumber > 0 ? "${baseVersion}-build.${buildNumber}" : baseVersion
+        versionName (buildNumber > 0 ? "${baseVersion}-build.${buildNumber}" : baseVersion) + (guestPgo == 'GENERATE' ? '-pgo' : '')
         // -PnfsAbi=armeabi-v7a builds the separate 32-bit APK.
         ndk { abiFilters(project.findProperty('nfsAbi') ?: 'arm64-v8a') }
         externalNativeBuild {
             cmake {
-                arguments '-DANDROID_STL=c++_static', "-DNFS_GUEST_LTO=${guestLto}"
+                arguments '-DANDROID_STL=c++_static', "-DNFS_GUEST_LTO=${guestLto}", "-DNFS_GUEST_PGO=${guestPgo}", "-DNFS_GUEST_PROFILE=${guestPgoProfile}"
                 if (System.getenv('NFSU_CCACHE') == '1') {
                     arguments '-DCMAKE_C_COMPILER_LAUNCHER=ccache', '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache'
                 }
