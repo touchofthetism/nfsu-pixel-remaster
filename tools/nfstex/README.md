@@ -10,8 +10,10 @@ HUDTEX.BIN, TSELECT.BIN, MAGAZINE_TEXTURES.BIN, DYNTEX.BIN, Road_Segment.bin, th
 - `upscale.py` — Real-ESRGAN inference without basicsr (RRDBNet and the compact anime-video net), alpha
   through the same network, tiled.
 - `hdpack.py` — builds an HD texture pack (a launcher mod pack ZIP with `nfsu-modpack.json`) from a game
-  folder: HUD gauges 4×, interface 2–4×, photographs 2×, DXT3/DXT1 with mip chains that stop at 8 px like
-  the originals, bundles written uncompressed (the engine accepts raw chunk streams under the `.lzc` name).
+  folder: HUD gauges 4×, interface 2–4×, track previews 2×, world photographs 2× up to 512 px, DXT3/DXT1 with
+  mip chains that stop at 8 px like the originals, bundles written uncompressed (the engine accepts raw chunk
+  streams under the `.lzc` name). A bundle whose textures all stay stock is left out of the pack; `--limit N`
+  upscales only the first N textures per bundle for a quick look at a policy.
 - `tests/` — synthetic-data tests run by `.github/workflows/check.yml`.
 
 Format notes (Underground 1):

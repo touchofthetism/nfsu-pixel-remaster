@@ -38,9 +38,10 @@ PROFILES = {
            ("Global/INGAMEB.BUN", "Global/InGameB.lzc", "ui"),
            ("Global/INGAMEB.BUN", "Global/INGAMEB.BUN", "ui"),
            ("FrontEnd/FrontB.lzc", "FrontEnd/FrontB.lzc", "ui"),
-           ("FrontEnd/TSELECT.BIN", "FrontEnd/TSELECT.BIN", "photo"),
-           ("FrontEnd/MAGAZINE_TEXTURES.BIN", "FrontEnd/MAGAZINE_TEXTURES.BIN", "photo"),
+           # 159 track previews, 512x256 each, shown in a panel about 1.2x their size on the phone: 2x.
+           ("FrontEnd/TSELECT.BIN", "FrontEnd/TSELECT.BIN", "preview"),
            ("FrontEnd/Road_Segment.bin", "FrontEnd/Road_Segment.bin", "photo")],
+    # The 153 magazine covers (512x512) would grow to 164 MB at 2x for screens seen once per win: left stock.
 }
 # Car detail textures (lights, badges, interiors): every Cars/<car>/TEXTURES.BIN found in the game folder.
 PROFILES["cars"] = [("Cars/*/TEXTURES.BIN", "Cars/*/TEXTURES.BIN", "car")]
@@ -50,10 +51,11 @@ PROFILES["all"] = PROFILES["ui"] + PROFILES["cars"]
 POLICIES = {
     "hud": ("animevideo", 1024, 4, 4, 2),
     "ui": ("animevideo", 1024, 4, 2, 2),
-    # Photographs (track select, magazine covers) also go through the compact net: RRDBNet is 20x slower
-    # on a CPU and the gain on these mostly-dark 2003 renders is small at 2x.
-    # ...and 512-px photographs stay as they are: the magazine covers alone would grow to 200 MB at 2x.
+    # Photographs also go through the compact net: RRDBNet is 20x slower on a CPU and the gain on these
+    # mostly-dark 2003 renders is small at 2x. 512-px ones stay as they are (world textures in Road_Segment).
     "photo": ("animevideo", 512, 4, 2, 1),
+    # Track previews: 512x256 -> 1024x512 (the whole set is 54 MB of DXT1, resident only in the front end).
+    "preview": ("animevideo", 1024, 4, 2, 2),
     # Cars: small detail maps 4x, 256-px ones 2x, the few 512-px ones as they are (several cars stay loaded).
     "car": ("animevideo", 512, 4, 2, 1),
 }
@@ -109,7 +111,11 @@ def has_alpha(image: Image.Image) -> bool:
     return extrema[0] < 250
 
 
-def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_dir: str, log) -> bytes:
+def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_dir: str, log,
+                   limit: int = 0) -> bytes | None:
+    """The rebuilt bundle, or None when no texture qualified (the stock file is then left alone).
+
+    limit > 0 upscales only the first `limit` eligible textures (for local checks of a policy)."""
     from nfstex import upscale  # torch import deferred: only needed when building
     policy = POLICIES[policy_name]
     path = game / relative
@@ -135,12 +141,12 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
                 stats["skipped"] += 1
                 stats["bytes_out"] += len(texture.pixels)
                 continue
-            image = Image.open(io.BytesIO(texture.to_dds())).convert("RGBA")
             factor = factor_for(policy, texture.width, texture.height)
-            if factor < 2:
+            if factor < 2 or (limit and stats["upscaled"] >= limit):
                 stats["skipped"] += 1
                 stats["bytes_out"] += len(texture.pixels)
                 continue
+            image = Image.open(io.BytesIO(texture.to_dds())).convert("RGBA")
             up = upscale.upscale_image(image, policy[0], models_dir, factor)
             compression = tpk.COMP_DXT3 if has_alpha(image) else tpk.COMP_DXT1
             texture.replace_with_dds(mip_chain_dds(up, compression))
@@ -149,6 +155,9 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
             log(f"  {relative}: {texture.name} {image.width}x{image.height} -> {up.width}x{up.height} "
                 f"{'DXT3' if compression == tpk.COMP_DXT3 else 'DXT1'} ({stats['upscaled']} done, {time.time() - started:.0f}s)")
         rebuilt[offset] = (lambda base, p=pack: p.serialize(base))
+    if not stats["upscaled"]:
+        log(f"{relative}: nothing to upscale under policy {policy_name} ({stats['skipped']} textures kept); not shipped")
+        return None
     out = tpk.replace_texture_packs(data, packs, rebuilt)
     log(f"{relative}: {stats['upscaled']} upscaled, {stats['skipped']} kept, texture bytes {stats['bytes_in'] >> 10} KB -> {stats['bytes_out'] >> 10} KB, file {len(out) >> 10} KB")
     return out
@@ -163,6 +172,7 @@ def main() -> None:
     parser.add_argument("--name", default="HD interface pack")
     parser.add_argument("--version", default="1")
     parser.add_argument("--only", help="comma-separated bundle names to build (others skipped)")
+    parser.add_argument("--limit", type=int, default=0, help="upscale at most N textures per bundle (policy checks)")
     args = parser.parse_args()
     game = pathlib.Path(args.game)
     files = {}
@@ -173,11 +183,16 @@ def main() -> None:
         if "*" in relative:
             for path in sorted(game.glob(relative)):
                 rel = path.relative_to(game).as_posix()
-                files[rel] = process_bundle(game, rel, policy, args.models, print)
+                built = process_bundle(game, rel, policy, args.models, print, args.limit)
+                if built is not None:
+                    files[rel] = built
             continue
         if relative not in processed:
-            processed[relative] = process_bundle(game, relative, policy, args.models, print)
-        files[output] = processed[relative]
+            processed[relative] = process_bundle(game, relative, policy, args.models, print, args.limit)
+        if processed[relative] is not None:
+            files[output] = processed[relative]
+    if not files:
+        sys.exit("no bundle changed: nothing to pack")
     manifest = {
         "format": 1,
         "name": args.name,
