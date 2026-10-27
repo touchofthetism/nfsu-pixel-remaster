@@ -722,7 +722,17 @@ extern "C" recomp_func_t recomp_lookup_import(uint32_t va) {
     return imports[index].function;
 }
 extern "C" void recomp_unresolved(const char* kind,uint32_t va,uint32_t from) {
-    throw GuestStop(std::string(kind)+" unresolved "+hex(va)+" from "+hex(from));
+    // What the guest tried to call: the bytes at the target (a sound-bank routine the lift does not know,
+    // or data) and, for an indirect call, the caller's registers, so the report alone identifies the case.
+    std::string detail;
+    if(memory&&memory->readable(va,32)){
+        char hexbytes[80];for(unsigned i=0;i<32;++i)std::snprintf(hexbytes+2*i,3,"%02x",*static_cast<unsigned char*>(ptr(va+i,1)));
+        detail+=std::string(" bytes ")+hexbytes;
+    }else detail+=" (target not readable)";
+    char regs[160];std::snprintf(regs,sizeof regs," eax=%08x ecx=%08x edx=%08x esi=%08x edi=%08x esp=%08x",g_eax,g_ecx,g_edx,g_esi,g_edi,g_esp);
+    detail+=regs;
+    if(memory&&memory->readable(g_eax,16)){char node[64];std::snprintf(node,sizeof node," [eax]=%08x %08x %08x %08x",read32(g_eax),read32(g_eax+4),read32(g_eax+8),read32(g_eax+12));detail+=node;}
+    throw GuestStop(std::string(kind)+" unresolved "+hex(va)+" from "+hex(from)+detail);
 }
 extern "C" void recomp_unimpl(uint32_t va,const char* what) {
     throw GuestStop("Instruction unsupported at "+hex(va)+": "+what);

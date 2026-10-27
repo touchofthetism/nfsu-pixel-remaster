@@ -49,26 +49,15 @@ void createFile(){
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest file %s access=%x disposition=%u",path.filename().string().c_str(),access,disposition);
     if(descriptor<0){lastError=fileError();ret(UINT32_MAX,7);return;}uint32_t handle=nextFileHandle++;fileHandles.emplace(handle,descriptor);lastError=(disposition==2||disposition==4)&&existed?183:0;ret(handle,7);
 }
-// Reads at least this large give the machine away while the kernel copies: the game's loader and audio
-// streaming threads read whole files and 64-256 KB stream blocks mid-race, and with the read done under the
-// machine the render thread stood still for the duration of every one of them (spikes of 20-50 ms in the
-// build-3 telemetry while the GPU idled). Smaller reads keep the machine: a handover costs the reader up to
-// a render-thread slice, more than a page-cache copy of a few KB.
-constexpr uint32_t kReadHandoverBytes=64*1024;
 void readFile(){
+    // The read stays under the guest machine. Build 4 handed the machine over for reads of 64 KB and more
+    // (the render thread stood still for every loader/stream read, 20-50 ms spikes); with it, the sound
+    // library's 10 ms service thread ran during the profile's car-texture load and drained a deferred
+    // callback list whose entry pointed into the heap (ICALL unresolved 0x12c2ea1c from 0x652960) on every
+    // launch. Until that list's semantics are understood the read is atomic again, as in builds 1-3.
     auto file=fileHandles.find(arg(0));if(file==fileHandles.end()){lastError=6;ret(0,5);return;}if(arg(4))throw GuestStop("Overlapped ReadFile pending");
-    const int descriptor=file->second;const uint32_t buffer=arg(1),length=arg(2),countOut=arg(3);
-    if(countOut)write32(countOut,0);
-    void* destination=ptr(buffer,length);          // validated while the machine is held
-    ssize_t count;int error=0;
-    if(length>=kReadHandoverBytes&&machineLease&&machineLease->owns_lock()){
-        State saved;saved.save();machineLease->unlock();
-        do{count=::read(descriptor,destination,length);}while(count<0&&errno==EINTR);
-        error=errno;machineLease->lock();saved.load();errno=error;
-    } else {
-        do{count=::read(descriptor,destination,length);}while(count<0&&errno==EINTR);
-    }
-    if(count<0){lastError=fileError();ret(0,5);return;}if(countOut)write32(countOut,count);ret(1,5);
+    if(arg(3))write32(arg(3),0);ssize_t count;do{count=::read(file->second,ptr(arg(1),arg(2)),arg(2));}while(count<0&&errno==EINTR);
+    if(count<0){lastError=fileError();ret(0,5);return;}if(arg(3))write32(arg(3),count);ret(1,5);
 }
 void writeFile(){
     if(arg(4))throw GuestStop("Overlapped WriteFile pending");
