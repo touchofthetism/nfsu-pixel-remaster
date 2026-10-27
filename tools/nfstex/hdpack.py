@@ -46,7 +46,9 @@ PROFILES["all"] = PROFILES["ui"]
 POLICIES = {
     "hud": ("animevideo", 1024, 4, 4, 2),
     "ui": ("animevideo", 1024, 4, 2, 2),
-    "photo": ("x4plus", 1024, 4, 2, 2),
+    # Photographs (track select, magazine covers) also go through the compact net: RRDBNet is 20x slower
+    # on a CPU and the gain on these mostly-dark 2003 renders is small at 2x.
+    "photo": ("animevideo", 1024, 4, 2, 2),
 }
 
 
