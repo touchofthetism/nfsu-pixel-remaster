@@ -353,6 +353,11 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeCpuTextures(JNIEnv*,jclass,jboolean enabled){
     compatCpuTextures=enabled==JNI_TRUE;setD3D9Compatibility(compatCpuTextures,compatBackBuffers);
 }
+// Launcher "Texture filtering" and "Anti-aliasing" (GameOptions): forwarded to the D3D9 bridge before the guest boots.
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeGraphicsQuality(JNIEnv* env,jclass,jint anisotropy,jint msaaSamples,jstring configDir){
+    const char* text=configDir?env->GetStringUTFChars(configDir,nullptr):nullptr;std::string directory=text?text:"";if(text)env->ReleaseStringUTFChars(configDir,text);
+    setD3D9GraphicsQuality(anisotropy<0?0u:unsigned(anisotropy),msaaSamples<0?0u:unsigned(msaaSamples),directory);
+}
 // A driver imported in the launcher replaces the system one for DXVK. The bootstrap
 // renderer, which links the system loader, is then skipped so one process never
 // drives the GPU through two Vulkan drivers.
@@ -366,7 +371,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     customVulkanDriver=true;
     void* handle=nfsOpenVulkan(h.c_str(),t.c_str(),d.c_str(),l.c_str());
     auto entry=nfsVulkanEntry(handle);
-    if(!entry){customVulkanError="No se pudo cargar el driver Vulkan "+l+". Elige el driver del sistema en el launcher.";return;}
+    if(!entry){customVulkanError="Could not load the Vulkan driver "+l+". Choose the system driver in the launcher.";return;}
     dxvkAndroidSetInstanceProcAddr(entry);
 }
 static void configurePipelineCache(android_app* app){
@@ -425,7 +430,7 @@ void android_main(android_app* app) {
             auto status=host.guestWorker.status();
             if(status!=host.guestStatus){
                 host.guestStatus=status;
-                showStatus(app,("Datos accesibles: memoria interna/nfsu1\nVulkan 1.1: presentación activa\n"+status).c_str());
+                showStatus(app,("Game data: Internal storage/nfsu1\nVulkan 1.1: presenting\n"+status).c_str());
             }
             if (host.renderer.device&&!host.renderer.draw()) host.renderer.stop();
         } catch (const std::exception& e) {

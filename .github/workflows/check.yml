@@ -1,0 +1,65 @@
+# Runs on every push, in minutes: compiles the launcher (Java) and its unit tests, the host C++ with the
+# NDK in syntax-only mode, and the host unit tests. No game data is involved.
+# The APK itself is built by the private companion repository (it holds the game inputs and publishes
+# the signed builds); that workflow checks this repository out at the commit named in its BUILD file.
+name: check
+on:
+  push:
+    branches: [main]
+    paths-ignore: [docs/**, "**.md"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults: { run: { working-directory: nfsu1-recompiled } }
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: nfsu1-recompiled }
+      - name: Pins
+        id: pins
+        run: |
+          set -a; source ci/pins.env; set +a
+          for v in ANDROID_PLATFORM ANDROID_BUILD_TOOLS ANDROID_NDK ANDROID_CMAKE JAVA_VERSION; do echo "$v=${!v}" >> "$GITHUB_OUTPUT"; done
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "${{ steps.pins.outputs.JAVA_VERSION }}" }
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q glslang-tools spirv-tools ninja-build
+          python3 -m pip install --quiet capstone pefile
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;${{ steps.pins.outputs.ANDROID_PLATFORM }}" \
+            "build-tools;${{ steps.pins.outputs.ANDROID_BUILD_TOOLS }}" "ndk;${{ steps.pins.outputs.ANDROID_NDK }}" \
+            "cmake;${{ steps.pins.outputs.ANDROID_CMAKE }}" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ steps.pins.outputs.ANDROID_NDK }}" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+      - name: Sibling checkouts + DXVK
+        run: bash ci/setup_siblings.sh
+      - name: Host C++ syntax
+        run: bash ci/syntax_check.sh
+      - name: Host unit tests
+        run: bash ci/host_tests.sh
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('nfsu1-recompiled/android/**/*.gradle', 'nfsu1-recompiled/android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Launcher compiles + unit tests
+        working-directory: nfsu1-recompiled/android
+        run: ./gradlew --no-daemon --console=plain :app:compileReleaseJavaWithJavac :app:testReleaseUnitTest
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-reports
+          path: nfsu1-recompiled/android/app/build/reports
+          if-no-files-found: ignore

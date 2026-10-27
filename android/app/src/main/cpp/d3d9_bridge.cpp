@@ -2,6 +2,7 @@
 #include "runtime_log.h"
 #include "dxt_shadow.h"
 #include "vertex_formats.h"
+#include "graphics_quality.h"
 #include <d3d9.h>
 #include <algorithm>
 #include <map>
@@ -16,6 +17,9 @@
 #include <chrono>
 #include <thread>
 #include <cstdlib>
+#include <fstream>
+#include <mutex>
+#include <string>
 
 extern "C" IDirect3D9* Direct3DCreate9(UINT sdk);
 extern "C" void dxvkAndroidSetWindow(ANativeWindow* window);
@@ -95,11 +99,38 @@ CompressedView compressionView(uint32_t address){auto found=objects.find(address
 // with its GPU work (Present waited 7-10 ms with the GPU 67% busy). Two
 // back buffers allow DXVK's default latency of 3; the game only ever reads
 // back buffer 0, so the extra buffers are invisible to it.
-// Launcher "Sincronía CPU/GPU": 2 (default) or 1 for the lowest input latency.
+// Launcher "CPU/GPU sync": 2 (default) or 1 for the lowest input latency.
 std::atomic<uint32_t> configuredBackBuffers{2};
-// Launcher "Texturas comprimidas: convertir en CPU": DXT decoded to RGBA8 even when the
+// Launcher "Compressed textures: convert on the CPU": DXT decoded to RGBA8 even when the
 // driver reports BC support, for drivers whose BC sampling is broken.
 std::atomic<bool> forceCpuTextures{false};
+// Launcher "Anti-aliasing": MSAA samples offered to D3D9 for the back buffer (0 = the game's own
+// request, which is none). Validated per device against the adapter; see applyAntialiasing.
+std::atomic<unsigned> requestedMultisample{0};
+// Launcher "Texture filtering": dxvk.conf with d3d9.samplerAnisotropy, handed to DXVK through
+// DXVK_CONFIG_FILE right before Direct3DCreate9 (DXVK 1.9.2 reads it once, at interface creation).
+std::mutex qualityMutex;
+std::string dxvkConfigPath;
+// What applyAntialiasing settled on for the current device, so a depth surface the game creates for
+// the back buffer gets the same sample count (D3D9 requires render target and depth to match).
+std::atomic<unsigned> activeMultisample{0};
+std::atomic<uint32_t> activeBackBufferWidth{0},activeBackBufferHeight{0};
+// MSAA is only valid on a DISCARD swap chain, and the game must not read the back buffer back.
+void applyAntialiasing(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRESENT_PARAMETERS& p){
+    unsigned wanted=requestedMultisample.load();
+    if(!wanted||p.MultiSampleType!=D3DMULTISAMPLE_NONE)return;
+    auto supported=[&](unsigned samples){
+        DWORD quality=0;auto level=static_cast<D3DMULTISAMPLE_TYPE>(samples);
+        if(FAILED(d3d->CheckDeviceMultiSampleType(adapter,type,p.BackBufferFormat,p.Windowed,level,&quality)))return false;
+        return !p.EnableAutoDepthStencil||SUCCEEDED(d3d->CheckDeviceMultiSampleType(adapter,type,p.AutoDepthStencilFormat,p.Windowed,level,&quality));
+    };
+    unsigned samples=graphics_quality::chooseMultisample(wanted,supported);
+    static unsigned logged=~0u;
+    if(logged!=samples){logged=samples;NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Anti-aliasing: %ux MSAA requested, %ux usable on this GPU for format %u/%u",wanted,samples,unsigned(p.BackBufferFormat),unsigned(p.AutoDepthStencilFormat));}
+    activeMultisample=samples;activeBackBufferWidth=p.BackBufferWidth;activeBackBufferHeight=p.BackBufferHeight;
+    if(!samples)return;
+    p.MultiSampleType=static_cast<D3DMULTISAMPLE_TYPE>(samples);p.MultiSampleQuality=0;p.SwapEffect=D3DSWAPEFFECT_DISCARD;
+}
 uint32_t hostBackBufferCount(uint32_t requested){
     uint32_t count=std::max(requested,configuredBackBuffers.load());
     static bool logged=false;
@@ -127,6 +158,17 @@ void describeOriginal(uint32_t address,D3DSURFACE_DESC* desc){auto view=compress
 }
 void setD3D9Compatibility(bool cpuTextures,unsigned backBuffers){
     forceCpuTextures=cpuTextures;configuredBackBuffers=backBuffers<1?1u:backBuffers>3?3u:backBuffers;
+}
+void setD3D9GraphicsQuality(unsigned anisotropy,unsigned msaaSamples,const std::string& configDirectory){
+    requestedMultisample=msaaSamples;
+    std::string text=graphics_quality::dxvkConfig(anisotropy),path;
+    if(!text.empty()&&!configDirectory.empty()){
+        path=configDirectory+"/dxvk.conf";
+        std::ofstream file(path,std::ios::trunc);file<<text;
+        if(!file){NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Could not write %s; texture filtering stays at the game's own",path.c_str());path.clear();}
+    }
+    {std::lock_guard<std::mutex> lock(qualityMutex);dxvkConfigPath=path;}
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Graphics quality: anisotropy %u (%s), MSAA %u requested",graphics_quality::clampAnisotropy(anisotropy),path.empty()?"not forced":path.c_str(),msaaSamples);
 }
 void configureD3D9Bridge(void* base,uint32_t (*allocator)(uint32_t),void (*deallocator)(uint32_t)){
     guestBase=base;allocateGuest=allocator;freeGuest=deallocator;
@@ -156,6 +198,10 @@ void setD3D9HostWindow(ANativeWindow* window){hostWindow=window;dxvkAndroidSetWi
 bool d3d9RequestsSurface(){return surfaceRequested;}
 void acknowledgeD3D9Surface(bool available){surfaceAvailable=available;}
 uint32_t createGuestD3D9(uint32_t sdk){
+    {   // Same thread that creates the interface: DXVK reads DXVK_CONFIG_FILE inside Direct3DCreate9.
+        std::lock_guard<std::mutex> lock(qualityMutex);
+        if(dxvkConfigPath.empty())unsetenv("DXVK_CONFIG_FILE");else setenv("DXVK_CONFIG_FILE",dxvkConfigPath.c_str(),1);
+    }
     auto native=Direct3DCreate9(sdk);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","DXVK native Direct3DCreate9 sdk=%u",sdk);
     return wrap(native,Kind::D3D9);
@@ -270,6 +316,7 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
             D3DPRESENT_PARAMETERS parameters{};parameters.BackBufferWidth=p[0];parameters.BackBufferHeight=p[1];parameters.BackBufferFormat=static_cast<D3DFORMAT>(p[2]);parameters.BackBufferCount=hostBackBufferCount(p[3]);
             parameters.MultiSampleType=static_cast<D3DMULTISAMPLE_TYPE>(p[4]);parameters.MultiSampleQuality=p[5];parameters.SwapEffect=static_cast<D3DSWAPEFFECT>(p[6]);parameters.hDeviceWindow=window;
             parameters.Windowed=p[8];parameters.EnableAutoDepthStencil=p[9];parameters.AutoDepthStencilFormat=static_cast<D3DFORMAT>(p[10]);parameters.Flags=p[11];parameters.FullScreen_RefreshRateInHz=p[12];parameters.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
+            applyAntialiasing(d3d,args[1],static_cast<D3DDEVTYPE>(args[2]),parameters);
             IDirect3DDevice9* device=nullptr;HRESULT status=d3d->CreateDevice(args[1],static_cast<D3DDEVTYPE>(args[2]),window,args[4],&parameters,&device);
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 backbuffer %ux%u CreateDevice result=%08x",parameters.BackBufferWidth,parameters.BackBufferHeight,uint32_t(status));
             // Without a device the game carries on and faults later in its own
@@ -277,8 +324,8 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
             // here with the reason instead.
             static unsigned failures=0;failures=FAILED(status)?failures+1:0;
             if(FAILED(status)&&failures<2)return status;
-            if(FAILED(status))throw std::runtime_error("La GPU no pudo crear el dispositivo grafico (Vulkan, CreateDevice "+
-                std::to_string(uint32_t(status))+"). Usa \"Probar driver\" en el launcher para ver que le falta.");
+            if(FAILED(status))throw std::runtime_error("The GPU could not create the graphics device (Vulkan, CreateDevice "+
+                std::to_string(uint32_t(status))+"). Use \"Test driver\" in the launcher to see what it lacks.");
             write(args[6],wrap(device,Kind::Device));return status;
         }
         }
@@ -287,6 +334,8 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
         case 9:{*argumentCount=2;D3DDEVICE_CREATION_PARAMETERS p{};HRESULT status=device->GetCreationParameters(&p);if(SUCCEEDED(status)){write(args[1],p.AdapterOrdinal);write(args[1]+4,p.DeviceType);write(args[1]+8,0xf0000301);write(args[1]+12,p.BehaviorFlags);}return status;}
         case 13:{*argumentCount=3;auto p=presentation(args[1]);IDirect3DSwapChain9* result=nullptr;HRESULT status=device->CreateAdditionalSwapChain(&p,&result);write(args[2],SUCCEEDED(status)?wrap(result,Kind::SwapChain):0);return status;}
         case 16:{*argumentCount=2;auto p=presentation(args[1]);HRESULT status=D3DERR_DEVICELOST;
+            {IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation{};
+             if(SUCCEEDED(device->GetDirect3D(&d3d))&&d3d){if(SUCCEEDED(device->GetCreationParameters(&creation)))applyAntialiasing(d3d,creation.AdapterOrdinal,creation.DeviceType,p);d3d->Release();}}
             // DXVK throws (DxvkError) when it cannot rebuild the swap chain; Windows
             // would report a lost device, which the game retries (Mali G615 report).
             // The old Android window can stay busy for a moment: retry once before giving up.
@@ -310,6 +359,21 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
             uint32_t address=SUCCEEDED(status)?wrap(texture,Kind::Cube):0;
             if(address&&format!=original)objects.at(address).compressed.texture=std::make_shared<CompressedTexture>(original,args[1],args[1],texture->GetLevelCount(),6);
             write(args[6],address);return status;}
+        case 29:{*argumentCount=9;IDirect3DSurface9* surface=nullptr;if(args[8])throw std::runtime_error("D3D9 shared resource handles pending");
+            auto samples=static_cast<D3DMULTISAMPLE_TYPE>(args[4]);DWORD quality=args[5];unsigned active=activeMultisample.load();
+            // A full-size depth surface for a multisampled back buffer must carry the same sample count.
+            if(active&&samples==D3DMULTISAMPLE_NONE&&args[1]==activeBackBufferWidth.load()&&args[2]==activeBackBufferHeight.load()){
+                IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation{};DWORD levels=0;
+                if(SUCCEEDED(device->GetDirect3D(&d3d))&&d3d){
+                    if(SUCCEEDED(device->GetCreationParameters(&creation))&&SUCCEEDED(d3d->CheckDeviceMultiSampleType(creation.AdapterOrdinal,creation.DeviceType,static_cast<D3DFORMAT>(args[3]),TRUE,static_cast<D3DMULTISAMPLE_TYPE>(active),&levels))){
+                        samples=static_cast<D3DMULTISAMPLE_TYPE>(active);quality=0;
+                        static bool logged=false;if(!logged){logged=true;NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Depth surface %ux%u format %u follows the back buffer at %ux MSAA",args[1],args[2],args[3],active);}
+                    }
+                    d3d->Release();
+                }
+            }
+            HRESULT status=device->CreateDepthStencilSurface(static_cast<UINT>(args[1]),static_cast<UINT>(args[2]),static_cast<D3DFORMAT>(args[3]),samples,quality,static_cast<WINBOOL>(args[6]),args[7]?&surface:nullptr,nullptr);
+            if(args[7])write(args[7],SUCCEEDED(status)?wrap(surface,Kind::Surface):0);return status;}
 #include "d3d9_device_methods.inc"
     }}
     if(kind==3){auto texture=static_cast<IDirect3DTexture9*>(object);

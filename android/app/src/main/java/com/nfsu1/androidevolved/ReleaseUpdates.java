@@ -14,10 +14,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import javax.net.ssl.HttpsURLConnection;
 
-/** Optional official GitHub updates. No APK is installed or downloaded in the background. */
+/**
+ * Optional GitHub updates from the repository this build was made from (BuildConfig.RELEASE_REPO).
+ * No APK is installed or downloaded in the background. A private repository answers 404 to the
+ * anonymous API, which counts as "no release to offer", so automatic checks stay silent.
+ */
 final class ReleaseUpdates {
-    private static final String REPO = "https://github.com/codepdbh/nfsu1-recompiled/";
-    private static final String API = "https://api.github.com/repos/codepdbh/nfsu1-recompiled/releases/latest";
+    static final String REPO = "https://github.com/" + BuildConfig.RELEASE_REPO + "/";
+    private static final String API = "https://api.github.com/repos/" + BuildConfig.RELEASE_REPO + "/releases/latest";
     static final class Result {
         final String tag, url, error;
         Result(String tag, String url, String error) { this.tag = tag; this.url = url; this.error = error; }
@@ -27,13 +31,15 @@ final class ReleaseUpdates {
         try { return context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName; }
         catch (Exception ignored) { return "0.0.0"; }
     }
+    static String releaseTagUrl(String version) { return REPO + "releases/tag/v" + Uri.encode(version); }
+
     static void check(Context context, boolean force, Consumer<Result> callback) {
         Context app = context.getApplicationContext();
         Handler main = new Handler(Looper.getMainLooper());
         Thread worker = new Thread(() -> {
             Result result;
             try { result = fetch(app, force); }
-            catch (Exception error) { result = new Result(null, null, "No se pudo consultar GitHub. Comprueba tu conexión e inténtalo después."); }
+            catch (Exception error) { result = new Result(null, null, app.getString(R.string.updates_unreachable)); }
             Result value = result;
             main.post(() -> callback.accept(value));
         }, "GitHubReleaseCheck");
@@ -72,10 +78,10 @@ final class ReleaseUpdates {
             String notes = null;
             try {
                 HttpsURLConnection connection = (HttpsURLConnection) new URL(
-                        "https://api.github.com/repos/codepdbh/nfsu1-recompiled/releases/tags/v" + Uri.encode(version)).openConnection();
+                        "https://api.github.com/repos/" + BuildConfig.RELEASE_REPO + "/releases/tags/v" + Uri.encode(version)).openConnection();
                 connection.setConnectTimeout(6000); connection.setReadTimeout(6000);
                 connection.setRequestProperty("Accept", "application/vnd.github+json");
-                connection.setRequestProperty("User-Agent", "NFSU1-Android-Evolved/" + version);
+                connection.setRequestProperty("User-Agent", "NFSU-Remastered/" + version);
                 try {
                     if (connection.getResponseCode() == 200) {
                         ByteArrayOutputStream body = new ByteArrayOutputStream();
@@ -91,6 +97,16 @@ final class ReleaseUpdates {
             main.post(() -> callback.accept(value));
         }, "GitHubReleaseNotes");
         worker.setDaemon(true); worker.start();
+    }
+
+    /** In the app, skip the download/install preamble of the release page: start at the changes heading. */
+    static String whatsNewSection(String notes) {
+        if (notes == null) return null;
+        for (String heading : new String[] {"What's new", "What’s new", "Changes", "Novedades"}) {
+            int start = notes.indexOf(heading);
+            if (start > 0) return notes.substring(start);
+        }
+        return notes;
     }
 
     /** Markdown of a release body to readable dialog text. */
@@ -116,22 +132,22 @@ final class ReleaseUpdates {
         HttpsURLConnection connection = (HttpsURLConnection) new URL(API).openConnection();
         connection.setConnectTimeout(6000); connection.setReadTimeout(6000);
         connection.setRequestProperty("Accept", "application/vnd.github+json");
-        connection.setRequestProperty("User-Agent", "NFSU1-Android-Evolved/" + installed(context));
-        connection.setRequestProperty("X-GitHub-Api-Version", "2026-03-10");
+        connection.setRequestProperty("User-Agent", "NFSU-Remastered/" + installed(context));
+        connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28");
         try {
             int code = connection.getResponseCode();
-            if (code == 404) {
-                // No published release yet: nothing to offer, not a connection problem.
+            if (code == 404 || code == 403 || code == 401) {
+                // No public release (private repository, or none published yet): nothing to offer, not a connection problem.
                 prefs.edit().putLong("last_check", System.currentTimeMillis())
                         .putString("latest_tag", "").putString("latest_url", REPO + "releases").apply();
                 return new Result("", REPO + "releases", null);
             }
-            if (code != 200) throw new IOException("GitHub no disponible");
+            if (code != 200) throw new IOException("GitHub answered " + code);
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             try (InputStream input = connection.getInputStream()) {
                 byte[] buffer = new byte[8192]; int n;
                 while ((n = input.read(buffer)) != -1) {
-                    if (body.size() + n > 512 * 1024) throw new IOException("Respuesta demasiado grande");
+                    if (body.size() + n > 512 * 1024) throw new IOException("Response too large");
                     body.write(buffer, 0, n);
                 }
             }

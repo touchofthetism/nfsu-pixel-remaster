@@ -4,21 +4,21 @@
 // data still runs the original code; invalid data stops with an explanation.
 void validateResourceChunks(uint32_t data,uint32_t bytes){
     if(!memory->readable(data,bytes))
-        throw GuestStop("Datos del juego invalidos: bloque de recursos fuera de memoria; revisa tu copia de NFS Underground 1");
+        throw GuestStop("Invalid game data: resource block outside memory; check your copy of NFS Underground");
     uint64_t cursor=data,end=uint64_t(data)+bytes;
     while(cursor<end){
         if(end-cursor<8)
-            throw GuestStop("Datos del juego truncados: cabecera de recurso incompleta en "+hex(uint32_t(cursor)));
+            throw GuestStop("Truncated game data: incomplete resource header at "+hex(uint32_t(cursor)));
         uint32_t size=read32(uint32_t(cursor)+4);
         if(uint64_t(size)>end-cursor-8)
-            throw GuestStop("Datos del juego truncados: recurso "+hex(read32(uint32_t(cursor)))+" excede su bloque; revisa los archivos de tu copia de PC");
+            throw GuestStop("Truncated game data: resource "+hex(read32(uint32_t(cursor)))+" exceeds its block; check the files of your PC copy");
         cursor+=8ull+size;
     }
 }
 void validateLanguageTable(){
     uint32_t count=read32(0x73442c),table=read32(0x734434);
     if(!count||!table||!memory->readable(table,uint64_t(count)*8))
-        throw GuestStop("Tabla de idioma vacia o invalida: revisa LANGUAGES y selecciona un idioma disponible de tu copia de NFS Underground 1");
+        throw GuestStop("Empty or invalid language table: check LANGUAGES and pick a language your copy of NFS Underground has");
 }
 void testGuestAssetGuards(){
     State original;original.save();uint32_t data=allocate(64);

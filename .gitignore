@@ -11,3 +11,9 @@ android/.gradle/
 android/app/.cxx/
 android/local.properties
 widescreenfix/
+
+# Local caches of this fork
+ci/.cache/
+/tmp/
+ci/signing/
+__pycache__/

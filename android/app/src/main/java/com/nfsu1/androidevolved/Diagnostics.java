@@ -2,17 +2,23 @@ package com.nfsu1.androidevolved;
 
 import android.app.ActivityManager;
 import android.app.ApplicationExitInfo;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Process;
+import android.provider.MediaStore;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
@@ -24,16 +30,24 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Crash detection and tester reports (after the MW port). Reports contain this app's own log, the
- * device and the launcher options; never game files or saves. Nothing is uploaded automatically.
- * GitHub cannot take an attachment through the new-issue link, so the issue body carries a compact
- * technical summary of the game log, and the full ZIP is saved to Download/NFSU1 for the player to
- * attach.
+ * Crash detection and diagnostics (after the MW port). A report holds this app's own log, the device,
+ * the launcher options, the game process' exit records and the DXVK graphics cache; never game files or
+ * saves. Nothing is uploaded automatically: the ZIP is saved to Download/NFSU1 and handed to the system
+ * share sheet, so it reaches whoever maintains this build through Drive, email or a chat.
+ *
+ * The report text is written in English regardless of the UI language: it is read by the maintainer.
  */
 final class Diagnostics {
-    static final String ISSUES = "https://github.com/codepdbh/nfsu1-recompiled/issues/new";
     private static final int LIMIT = 4 * 1024 * 1024;
+    private static final long CACHE_LIMIT = 64L * 1024 * 1024;
     private static final String PREFS = "nfsu1_diagnostics";
+
+    /** Where the report landed: the MediaStore document and a path the player recognises. */
+    static final class Saved {
+        final Uri uri;
+        final String location;
+        Saved(Uri uri, String location) { this.uri = uri; this.location = location; }
+    }
 
     /** A crash of the :game process the player has not been asked about yet, or null. */
     static String unreportedCrash(Context context) {
@@ -48,7 +62,7 @@ final class Diagnostics {
                 int reason = exit.getReason();
                 if (reason == ApplicationExitInfo.REASON_CRASH || reason == ApplicationExitInfo.REASON_CRASH_NATIVE
                         || reason == ApplicationExitInfo.REASON_ANR) {
-                    return (reason == ApplicationExitInfo.REASON_ANR ? "El juego dejó de responder" : "El juego se cerró inesperadamente")
+                    return context.getString(reason == ApplicationExitInfo.REASON_ANR ? R.string.crash_anr : R.string.crash_native)
                             + (exit.getDescription() == null ? "" : " (" + exit.getDescription() + ")");
                 }
             }
@@ -62,33 +76,42 @@ final class Diagnostics {
 
     static String summary(Context context) {
         GpuDrivers.Driver driver = GpuDrivers.selected(context);
-        return "NFSU1 Android Evolved " + ReleaseUpdates.installed(context)
+        ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
+        ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        if (manager != null) manager.getMemoryInfo(memory);
+        return context.getString(R.string.app_name) + " " + ReleaseUpdates.installed(context)
+                + " (" + BuildConfig.APPLICATION_ID + ", versionCode " + BuildConfig.VERSION_CODE + ")"
                 + "\nAPK ABI: " + (Process.is64Bit() ? "arm64-v8a" : "armeabi-v7a")
-                + "\nTeléfono: " + Build.MANUFACTURER + " " + Build.MODEL
-                + "\nAndroid: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
+                + "\nPhone: " + Build.MANUFACTURER + " " + Build.MODEL + " (" + Build.DEVICE + ")"
+                + "\nAndroid: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ", " + Build.VERSION.SECURITY_PATCH + ")"
                 + "\nSoC: " + (Build.VERSION.SDK_INT >= 31 ? Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL : Build.HARDWARE)
-                + "\nDriver Vulkan: " + (driver == null ? "Sistema" : driver.name) + "\n";
+                + "\nRAM: " + (memory.totalMem >> 20) + " MB total, " + (memory.availMem >> 20) + " MB free"
+                + "\nVulkan driver: " + (driver == null ? "system" : driver.name) + "\n";
     }
 
     static File createReport(Context context) throws Exception {
         File directory = new File(context.getCacheDir(), "reports");
-        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("No se pudo crear el informe.");
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException(context.getString(R.string.report_err_create));
         File[] old = directory.listFiles();
         if (old != null) for (File file : old)
             if (file.isFile() && file.lastModified() < System.currentTimeMillis() - TimeUnit.DAYS.toMillis(7)) file.delete();
         String date = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        File report = new File(directory, "NFSU1-diagnostico-" + date + ".zip");
+        File report = new File(directory, "NFSU-diagnostics-" + date + ".zip");
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(report))) {
             StringBuilder info = new StringBuilder(summary(context));
-            info.append("Fecha: ").append(new Date()).append("\nABI: ").append(Arrays.toString(Build.SUPPORTED_ABIS))
-                    .append("\n\nOpciones:\n");
+            info.append("Date: ").append(new Date()).append("\nSupported ABIs: ").append(Arrays.toString(Build.SUPPORTED_ABIS))
+                    .append("\nUI locale: ").append(Locale.getDefault()).append("\n\nOptions:\n");
             for (GameOptions.Option option : GameOptions.ALL)
-                info.append(option.key).append('=').append(GameOptions.get(context, option.key)).append('\n');
-            info.append("language=").append(GameOptions.language(context)).append('\n');
-            add(zip, "informe.txt", info.toString().getBytes(StandardCharsets.UTF_8));
+                info.append(option.key).append('=').append(GameOptions.get(context, option.key))
+                    .append(" (default ").append(GameOptions.defaultValue(context, option.key)).append(")\n");
+            info.append("language=").append(GameOptions.language(context, LauncherActivity.gameRoot())).append('\n');
+            info.append("online_server=").append(GameOptions.onlineServer(context)).append('\n');
+            info.append("\nGame folder (Internal storage/nfsu1):\n").append(gameFolderListing(LauncherActivity.gameRoot()));
+            add(zip, "report.txt", info.toString().getBytes(StandardCharsets.UTF_8));
             add(zip, "logcat.txt", logcat(0));
             ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
             if (Build.VERSION.SDK_INT >= 30 && manager != null) addExitInfo(zip, manager, context);
+            addGraphicsCache(zip, context);
         } catch (Exception error) {
             report.delete();
             throw error;
@@ -96,77 +119,79 @@ final class Diagnostics {
         return report;
     }
 
-    /** The last game lines (runtime, DXVK, crashes) of this app's log, for the issue body. */
+    /** Names and sizes of the top level of the game folder (never contents). */
+    private static String gameFolderListing(File root) {
+        File[] children = root.listFiles();
+        if (children == null) return "(not readable)\n";
+        StringBuilder text = new StringBuilder();
+        Arrays.sort(children);
+        for (File child : children) {
+            if (child.isDirectory()) {
+                String[] inside = child.list();
+                text.append(child.getName()).append("/  ").append(inside == null ? "?" : inside.length).append(" entries\n");
+            } else {
+                text.append(child.getName()).append("  ").append(child.length()).append(" bytes\n");
+            }
+        }
+        return text.toString();
+    }
+
+    /**
+     * The DXVK state cache (driver-independent pipeline state): a cache collected on one phone lets the
+     * next build precompile shaders on first start instead of stuttering mid-race.
+     */
+    private static void addGraphicsCache(ZipOutputStream zip, Context context) throws IOException {
+        File cache = new File(context.getCacheDir(), GraphicsCache.DIRECTORY);
+        File[] files = cache.listFiles();
+        if (files == null) return;
+        for (File file : files) {
+            if (!file.isFile() || file.length() > CACHE_LIMIT) continue;
+            if (!file.getName().endsWith(".dxvk-cache") && !file.getName().endsWith(".bin")) continue;
+            try (InputStream input = new FileInputStream(file)) {
+                zip.putNextEntry(new ZipEntry("graphics-cache/" + file.getName()));
+                byte[] buffer = new byte[65536];
+                for (int n; (n = input.read(buffer)) != -1;) zip.write(buffer, 0, n);
+                zip.closeEntry();
+            }
+        }
+    }
+
+    /** The last game lines (runtime, DXVK, crashes) of this app's log. */
     static String logTail(int lines) {
         try { return new String(logcat(lines, "NFSU1:I", "DXVK:W", "AndroidRuntime:E", "DEBUG:F", "libc:F", "*:S"), StandardCharsets.UTF_8); }
         catch (IOException error) { return error.toString(); }
     }
 
-    // Lines that explain a stop, a stall or a missing piece of the Windows layer.
-    private static final java.util.regex.Pattern KEY_LINE = java.util.regex.Pattern.compile(
-            "stopped|boundary|pendiente|unresolved|stall|  thread |FATAL|Fatal|SIGSEGV|SIGBUS|abort|DeadSystem|E DXVK|MessageBox"
-            // Native crash frames inside our libraries (symbolized later with symbols-vX.Y.Z).
-            + "|#[01][0-9] pc [0-9a-f]+ .*libnfsu1");
-    // Per-frame or per-file chatter that crowds out the useful part of the tail.
-    private static final java.util.regex.Pattern NOISE = java.util.regex.Pattern.compile(
-            "Guest file |touch DIK|Keyboard buffered|D3D9 COM|Guest timer|Guest import|Guest LoadLibrary d3d9|VirtualProtect|presentation");
-    // GitHub refuses the new-issue link past roughly 8 KB once it is URL-encoded.
-    private static final int URL_BUDGET = 7500;
-
-    /** "20:30:40.892 W text" from a threadtime line, to save room in the link. */
-    private static String compact(String line) {
-        String[] parts = line.trim().split("\\s+", 6);
-        if (parts.length < 6) return line;
-        String message = parts[5];
-        int colon = message.indexOf(": ");
-        return parts[1] + " " + parts[4] + " " + (colon >= 0 ? message.substring(colon + 2) : message);
-    }
-
-    static Uri issueUri(Context context, String crash, String zipLocation) {
-        List<String> key = new java.util.ArrayList<>(), tail = new java.util.ArrayList<>();
-        String lastFrame = null;
-        for (String line : logTail(0).split("\n")) {
-            if (line.contains("presentation")) lastFrame = compact(line);
-            if (KEY_LINE.matcher(line).find()) key.add(compact(line));
-            else if (line.contains(" NFSU1 ") && !NOISE.matcher(line).find()) tail.add(compact(line));
-        }
-        if (key.size() > 35) key = key.subList(key.size() - 35, key.size());
-        if (tail.size() > 60) tail = tail.subList(tail.size() - 60, tail.size());
-        String title = "[Android] " + Build.MODEL + ": " + (crash == null ? "" : "cierre inesperado");
-        while (true) {
-            String body = "### Qué ocurrió\n" + (crash == null ? "" : crash + "\n") + "\n### Pasos para reproducirlo\n\n"
-                    + "### Dispositivo\n" + summary(context)
-                    + "\n### Registro completo\nGuardado en el móvil en **" + zipLocation
-                    + "**. Si puedes, adjúntalo aquí: arrástralo o toca \"Paste, drop, or click to add files\".\n"
-                    + "\n### Resumen técnico\n```\n" + String.join("\n", key)
-                    + (lastFrame == null ? "" : "\nÚltimo fotograma: " + lastFrame)
-                    + "\n--- últimas líneas del juego ---\n" + String.join("\n", tail) + "\n```\n";
-            Uri uri = Uri.parse(ISSUES).buildUpon().appendQueryParameter("title", title).appendQueryParameter("body", body).build();
-            if (uri.toString().length() <= URL_BUDGET || (tail.isEmpty() && key.size() <= 1)) return uri;
-            if (!tail.isEmpty()) tail = tail.subList(Math.min(tail.size(), 5), tail.size());
-            else key = key.subList(1, key.size());
-        }
-    }
-
     /** Copies the report to Download/NFSU1 (MediaStore: an app needs no permission for its own files). */
-    static String saveToDownloads(Context context, File report) throws IOException {
-        android.content.ContentValues values = new android.content.ContentValues();
-        values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, report.getName());
-        values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/zip");
-        values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/NFSU1");
-        android.content.ContentResolver resolver = context.getContentResolver();
-        Uri target = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-        if (target == null) throw new IOException("No se pudo crear el archivo en Descargas.");
-        try (InputStream input = new java.io.FileInputStream(report);
-             java.io.OutputStream output = resolver.openOutputStream(target, "w")) {
-            if (output == null) throw new IOException("No se pudo escribir en Descargas.");
+    static Saved saveToDownloads(Context context, File report) throws IOException {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, report.getName());
+        values.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip");
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/NFSU1");
+        ContentResolver resolver = context.getContentResolver();
+        Uri target = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        if (target == null) throw new IOException(context.getString(R.string.report_err_downloads_create));
+        try (InputStream input = new FileInputStream(report);
+             OutputStream output = resolver.openOutputStream(target, "w")) {
+            if (output == null) throw new IOException(context.getString(R.string.report_err_downloads_write));
             byte[] buffer = new byte[65536];
             for (int n; (n = input.read(buffer)) != -1;) output.write(buffer, 0, n);
         } catch (IOException error) {
             resolver.delete(target, null, null);
             throw error;
         }
-        return "Descargas/NFSU1/" + report.getName();
+        return new Saved(target, "Download/NFSU1/" + report.getName());
+    }
+
+    /** The system share sheet for a saved report. */
+    static Intent shareIntent(Context context, Uri report) {
+        Intent send = new Intent(Intent.ACTION_SEND)
+                .setType("application/zip")
+                .putExtra(Intent.EXTRA_STREAM, report)
+                .putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.app_name) + " " + ReleaseUpdates.installed(context) + " diagnostics")
+                .putExtra(Intent.EXTRA_TEXT, summary(context))
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        return Intent.createChooser(send, context.getString(R.string.report_share_chooser));
     }
 
     private static void add(ZipOutputStream zip, String name, byte[] data) throws IOException {
@@ -225,10 +250,10 @@ final class Diagnostics {
                                     readLimited(trace));
                             traceAdded = true;
                         }
-                    } catch (IOException error) { info.append("Traza no disponible: ").append(error).append('\n'); }
+                    } catch (IOException error) { info.append("Trace unavailable: ").append(error).append('\n'); }
                 }
             }
         } catch (RuntimeException error) { info.append(error); }
-        add(zip, "cierres.txt", info.toString().getBytes(StandardCharsets.UTF_8));
+        add(zip, "exits.txt", info.toString().getBytes(StandardCharsets.UTF_8));
     }
 }

@@ -9,7 +9,7 @@ class GuestBootWorker {
     pthread_t thread_{};
     bool started_=false;
     std::mutex mutex_;
-    std::string executable_,status_="Arranque CRT pendiente";
+    std::string executable_,status_="CRT boot pending";
     static void* run(void* context) {
         auto& self=*static_cast<GuestBootWorker*>(context);
         auto result=connectGuestRuntime(self.executable_.c_str());
@@ -20,7 +20,8 @@ public:
     void start(const std::string& executable) {
         if(started_)return;
         executable_=executable;
-        {std::lock_guard<std::mutex> guard(mutex_);status_="Ejecutando entrada CRT del juego…";}
+        // GameActivity.STATUS_GAME_RUNNING matches this text to fade the boot overlay out; keep them in sync.
+        {std::lock_guard<std::mutex> guard(mutex_);status_="Running the game's CRT entry…";}
         pthread_attr_t attributes;
         if(pthread_attr_init(&attributes))throw std::runtime_error("Guest thread attributes failed");
         int result=pthread_attr_setstacksize(&attributes,64u<<20);

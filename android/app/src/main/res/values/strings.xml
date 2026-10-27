@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- English (default). The original Spanish of the upstream port lives in values-es/. -->
+<resources>
+    <string name="app_name">NFS Underground Remastered</string>
+
+    <!-- Launcher -->
+    <string name="launcher_title">Need for Speed Underground</string>
+    <string name="launcher_subtitle">Remastered · native Android build</string>
+    <string name="game_files_header">GAME FILES</string>
+    <string name="options_header">OPTIONS</string>
+    <string name="options_note">Applied when you press PLAY.</string>
+    <string name="play">PLAY</string>
+    <string name="allow_access">Allow access to Internal storage/nfsu1</string>
+    <string name="import_game_files">Import game files (ZIP)</string>
+    <string name="check_speed_exe">Speed.exe</string>
+    <string name="check_game_folders">Game folders</string>
+    <string name="check_missing_folders">Missing folders: %1$s</string>
+    <string name="check_optional_suffix"> · optional</string>
+    <string name="status_allow_files">Allow file access to read Internal storage/nfsu1.</string>
+    <string name="status_ready">Internal storage/nfsu1</string>
+    <string name="status_copy_files">Import the game ZIP, or copy your game files into Internal storage/nfsu1.</string>
+
+    <string name="opt_vulkan_driver">Vulkan driver</string>
+    <string name="opt_vulkan_driver_system">System</string>
+    <string name="opt_probe_driver">Test driver</string>
+    <string name="opt_probe_driver_value">GPU and Vulkan features</string>
+    <string name="opt_language">Game language</string>
+    <string name="opt_graphics_cache">Reset graphics cache</string>
+    <string name="opt_graphics_cache_value">Rebuild shaders</string>
+    <string name="opt_online_server">Online server</string>
+    <string name="opt_check_updates">Check for updates</string>
+    <string name="opt_check_updates_checking">Checking GitHub…</string>
+    <string name="opt_version">Version %1$s</string>
+    <string name="opt_share_diagnostics">Share diagnostics</string>
+    <string name="opt_share_diagnostics_value">Full log as a ZIP</string>
+
+    <!-- Game options (GameOptions) -->
+    <string name="opt_resolution">Internal resolution</string>
+    <string name="res_native">Native · maximum quality</string>
+    <string name="res_75">75% · balanced</string>
+    <string name="res_50">50% · maximum performance</string>
+    <string name="res_720">1280×720 · 16:9</string>
+    <string name="opt_fps">FPS limit</string>
+    <string name="fps_30">30 FPS · saves battery</string>
+    <string name="fps_60">60 FPS</string>
+    <string name="fps_90">90 FPS</string>
+    <string name="fps_120">120 FPS</string>
+    <string name="fps_unlimited">Unlimited</string>
+    <string name="opt_widescreen">Widescreen</string>
+    <string name="widescreen_on">HUD and camera corrected</string>
+    <string name="widescreen_off">Original 4:3 stretched</string>
+    <string name="opt_minimap">Minimap</string>
+    <string name="minimap_top">Top left</string>
+    <string name="minimap_bottom">Bottom left (original)</string>
+    <string name="opt_latency">CPU/GPU sync</string>
+    <string name="latency_performance">Performance · CPU and GPU in parallel</string>
+    <string name="latency_low">Low latency · fewer FPS</string>
+    <string name="opt_textures">Compressed textures</string>
+    <string name="textures_auto">Automatic · GPU when supported</string>
+    <string name="textures_cpu">Convert on the CPU · compatibility</string>
+    <string name="opt_gamepad">Bluetooth/USB controller</string>
+    <string name="gamepad_keys">As keyboard · RT accelerates, LT brakes</string>
+    <string name="gamepad_directinput">DirectInput joystick · the game\'s own mapping</string>
+    <string name="opt_anisotropy">Texture filtering</string>
+    <string name="anisotropy_off">Original</string>
+    <string name="anisotropy_8">8× anisotropic</string>
+    <string name="anisotropy_16">16× anisotropic · sharpest</string>
+    <string name="opt_antialias">Anti-aliasing</string>
+    <string name="antialias_off">Off</string>
+    <string name="antialias_2">2× MSAA</string>
+    <string name="antialias_4">4× MSAA · smooth edges</string>
+
+    <!-- Common buttons -->
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+    <string name="back">Back</string>
+    <string name="save">Save</string>
+    <string name="restore">Restore</string>
+    <string name="close">Close</string>
+    <string name="share">Share</string>
+
+    <!-- Language -->
+    <string name="language_none">No languages found in Internal storage/nfsu1/LANGUAGES.</string>
+
+    <!-- Online server -->
+    <string name="online_server_message">The game\'s online mode (EA Nation) connects to this community server instead of EA\'s servers, which are shut down.</string>
+    <string name="online_server_invalid">\"%1$s\" is not a valid server name.</string>
+
+    <!-- Vulkan driver -->
+    <string name="driver_system">System driver</string>
+    <string name="driver_import_zip">Import ZIP</string>
+    <string name="driver_remove_selected">Remove selected</string>
+    <string name="driver_importing">Importing Vulkan driver…</string>
+    <string name="driver_imported">Driver imported: %1$s. Use Test driver to check it.</string>
+    <string name="driver_import_failed">Could not import the driver: %1$s</string>
+    <string name="driver_err_folder">Could not create the driver folder.</string>
+    <string name="driver_err_open_zip">Could not open the ZIP.</string>
+    <string name="driver_err_no_meta">meta.json is missing from the driver ZIP.</string>
+    <string name="driver_err_library_name">libraryName is not valid.</string>
+    <string name="driver_err_android_version">This driver needs a newer Android version.</string>
+    <string name="driver_err_name">Driver name is not valid.</string>
+    <string name="driver_err_install">Could not install the driver.</string>
+    <string name="driver_err_install_package">Could not install the package.</string>
+    <string name="driver_err_path">Driver path is not valid.</string>
+
+    <!-- Driver probe -->
+    <string name="probe_title">Vulkan driver test</string>
+    <string name="probe_checking">Checking the Vulkan driver…</string>
+    <string name="probe_failed">The driver could not be used: %1$s</string>
+    <string name="probe_default_error">error starting Vulkan.</string>
+    <string name="probe_timeout">The driver test exceeded 20 seconds</string>
+    <string name="probe_crashed">Could not run the test: %1$s</string>
+    <string name="probe_cancelled">The test was closed or cancelled.</string>
+    <string name="probe_gpu">GPU: %1$s</string>
+    <string name="probe_vulkan">Vulkan: %1$s</string>
+    <string name="probe_driver">Driver: %1$s %2$s</string>
+    <string name="probe_bc_textures">BC textures: %1$s</string>
+    <string name="probe_bc_gpu">on the GPU</string>
+    <string name="probe_bc_cpu">converted on the CPU</string>
+    <string name="probe_vertex_missing">Unsupported vertex types: %1$s</string>
+    <string name="probe_compatible">Compatible with the game.</string>
+    <string name="probe_missing">Missing features: %1$s</string>
+    <string name="probe_use_system">Use system driver</string>
+    <string name="probe_play_anyway">Play anyway</string>
+    <string name="probe_invalid">Invalid diagnostic: %1$s</string>
+
+    <!-- Updates -->
+    <string name="updates_title">Updates</string>
+    <string name="updates_up_to_date">You have version %1$s. There is no newer release.</string>
+    <string name="updates_unreachable">Could not reach GitHub. Check your connection and try again later.</string>
+    <string name="update_available_title">New version available: %1$s</string>
+    <string name="update_available_message">You can download it from GitHub or keep playing this version. Install the APK over the current one to keep your saves and settings.</string>
+    <string name="update_now">Update</string>
+    <string name="update_later">Later</string>
+    <string name="whats_new_title">Updated to version %1$s</string>
+    <string name="whats_new_loading">Loading what\'s new…</string>
+    <string name="whats_new_github">View on GitHub</string>
+    <string name="whats_new_unavailable">Could not load the release notes (offline or not published yet). You can read them on GitHub.</string>
+    <string name="no_browser">No browser available to open %1$s</string>
+    <string name="github">GitHub</string>
+
+    <!-- Crash + diagnostics -->
+    <string name="crash_title">The game closed</string>
+    <string name="crash_message">%1$s.\n\nShare the full log so it can be fixed?</string>
+    <string name="crash_not_now">Not now</string>
+    <string name="crash_anr">The game stopped responding</string>
+    <string name="crash_native">The game closed unexpectedly</string>
+    <string name="report_preparing">Preparing the log…</string>
+    <string name="report_message">The full log was saved to:\n%1$s\n\nShare it to Drive, email or a chat so it can be looked at.</string>
+    <string name="report_failed">Could not prepare the log: %1$s</string>
+    <string name="report_err_create">Could not create the report.</string>
+    <string name="report_err_downloads_create">Could not create the file in Downloads.</string>
+    <string name="report_err_downloads_write">Could not write to Downloads.</string>
+    <string name="report_share_chooser">Share diagnostics ZIP</string>
+
+    <!-- Graphics cache -->
+    <string name="cache_reset_title">Reset graphics cache</string>
+    <string name="cache_reset_message">The current game session will be closed. Shaders are compiled again while playing; saves and settings are kept.</string>
+    <string name="cache_reset_button">Reset</string>
+    <string name="cache_reset_done_title">Graphics cache ready</string>
+    <string name="cache_reset_done_message">The next start builds a new cache. The old one is kept as a backup in the app\'s private cache.</string>
+    <string name="cache_title">Graphics cache</string>
+    <string name="cache_err_process">Could not check the game process.</string>
+    <string name="cache_err_reset">Could not reset the graphics cache.</string>
+
+    <!-- Import game files -->
+    <string name="import_title">Import game files</string>
+    <string name="import_message">Pick the game ZIP (for example nfsu-gamedata.zip from Drive or Downloads). It is unpacked into Internal storage/nfsu1; existing files are replaced.</string>
+    <string name="import_choose">Choose ZIP</string>
+    <string name="import_progress">Importing… %1$d of %2$d MB</string>
+    <string name="import_scanning">Reading the ZIP…</string>
+    <string name="import_done">Game files imported: %1$d files, %2$d MB.</string>
+    <string name="import_failed">Import failed: %1$s</string>
+    <string name="import_err_no_exe">The ZIP holds no Speed.exe.</string>
+    <string name="import_err_bad_exe">Speed.exe in the ZIP is not the 1.4 build this port needs (%1$d bytes).</string>
+    <string name="import_err_entry">The ZIP contains an invalid path: %1$s</string>
+    <string name="import_err_space">Not enough free space: %1$d MB needed, %2$d MB free.</string>
+    <string name="import_err_open">Could not open the ZIP.</string>
+    <string name="import_err_nested_archive">This ZIP only wraps other archives (7z/ISO). Use the plain game-folder ZIP (nfsu-gamedata.zip).</string>
+    <string name="import_err_missing_folders">The ZIP is missing game folders: %1$s</string>
+    <string name="import_cancelled">Import cancelled.</string>
+    <string name="import_err_access">Allow file access first.</string>
+    <string name="import_cancel_title">Cancel import?</string>
+    <string name="import_cancel_message">Files copied so far stay in Internal storage/nfsu1.</string>
+    <string name="import_keep_going">Keep going</string>
+
+    <!-- In-game (GameActivity) -->
+    <string name="game_status_checking">Checking Internal storage/nfsu1…</string>
+    <string name="game_toast_allow">Allow file access to read the nfsu1 folder in Internal storage</string>
+    <string name="tilt_no_sensor">This device has no accelerometer</string>
+    <string name="tilt_title">Tilt steering</string>
+    <string name="tilt_enable">Steer by tilting the phone</string>
+    <string name="tilt_invert">Invert direction</string>
+    <string name="tilt_sensitivity">Sensitivity: %1$s×</string>
+    <string name="tilt_help">Hold the phone in your playing position when you apply. Tilting steers left/right; the pedals stay on screen.</string>
+    <string name="tilt_apply">Apply and calibrate</string>
+    <string name="text_title">Type into the game</string>
+    <string name="text_hint">Name, email or password</string>
+    <string name="text_replace">Replace the current name</string>
+    <string name="text_write">Type</string>
+    <string name="text_error">Up to 40 characters: unaccented letters, digits and . , - _ @ + ! # $ % &amp; * ( ) = ? / ; :</string>
+
+    <!-- Touch controls (RacingControlsView) -->
+    <string name="controls_description">Game controls</string>
+    <string name="controls_reset">RESET</string>
+    <string name="controls_save">SAVE</string>
+    <string name="controls_cancel">CANCEL</string>
+    <string name="controls_options">OPTIONS</string>
+    <string name="controls_options_title">Control options</string>
+    <string name="controls_option_style">Style: classic / Xbox / PlayStation</string>
+    <string name="controls_option_tilt">Tilt steering</string>
+    <string name="controls_option_fps">FPS limit</string>
+    <string name="controls_option_save_layout">Save layout with a name</string>
+    <string name="controls_option_load_layout">Load a saved layout</string>
+    <string name="style_title">Driving style</string>
+    <string name="style_classic">Classic · arrows and pedals</string>
+    <string name="style_xbox">Xbox · wheel and A / B / X / Y</string>
+    <string name="style_playstation">PlayStation · wheel and × / ○ / □ / △</string>
+    <string name="layout_name_hint">Layout name</string>
+    <string name="layout_save_title">Save %1$s layout</string>
+    <string name="layout_mode_driving">driving</string>
+    <string name="layout_mode_menu">menu</string>
+    <string name="layout_name_required">Enter a name</string>
+    <string name="layout_saved">Layout saved: %1$s</string>
+    <string name="layout_save_failed">Could not save the layout</string>
+    <string name="layout_none">No saved layouts for this mode yet</string>
+    <string name="layout_load_title">Load layout</string>
+    <string name="layout_load_failed">Could not load the layout</string>
+</resources>

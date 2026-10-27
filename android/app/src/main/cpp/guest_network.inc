@@ -193,7 +193,7 @@ void socketCreate(){
     if(family==AF_INET&&type==3&&protocol==1){  // SOCK_RAW + IPPROTO_ICMP: ping
         int fd=::socket(AF_INET,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,IPPROTO_ICMP);
         if(fd<0){
-            NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: ping ICMP no permitido por Android: %s",std::strerror(errno));
+            NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: ICMP ping not permitted by Android: %s",std::strerror(errno));
             lastError=10013;ret(net::invalidSocket,3);return;  // WSAEACCES, as for a non-admin raw socket on Windows
         }
         uint32_t handle=net::newHandle(fd,false);net::sockets[handle].icmp=true;
@@ -201,7 +201,7 @@ void socketCreate(){
         ret(handle,3);return;
     }
     if(family!=AF_INET||(type!=SOCK_STREAM&&type!=SOCK_DGRAM))
-        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: socket(af=%u,type=%u,protocol=%u) no soportado desde %08x",family,type,protocol,read32(g_esp));
+        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: socket(af=%u,type=%u,protocol=%u) unsupported from %08x",family,type,protocol,read32(g_esp));
     if(family!=AF_INET){lastError=net::wsaEafnosupport;ret(net::invalidSocket,3);return;}
     if(type!=SOCK_STREAM&&type!=SOCK_DGRAM){lastError=10044;ret(net::invalidSocket,3);return;}  // WSAESOCKTNOSUPPORT
     int fd=::socket(AF_INET,int(type)|SOCK_NONBLOCK|SOCK_CLOEXEC,int(protocol));
@@ -282,7 +282,7 @@ void socketSendTo(){
     if(socket){
         int error=errno;
         if(net::hardError(sent))NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: sendto %08x -> %s fallo: %s",arg(0),addressLength?net::describe(address).c_str():"(conectado)",std::strerror(error));
-        else if(sent>=0&&addressLength){net::notePeer(*socket,"envia a",net::describe(address),sent);net::count(arg(0),*socket,net::describe(address),true,sent);}
+        else if(sent>=0&&addressLength){net::notePeer(*socket,"sends to",net::describe(address),sent);net::count(arg(0),*socket,net::describe(address),true,sent);}
         errno=error;
     }
     ret(sent<0?net::failErrno():uint32_t(sent),6);
@@ -311,7 +311,7 @@ void socketRecvFrom(){
             peerLength=sizeof peer;return ::recvfrom(fd,message.data(),message.size(),int(flags&2),reinterpret_cast<sockaddr*>(&peer),&peerLength);});
         if(received<0){ret(net::failErrno(),6);return;}
         message.resize(size_t(received));
-        if(auto* current=net::find(arg(0))){net::notePeer(*current,"ping: respuesta de",net::describe(peer),received);net::count(arg(0),*current,net::describe(peer),false,received);}
+        if(auto* current=net::find(arg(0))){net::notePeer(*current,"ping: reply from",net::describe(peer),received);net::count(arg(0),*current,net::describe(peer),false,received);}
         auto packet=net::icmpPacket(*net::find(arg(0)),std::move(message),*reinterpret_cast<sockaddr_in*>(&peer));
         if(peerLength&&!net::storeAddress(address,lengthPointer,peer,std::min<socklen_t>(peerLength,16))){ret(net::fail(net::wsaEfault),6);return;}
         if(length)std::memcpy(data,packet.data(),std::min<size_t>(length,packet.size()));
@@ -324,7 +324,7 @@ void socketRecvFrom(){
     if(net::hardError(received)){int error=errno;NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: recvfrom %08x fallo: %s",arg(0),std::strerror(error));errno=error;}
     if(received<0){ret(net::failErrno(),6);return;}
     socket=net::find(arg(0));
-    if(socket&&peerLength){net::notePeer(*socket,"recibe de",net::describe(peer),received);net::count(arg(0),*socket,net::describe(peer),false,received);}
+    if(socket&&peerLength){net::notePeer(*socket,"receives from",net::describe(peer),received);net::count(arg(0),*socket,net::describe(peer),false,received);}
     if(peerLength&&!net::storeAddress(address,lengthPointer,peer,std::min<socklen_t>(peerLength,16))){ret(net::fail(net::wsaEfault),6);return;}
     if(uint32_t(received)>length){ret(net::fail(net::wsaEmsgsize),6);return;}
     ret(uint32_t(received),6);
@@ -470,7 +470,7 @@ void hostByName(){
         addrinfo* result=nullptr;
         int status=net::released([&]{return ::getaddrinfo(lookup.c_str(),nullptr,&hints,&result);});
         if(status){
-            NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: %s -> %s no resuelve (%s)",requested.c_str(),lookup.c_str(),gai_strerror(status));
+            NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Winsock: %s -> %s does not resolve (%s)",requested.c_str(),lookup.c_str(),gai_strerror(status));
             lastError=status==EAI_AGAIN?11002:status==EAI_NONAME?net::wsaHostNotFound:net::wsaNoData;ret(0,1);return;
         }
         for(auto* entry=result;entry&&addresses.size()<8;entry=entry->ai_next){
