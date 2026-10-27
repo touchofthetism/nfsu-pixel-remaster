@@ -698,12 +698,32 @@ extern "C" recomp_func_t recomp_lookup(uint32_t va) {
     return hash.find(va);
 }
 extern "C" recomp_func_t nfs_abk_lookup(uint32_t va);  // src/runtime/nfs_abk.h
+thread_local uint32_t lastUnresolvedSoundTarget=0;
 extern "C" int nfs_guest_readable(uint32_t va,uint32_t n){return memory&&memory->readable(va,n);}
+// The sound library's deferred-callback drain (0x652960: for each node of the list at 0x713c70, call
+// [node+8](node[+0xc])) has twice called through a stale pointer into heap memory that now holds texture
+// data (0x12c2ea1c, 0x13d5d71c; both with the HD cars pack installed, at the profile menu, from the 10 ms
+// service thread while the main thread was re-registering the static node 0x713c7c). A stopped game is
+// the worst outcome for a missed sound callback: the call is skipped as a cdecl no-op returning 0 (the
+// caller cleans its one argument) and reported with the bytes at the target, so the case stays visible.
+static void skippedSoundCallback(){
+    static unsigned reported=0;
+    uint32_t target=lastUnresolvedSoundTarget;
+    if(++reported<=8){
+        char bytes[40]="";
+        if(memory&&memory->readable(target,16))for(unsigned i=0;i<16;++i)std::snprintf(bytes+2*i,3,"%02x",*static_cast<unsigned char*>(ptr(target+i,1)));
+        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Sound callback %08x skipped (not code: %s) node=%08x next=%08x arg=%08x",target,bytes,g_eax,
+            memory&&memory->readable(g_eax,16)?read32(g_eax):0u,memory&&memory->readable(g_eax,16)?read32(g_eax+12):0u);
+    }
+    g_eax=0;g_esp+=4;
+}
 extern "C" recomp_func_t recomp_lookup_manual(uint32_t va) {
     if(timerTestActive&&va==timerTestAddress)return timerTestCallback;
     // Routines of EA's sound banks run from the heap: their lifted copies (nfs_abk.h).
-    if((va>=GuestHeaps::firstArena&&va<GuestHeaps::firstArenaEnd)||(va>=GuestHeaps::secondArena&&va-GuestHeaps::secondArena<GuestHeaps::secondArenaSize))
+    if((va>=GuestHeaps::firstArena&&va<GuestHeaps::firstArenaEnd)||(va>=GuestHeaps::secondArena&&va-GuestHeaps::secondArena<GuestHeaps::secondArenaSize)){
         if(recomp_func_t fn=nfs_abk_lookup(va))return fn;
+        if(g_cur_func==0x00652960u){lastUnresolvedSoundTarget=va;return skippedSoundCallback;}
+    }
     return nfs_override_lookup(va);
 }
 extern "C" recomp_func_t recomp_lookup_import(uint32_t va) {
