@@ -4,8 +4,8 @@
 Tensor G5 with an Imagination **PowerVR** GPU (not Mali, not Adreno), 2992×1344 @ 120 Hz, 16 GB RAM. The port had not been reported on a PowerVR phone before this build, so the first session is a validation run as much as a game session. The DXVK recipe already enables PowerVR-specific fallbacks (sample-rate shading only when supported, CPU decoding of BC textures when the GPU lacks them). Custom Vulkan drivers (Turnip/PanVK) do not apply to this GPU: keep **Vulkan driver: System**.
 
 ## Install
-1. On the phone, open the repository's **Releases** page (you are signed in to GitHub) and download the newest `NFSU-Remastered-…-arm64.apk`. Open it; allow Chrome to install apps once.
-2. Download `nfsu-gamedata.zip` from the **gamedata** release (≈1 GB) — or leave it in Drive; the launcher can read it from there.
+1. On the phone, open the **private companion repository's Releases** page (signed in to GitHub) and download the newest `NFSU-Remastered-…-arm64.apk`. Open it; allow Chrome to install apps once.
+2. Download `nfsu-gamedata.zip` from its **gamedata** release (≈1 GB) — or leave the game ZIP in Drive; the launcher can read it from there.
 3. Open the app → **Allow access to Internal storage/nfsu1** → turn on *All files access* → back.
 4. **Import game files (ZIP)** → pick the zip. Progress shows in MB; the launcher verifies `Speed.exe` is the 1.4 build and that the game folders are present.
 5. **PLAY**.
