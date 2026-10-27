@@ -52,7 +52,8 @@ android {
         minSdk 29
         targetSdk pinnedSdk
         versionCode 1000 + buildNumber
-        versionName (buildNumber > 0 ? "${baseVersion}-build.${buildNumber}" : baseVersion) + (guestPgo == 'GENERATE' ? '-pgo' : '')
+        // One argument: `versionName (a) + (b)` would call versionName(a) and discard b (Groovy command syntax).
+        versionName((buildNumber > 0 ? "${baseVersion}-build.${buildNumber}" : baseVersion) + (guestPgo == 'GENERATE' ? '-pgo' : ''))
         // -PnfsAbi=armeabi-v7a builds the separate 32-bit APK.
         ndk { abiFilters(project.findProperty('nfsAbi') ?: 'arm64-v8a') }
         externalNativeBuild {
