@@ -1,0 +1,64 @@
+# One-time: turn the owner's game copy (ci/gamedata.source) into the private "gamedata" release:
+#   lift-inputs.zip    Speed.exe + Sound/**/*.abk for the recompiler (consumed by build.yml)
+#   nfsu-gamedata.zip  the game folder the launcher imports on the phone
+# Nothing game-derived is committed. Re-runs replace the assets.
+name: gamedata
+on:
+  push:
+    branches: [main]
+    paths: [ci/gamedata.source, ci/package_gamedata.py, .github/workflows/gamedata.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: gamedata
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q p7zip-full
+          python3 -m pip install --quiet gdown
+      - name: Read source
+        id: source
+        run: |
+          set -a; source ci/gamedata.source; set +a
+          echo "drive_id=$drive_id" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "game_root=$game_root" >> "$GITHUB_OUTPUT"
+          echo "sha=$speed_exe_sha256" >> "$GITHUB_OUTPUT"
+      - name: Download the owner's copy
+        run: |
+          mkdir -p /tmp/gd
+          gdown "${{ steps.source.outputs.drive_id }}" -O /tmp/gd/game.zip --no-cookies --retries 5
+          ls -la /tmp/gd
+      - name: Extract
+        run: |
+          cd /tmp/gd
+          7z x -y game.zip -o/tmp/gd/outer "${{ steps.source.outputs.archive }}"
+          rm -f game.zip
+          7z x -y "/tmp/gd/outer/${{ steps.source.outputs.archive }}" -o/tmp/gd/inner
+          rm -rf /tmp/gd/outer
+          ls "/tmp/gd/inner/${{ steps.source.outputs.game_root }}"
+      - name: Package
+        run: |
+          python3 ci/package_gamedata.py "/tmp/gd/inner/${{ steps.source.outputs.game_root }}" /tmp/gd/out \
+            --expect-sha256 "${{ steps.source.outputs.sha }}"
+      - name: Publish private release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /tmp/gd/out
+          if gh release view gamedata --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload gamedata lift-inputs.zip nfsu-gamedata.zip SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create gamedata lift-inputs.zip nfsu-gamedata.zip SHA256SUMS --repo "$GITHUB_REPOSITORY" \
+              --title "Game data (private inputs)" \
+              --notes "Private inputs. lift-inputs.zip: Speed.exe 1.4 + sound banks for the recompiler. nfsu-gamedata.zip: the game folder — install the app, tap Import game files, pick this ZIP."
+          fi
+          cat SHA256SUMS

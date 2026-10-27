@@ -1,0 +1,188 @@
+# Builds the signed ARM64 APK of touchofthetism/nfsu-pixel-remaster (public code) with this repository's
+# private game inputs, and publishes it here as a release. ~1-2 hours.
+#
+# Trigger: push a change to BUILD (the file names the public commit to build and the options), or run
+# manually. The lifted game code, DXVK and the ccache are cached between runs; a build of the same
+# inputs with only launcher/runtime changes takes a fraction of the first one.
+name: build
+on:
+  push:
+    branches: [main]
+    paths: [BUILD]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch of the public repository to build
+        default: main
+      lto:
+        description: ThinLTO over the lifted game code (OFF builds faster)
+        type: choice
+        options: ["ON", "OFF"]
+        default: "ON"
+permissions:
+  contents: write
+concurrency:
+  group: build
+  cancel-in-progress: true
+env:
+  CODE_REPO: touchofthetism/nfsu-pixel-remaster
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    defaults: { run: { working-directory: nfsu1-recompiled } }
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: private }
+      - name: Build manifest
+        id: manifest
+        working-directory: private
+        run: |
+          set -a; source BUILD; set +a
+          input_ref="${{ github.event.inputs.ref }}"; ref="${input_ref:-${ref:-main}}"
+          input_lto="${{ github.event.inputs.lto }}"; lto="${input_lto:-${lto:-ON}}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "lto=$lto" >> "$GITHUB_OUTPUT"
+          echo "Building $CODE_REPO @ $ref (LTO $lto)"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ steps.manifest.outputs.ref }}
+          path: nfsu1-recompiled
+          fetch-depth: 1
+      - name: Pins
+        id: pins
+        run: |
+          set -a; source ci/pins.env; set +a
+          for v in ANDROID_PLATFORM ANDROID_BUILD_TOOLS ANDROID_NDK ANDROID_CMAKE JAVA_VERSION; do echo "$v=${!v}" >> "$GITHUB_OUTPUT"; done
+          echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "code_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "${{ steps.pins.outputs.JAVA_VERSION }}" }
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q glslang-tools spirv-tools ninja-build ccache
+          python3 -m pip install --quiet capstone pefile
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;${{ steps.pins.outputs.ANDROID_PLATFORM }}" \
+            "build-tools;${{ steps.pins.outputs.ANDROID_BUILD_TOOLS }}" "ndk;${{ steps.pins.outputs.ANDROID_NDK }}" \
+            "cmake;${{ steps.pins.outputs.ANDROID_CMAKE }}" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ steps.pins.outputs.ANDROID_NDK }}" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+      - name: Game inputs (private release asset of this repository)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/inputs
+          gh release download gamedata -p lift-inputs.zip -D /tmp/inputs --repo "$GITHUB_REPOSITORY"
+          unzip -q /tmp/inputs/lift-inputs.zip -d /tmp/inputs/game
+          sha256sum /tmp/inputs/lift-inputs.zip | tee /tmp/inputs/lift-inputs.sha256
+          echo "lift_key=$(cut -c1-16 /tmp/inputs/lift-inputs.sha256)" >> "$GITHUB_ENV"
+      - name: Sibling checkouts + DXVK
+        run: bash ci/setup_siblings.sh
+      - name: Lift cache
+        id: lift-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            nfsu1-recompiled/src/recomp/gen
+            nfsu1-recompiled/src/recomp/gen_abk
+            nfsu1-recompiled/work/catalog.json
+          key: lift-${{ env.lift_key }}-${{ hashFiles('nfsu1-recompiled/scripts/**', 'nfsu1-recompiled/config/**', 'nfsu1-recompiled/ci/pins.env', 'nfsu1-recompiled/ci/lift.sh') }}
+      - name: Lift Speed.exe and the sound banks to C
+        if: steps.lift-cache.outputs.cache-hit != 'true'
+        run: bash ci/lift.sh /tmp/inputs/game
+      - name: Lifted code present
+        run: |
+          echo "game units: $(ls src/recomp/gen/recomp_*.c | wc -l)"
+          echo "sound-bank units: $(ls src/recomp/gen_abk/abk_*.c | wc -l)"
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ env.lift_key }}-${{ steps.pins.outputs.code_sha }}
+          restore-keys: |
+            ccache-${{ env.lift_key }}-
+            ccache-
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('nfsu1-recompiled/android/**/*.gradle', 'nfsu1-recompiled/android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Signing key
+        # Repository secrets win when set (NFSU_KEYSTORE_B64, NFSU_KEYSTORE_PASSWORD, NFSU_KEY_ALIAS,
+        # NFSU_KEY_PASSWORD). Otherwise the key lives as a private release asset of this repository:
+        # generated once here, reused by every later build so updates install in place. It never leaves GitHub.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEYSTORE_B64: ${{ secrets.NFSU_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NFSU_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NFSU_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NFSU_KEY_PASSWORD }}
+        run: |
+          mkdir -p /tmp/signing && cd /tmp/signing
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > remaster.jks
+            printf 'storeFile=remaster.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
+            echo "signing: repository secrets"
+          elif gh release download signing-key -p remaster.jks -p keystore.properties -D /tmp/signing --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+            echo "signing: existing key from the private signing-key release"
+          else
+            password="$(openssl rand -base64 30 | tr -d '/+=' | cut -c1-32)"
+            keytool -genkeypair -keystore remaster.jks -alias remaster -keyalg RSA -keysize 4096 -validity 10000 \
+              -storepass "$password" -keypass "$password" -dname "CN=NFS Underground Remastered, OU=Pixel build, O=$GITHUB_REPOSITORY_OWNER"
+            printf 'storeFile=remaster.jks\nstorePassword=%s\nkeyAlias=remaster\nkeyPassword=%s\n' "$password" "$password" > keystore.properties
+            gh release create signing-key remaster.jks keystore.properties --repo "$GITHUB_REPOSITORY" \
+              --title "APK signing key (private)" --notes "Generated by build.yml on its first run. Every build signs with it so updates install over each other. Move it to repository secrets (NFSU_KEYSTORE_B64 etc.) if you prefer; secrets take precedence."
+            echo "signing: new key generated and stored as the private signing-key release"
+          fi
+          set -a; source keystore.properties; set +a
+          {
+            echo "NFSU_KEYSTORE_FILE=/tmp/signing/$storeFile"
+            echo "NFSU_KEYSTORE_PASSWORD=$storePassword"
+            echo "NFSU_KEY_ALIAS=$keyAlias"
+            echo "NFSU_KEY_PASSWORD=$keyPassword"
+          } >> "$GITHUB_ENV"
+          keytool -list -keystore remaster.jks -storepass "$storePassword" | grep -i "fingerprint" || true
+      - name: Build the ARM64 APK
+        working-directory: nfsu1-recompiled/android
+        env:
+          CCACHE_MAXSIZE: 4G
+          NFSU_CCACHE: "1"
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache --zero-stats
+          bash ./gradlew --no-daemon --console=plain :app:assembleRelease \
+            -PguestLto="${{ steps.manifest.outputs.lto }}" -PbuildNumber="$GITHUB_RUN_NUMBER" -PreleaseRepo="$GITHUB_REPOSITORY"
+          ccache --show-stats
+          ls -la app/build/outputs/apk/release/
+      - name: Collect outputs
+        id: out
+        run: |
+          base="$(grep -oP "def baseVersion = '\K[^']+" android/app/build.gradle)"
+          version="${base}-build.${GITHUB_RUN_NUMBER}"
+          tag="v${version}"
+          mkdir -p /tmp/release
+          cp android/app/build/outputs/apk/release/*.apk "/tmp/release/NFSU-Remastered-${version}-arm64.apk"
+          # Unstripped libraries for symbolising crash reports from the phone (ndk-stack / llvm-symbolizer).
+          find android/app/build/intermediates -path '*arm64-v8a*' -name 'libnfsu1_*.so' -exec zip -j -q "/tmp/release/symbols-${version}.zip" {} +
+          (cd /tmp/release && sha256sum * > SHA256SUMS)
+          { cat docs/RELEASE_NOTES.md; echo; echo "---"; echo "Source: ${CODE_REPO}@${{ steps.pins.outputs.code_sha }} · ThinLTO ${{ steps.manifest.outputs.lto }} · run ${GITHUB_RUN_NUMBER}"; } > /tmp/notes.md
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          ls -la /tmp/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ steps.out.outputs.tag }}
+          path: /tmp/release
+      - name: Publish release (private)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.out.outputs.tag }}" /tmp/release/* --repo "$GITHUB_REPOSITORY" \
+            --title "NFS Underground Remastered ${{ steps.out.outputs.version }} (${{ steps.pins.outputs.code_short }})" \
+            --notes-file /tmp/notes.md
