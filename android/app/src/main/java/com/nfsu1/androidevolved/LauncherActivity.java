@@ -66,9 +66,10 @@ public final class LauncherActivity extends Activity {
 
     /** First launch after an update: the installed version's release notes from GitHub. */
     private void showWhatsNew(String version) {
+        String bundled = ReleaseUpdates.bundledNotes(this);
         AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle(getString(R.string.whats_new_title, version))
-                .setMessage(R.string.whats_new_loading)
+                .setMessage(bundled != null ? ReleaseUpdates.whatsNewSection(bundled) : getString(R.string.whats_new_loading))
                 .setPositiveButton(R.string.ok, (d, which) -> ReleaseUpdates.whatsNewSeen(this))
                 .setNeutralButton(R.string.whats_new_github, (d, which) -> {
                     ReleaseUpdates.whatsNewSeen(this);
@@ -76,9 +77,11 @@ public final class LauncherActivity extends Activity {
                 })
                 .setOnCancelListener(d -> ReleaseUpdates.whatsNewSeen(this))
                 .show();
+        // The bundled notes are the build's own; GitHub's copy of the release (when visible) replaces them.
         ReleaseUpdates.releaseNotes(this, version, notes -> {
             if (!dialog.isShowing()) return;
-            dialog.setMessage(notes != null ? ReleaseUpdates.whatsNewSection(notes) : getString(R.string.whats_new_unavailable));
+            if (notes != null) dialog.setMessage(ReleaseUpdates.whatsNewSection(notes));
+            else if (bundled == null) dialog.setMessage(getString(R.string.whats_new_unavailable));
         });
     }
 
@@ -466,6 +469,14 @@ public final class LauncherActivity extends Activity {
             if (isFinishing() || isDestroyed()) return;
             refreshOptions();
             if (result.error != null) { if (manual) message(getString(R.string.updates_title), result.error); return; }
+            if (result.hidden) {
+                if (manual) new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                        .setTitle(R.string.updates_title)
+                        .setMessage(getString(R.string.updates_private, ReleaseUpdates.installed(this)))
+                        .setPositiveButton(R.string.whats_new_github, (dialog, which) -> openUrl(Uri.parse(result.url)))
+                        .setNegativeButton(R.string.close, null).show();
+                return;
+            }
             if (!ReleaseVersion.newer(result.tag, ReleaseUpdates.installed(this))) {
                 if (manual) message(getString(R.string.updates_title), getString(R.string.updates_up_to_date, ReleaseUpdates.installed(this)));
                 return;

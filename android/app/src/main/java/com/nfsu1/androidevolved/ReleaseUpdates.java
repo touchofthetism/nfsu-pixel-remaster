@@ -24,7 +24,10 @@ final class ReleaseUpdates {
     private static final String API = "https://api.github.com/repos/" + BuildConfig.RELEASE_REPO + "/releases/latest";
     static final class Result {
         final String tag, url, error;
-        Result(String tag, String url, String error) { this.tag = tag; this.url = url; this.error = error; }
+        /** True when the repository answered 401/403/404 to the anonymous API: its releases are not visible from here. */
+        final boolean hidden;
+        Result(String tag, String url, String error) { this(tag, url, error, false); }
+        Result(String tag, String url, String error, boolean hidden) { this.tag = tag; this.url = url; this.error = error; this.hidden = hidden; }
     }
     static SharedPreferences prefs(Context context) { return context.getSharedPreferences("nfsu1_updates", 0); }
     static String installed(Context context) {
@@ -99,6 +102,16 @@ final class ReleaseUpdates {
         worker.setDaemon(true); worker.start();
     }
 
+    /** The release notes bundled into this APK at build time (docs/RELEASE_NOTES.md), or null. */
+    static String bundledNotes(Context context) {
+        try (InputStream input = context.getResources().openRawResource(R.raw.release_notes)) {
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192]; int n;
+            while ((n = input.read(buffer)) != -1) body.write(buffer, 0, n);
+            return plainText(new String(body.toByteArray(), StandardCharsets.UTF_8));
+        } catch (Exception ignored) { return null; }
+    }
+
     /** In the app, skip the download/install preamble of the release page: start at the changes heading. */
     static String whatsNewSection(String notes) {
         if (notes == null) return null;
@@ -127,7 +140,7 @@ final class ReleaseUpdates {
         if (!force && age >= 0 && age < TimeUnit.HOURS.toMillis(6)) {
             String tag = prefs.getString("latest_tag", "");
             String url = prefs.getString("latest_url", REPO + "releases/latest");
-            return new Result(tag, url.startsWith(REPO + "releases/") ? url : REPO + "releases/latest", null);
+            return new Result(tag, url.startsWith(REPO + "releases/") ? url : REPO + "releases/latest", null, prefs.getBoolean("hidden", false));
         }
         HttpsURLConnection connection = (HttpsURLConnection) new URL(API).openConnection();
         connection.setConnectTimeout(6000); connection.setReadTimeout(6000);
@@ -137,11 +150,12 @@ final class ReleaseUpdates {
         try {
             int code = connection.getResponseCode();
             if (code == 404 || code == 403 || code == 401) {
-                // No public release (private repository, or none published yet): nothing to offer, not a connection problem.
+                // Private repository (or no release yet): nothing visible from here, not a connection problem.
                 prefs.edit().putLong("last_check", System.currentTimeMillis())
-                        .putString("latest_tag", "").putString("latest_url", REPO + "releases").apply();
-                return new Result("", REPO + "releases", null);
+                        .putString("latest_tag", "").putString("latest_url", REPO + "releases").putBoolean("hidden", true).apply();
+                return new Result("", REPO + "releases", null, true);
             }
+            prefs.edit().putBoolean("hidden", false).apply();
             if (code != 200) throw new IOException("GitHub answered " + code);
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             try (InputStream input = connection.getInputStream()) {

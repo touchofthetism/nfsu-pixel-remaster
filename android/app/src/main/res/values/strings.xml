@@ -127,6 +127,7 @@
     <!-- Updates -->
     <string name="updates_title">Updates</string>
     <string name="updates_up_to_date">You have version %1$s. There is no newer release.</string>
+    <string name="updates_private">You have version %1$s. This build\'s releases live in a private repository, which the app cannot read; open it on GitHub to see newer builds.</string>
     <string name="updates_unreachable">Could not reach GitHub. Check your connection and try again later.</string>
     <string name="update_available_title">New version available: %1$s</string>
     <string name="update_available_message">You can download it from GitHub or keep playing this version. Install the APK over the current one to keep your saves and settings.</string>
@@ -173,6 +174,7 @@
     <string name="import_failed">Import failed: %1$s</string>
     <string name="import_err_no_exe">The ZIP holds no Speed.exe.</string>
     <string name="import_err_bad_exe">Speed.exe in the ZIP is not the 1.4 build this port needs (%1$d bytes).</string>
+    <string name="import_err_exe_hash">Speed.exe in the ZIP is not the stock 1.4 build this port was made from (SHA-256 starts %1$s). A modified or no-CD executable will not run here.</string>
     <string name="import_err_entry">The ZIP contains an invalid path: %1$s</string>
     <string name="import_err_space">Not enough free space: %1$d MB needed, %2$d MB free.</string>
     <string name="import_err_open">Could not open the ZIP.</string>

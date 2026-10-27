@@ -1,18 +1,22 @@
 plugins { id 'com.android.application' }
 
+// Toolchain versions come from ci/pins.env, the single place they are pinned (CI reads the same file).
+def pins = new Properties()
+rootProject.file('../ci/pins.env').withInputStream { pins.load(it) }
+def pinnedSdk = (pins.ANDROID_PLATFORM ?: 'android-35').replace('android-', '').toInteger()
+
 // Where the launcher looks for updates and where crash reports are sent (owner/name on GitHub).
-// A private repository is fine: the update check then stays quiet instead of failing.
+// A private repository is fine: the update check then says so instead of failing.
 def releaseRepo = project.findProperty('releaseRepo') ?: 'touchofthetism/nfsu-pixel-remaster'
 // ThinLTO over the lifted game code (CMake option NFS_GUEST_LTO). OFF roughly halves the native
 // build time for iteration builds; releases keep it ON.
 def guestLto = (project.findProperty('guestLto') ?: 'ON').toString().toUpperCase() == 'OFF' ? 'OFF' : 'ON'
-// CI passes its run number: versionCode grows with every build (Android only installs updates with a
-// higher or equal code) and the tag/versionName carries it (v1.0.0-build.12, see ReleaseVersion).
+// CI passes a monotonic build number: versionCode grows with every build (Android only installs updates
+// with a higher or equal code) and the tag/versionName carries it (v1.0.0-build.12, see ReleaseVersion).
 def baseVersion = '1.0.0'
 def buildNumber = (project.findProperty('buildNumber') ?: '0').toString().toInteger()
-// Stable release signing. Environment variables win (CI secrets); otherwise ci/signing/ in this
-// repository (a private, personal build: the key only pins the app identity so updates install
-// in place). Without either, the debug key is used.
+// Stable release signing. Environment variables win (CI); otherwise ci/signing/ (gitignored, never
+// committed). Without either, the debug key is used.
 def signing = [:]
 def keystoreProperties = rootProject.file('../ci/signing/keystore.properties')
 if (System.getenv('NFSU_KEYSTORE_FILE')) {
@@ -25,15 +29,24 @@ if (System.getenv('NFSU_KEYSTORE_FILE')) {
                keyAlias: props.keyAlias, keyPassword: props.keyPassword]
 }
 
+// docs/RELEASE_NOTES.md travels inside the APK (res/raw/release_notes), so "what's new" works even when
+// the release lives in a private repository the app cannot read.
+def notesDir = layout.buildDirectory.dir('generated/notes').get().asFile
+tasks.register('bundleReleaseNotes', Copy) {
+    from(rootProject.file('../docs/RELEASE_NOTES.md')) { rename { 'release_notes.txt' } }
+    into(new File(notesDir, 'raw'))
+}
+
 android {
     namespace 'com.nfsu1.androidevolved'
-    compileSdk 35
-    ndkVersion '28.2.13676358'
+    compileSdk pinnedSdk
+    buildToolsVersion pins.ANDROID_BUILD_TOOLS
+    ndkVersion pins.ANDROID_NDK
     defaultConfig {
         // Distinct id: installs next to the upstream "Android Evolved" APK and never collides with its signature.
         applicationId 'com.nfsu1.remastered'
         minSdk 29
-        targetSdk 35
+        targetSdk pinnedSdk
         versionCode 1000 + buildNumber
         versionName buildNumber > 0 ? "${baseVersion}-build.${buildNumber}" : baseVersion
         // -PnfsAbi=armeabi-v7a builds the separate 32-bit APK.
@@ -49,6 +62,7 @@ android {
         buildConfigField 'String', 'RELEASE_REPO', "\"${releaseRepo}\""
     }
     buildFeatures { buildConfig true }
+    sourceSets { main { res.srcDirs += notesDir.path } }
     signingConfigs {
         if (signing.file) {
             release {
@@ -65,11 +79,13 @@ android {
             signingConfig signing.file ? signingConfigs.release : signingConfigs.debug
         }
     }
-    externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version '3.30.5' } }
+    externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version pins.ANDROID_CMAKE } }
     // adrenotools opens its namespace hook libraries by path from nativeLibraryDir.
     packaging { jniLibs { useLegacyPackaging true } }
     testOptions { unitTests.returnDefaultValues = true }
 }
+
+afterEvaluate { tasks.named('preBuild') { dependsOn 'bundleReleaseNotes' } }
 
 dependencies {
     testImplementation 'junit:junit:4.13.2'

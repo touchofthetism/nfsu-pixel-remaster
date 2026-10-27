@@ -7,7 +7,7 @@ Tensor G5 with an Imagination **PowerVR** GPU (not Mali, not Adreno), 2992×1344
 1. On the phone, open the **private companion repository's Releases** page (signed in to GitHub) and download the newest `NFSU-Remastered-…-arm64.apk`. Open it; allow Chrome to install apps once.
 2. Download `nfsu-gamedata.zip` from its **gamedata** release (≈1 GB) — or leave the game ZIP in Drive; the launcher can read it from there.
 3. Open the app → **Allow access to Internal storage/nfsu1** → turn on *All files access* → back.
-4. **Import game files (ZIP)** → pick the zip. Progress shows in MB; the launcher verifies `Speed.exe` is the 1.4 build and that the game folders are present.
+4. **Import game files (ZIP)** → pick the zip. Progress shows in MB; the launcher verifies `Speed.exe` is the stock 1.4 build (size and SHA-256 — modified or no-CD executables are refused, since the recompiled code only matches the original) and that the game folders are present, then swaps the folders in so a failure half way leaves the previous install intact.
 5. **PLAY**.
 
 Later builds install straight over the previous one (same signing key, higher versionCode); saves and settings stay.

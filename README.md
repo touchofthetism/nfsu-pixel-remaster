@@ -6,6 +6,8 @@ for a **Pixel 10 Pro XL** and built entirely on GitHub Actions. The game stays t
 gets what a remaster would: native 2992×1344, 120 FPS, correct widescreen HUD, 16× anisotropic textures,
 optional MSAA, an English launcher, one-tap game import and one-tap diagnostics.
 
+Toolchain pins (`ci/pins.env`) are read by Gradle and CI alike; the build fails rather than drift.
+
 Upstream's README (build on Windows, the lift pipeline, credits) is kept in [`docs/UPSTREAM-README.md`](docs/UPSTREAM-README.md).
 Install and test notes for the phone: [`docs/PIXEL.md`](docs/PIXEL.md).
 
@@ -33,8 +35,8 @@ Nothing game-derived is ever committed anywhere; `work/` and `src/recomp/gen*/` 
 
 | Area | Change |
 |---|---|
-| Launcher | English UI with Spanish kept as `values-es`; game language follows the phone; **Import game files (ZIP)**; **Share diagnostics** (ZIP via the share sheet, includes the DXVK state cache); update check against this repository |
-| Defaults | Native resolution on ≥ 8 GB devices (75 % otherwise), 120 FPS, widescreen on, 16× anisotropic |
+| Launcher | English UI with Spanish kept as `values-es`; game language follows the phone unless chosen in the launcher; **Import game files (ZIP)** (verifies `Speed.exe` by size and SHA-256, swaps folders in atomically); **Share diagnostics** (ZIP via the share sheet, includes the DXVK state cache); update check that says plainly when releases are private, release notes bundled in the APK |
+| Defaults | Native resolution on phones reporting ≥ 7.5 GiB RAM (the 8 GB class and up; 75 % otherwise), 120 FPS, widescreen on, 16× anisotropic |
 | Graphics | **Texture filtering** → `dxvk.conf` (`d3d9.samplerAnisotropy`) handed to DXVK through `DXVK_CONFIG_FILE`; **Anti-aliasing** → validated MSAA on the back buffer at `CreateDevice`/`Reset` (`android/app/src/main/cpp/graphics_quality.h`, `d3d9_bridge.cpp`) |
 | Native | English runtime messages; `nativeGraphicsQuality` JNI entry |
 | Packaging | `applicationId com.nfsu1.remastered` (installs beside the upstream app), stable signing key, versionCode grows with the CI run |

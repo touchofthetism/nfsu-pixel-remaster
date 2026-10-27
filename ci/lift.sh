@@ -12,6 +12,11 @@ cd "$here"
 mkdir -p work src/recomp/gen src/recomp/gen_abk
 exe="$inputs/Speed.exe"
 [ -f "$exe" ] || { echo "No Speed.exe in $inputs" >&2; exit 1; }
+# shellcheck source=pins.env
+source "$here/ci/pins.env"
+actual="$(sha256sum "$exe" | cut -c1-64)"
+[ "$actual" = "$SPEED_EXE_SHA256" ] || { echo "Speed.exe sha256 $actual is not the 1.4 build this port targets ($SPEED_EXE_SHA256)" >&2; exit 1; }
+echo "[lift] Speed.exe verified ($actual)"
 cp "$exe" work/Speed.analysis.exe
 
 echo "[lift] seeds"

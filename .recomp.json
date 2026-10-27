@@ -3,24 +3,31 @@
   "game": "Need for Speed: Underground",
   "system": "PC (Windows)",
   "type": "recomp",
-  "project": "NFS Underground Android Evolved",
+  "project": "NFS Underground Remastered (Pixel fork of Android Evolved)",
   "status": "released",
   "targets": [
-    "Android",
-    "Windows"
+    "Android"
   ],
   "approach": "Static x86-to-C recompilation with pcrecomp; Win32 compatibility runtime and Direct3D 9 through DXVK/Vulkan on Android.",
   "maintainers": [
     {
-      "name": "codepdbh",
+      "name": "touchofthetism",
+      "link": "https://github.com/touchofthetism"
+    },
+    {
+      "name": "codepdbh (upstream)",
       "link": "https://github.com/codepdbh"
     }
   ],
-  "notes": "Public ARM64 and ARMv7 Android builds with touch controls, gamepad support and graphics settings. Original PC game data required. Compatibility and performance fixes remain in development.",
+  "notes": "Personal fork of codepdbh/nfsu1-recompiled for a Pixel 10 Pro XL: ARM64 only, English launcher, native-resolution/120 FPS defaults, anisotropic filtering and MSAA options, in-app game import and diagnostics, GitHub Actions build. Original PC game data required.",
   "toolchain": "Pcrecomp",
   "links": [
     {
-      "label": "Upstream project",
+      "label": "Upstream port",
+      "url": "https://github.com/codepdbh/nfsu1-recompiled"
+    },
+    {
+      "label": "Recompiler",
       "url": "https://github.com/sp00nznet/pcrecomp"
     }
   ]

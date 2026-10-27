@@ -7,11 +7,14 @@ import android.net.Uri;
 import android.os.StatFs;
 import android.provider.OpenableColumns;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -25,9 +28,12 @@ import java.util.zip.ZipInputStream;
  *
  * The ZIP is streamed once into a staging folder next to the destination, the folder holding Speed.exe
  * is located (the game root may sit at the ZIP root or under one wrapper folder), the executable is
- * checked against the 1.4 build the port targets, and only then are the game's folders moved into
- * place with renames (instant, same filesystem). Existing folders of the same name are replaced; other
- * files in nfsu1 (saves, settings) are untouched. Cancel at any point leaves the destination as it was.
+ * checked against the 1.4 build the port targets — by size and by SHA-256, since several modified
+ * executables share the size — and only then are the game's folders swapped into place with renames
+ * (instant, same filesystem). The swap keeps the previous folders as backups until every new one is in
+ * place, restores them if a rename fails, and writes canonical names (Speed.exe, Cars, FrontEnd…)
+ * whatever the ZIP's casing. Other files in nfsu1 (saves, settings) are untouched. Cancel is honoured
+ * up to the swap; the swap itself is a handful of renames.
  *
  * Bounded like DriverArchive: no absolute or parent-relative paths, an entry count cap and a size cap.
  */
@@ -35,8 +41,9 @@ final class GameImport {
     interface Progress { void update(long doneBytes, long totalBytes, String currentEntry); }
 
     static final class Failure extends IOException {
+        private static final long serialVersionUID = 1L;
         final int messageRes;
-        final Object[] args;
+        final transient Object[] args;
         Failure(int messageRes, Object... args) { super("import failure " + messageRes); this.messageRes = messageRes; this.args = args; }
         String message(Context context) { return context.getString(messageRes, args); }
     }
@@ -47,13 +54,15 @@ final class GameImport {
         Result(int files, long bytes) { this.files = files; this.bytes = bytes; }
     }
 
-    /** Speed.exe 1.4 (android/app/src/main/cpp/game_data.h, scripts/abk_module.py). */
+    /** Speed.exe 1.4 (android/app/src/main/cpp/game_data.h, scripts/abk_module.py, ci/pins.env). */
     static final long SPEED_EXE_SIZE = 3178496;
-    private static final int MAX_ENTRIES = 20000;
-    private static final long MAX_BYTES = 8L * 1024 * 1024 * 1024;
-    private static final int MAX_DEPTH = 24;
-    /** The game folders the launcher and the runtime expect; everything else in the ZIP is ignored. */
+    static final String SPEED_EXE_SHA256 = "c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7";
+    static final int MAX_ENTRIES = 20000;
+    static final long MAX_BYTES = 8L * 1024 * 1024 * 1024;
+    static final int MAX_DEPTH = 24;
+    /** The game folders the launcher and the runtime expect, in canonical spelling; everything else in the ZIP is ignored. */
     static final String[] GAME_FOLDERS = {"Cars", "FrontEnd", "Global", "Languages", "Movies", "Sound", "SNDSTREAMS", "SpeechStreams", "Tracks", "fx"};
+    /** The ones android/app/src/main/cpp/game_data.h opens at boot. */
     static final String[] REQUIRED_FOLDERS = {"Cars", "FrontEnd", "Global", "Languages", "Movies", "Sound", "Tracks"};
 
     private GameImport() {}
@@ -73,16 +82,24 @@ final class GameImport {
         ContentResolver resolver = context.getContentResolver();
         long zipSize = documentSize(resolver, zip);
         if (!destination.isDirectory() && !destination.mkdirs()) throw new Failure(R.string.import_err_access);
-        // Deflated game data expands roughly 1.4x; leave headroom for the rename-in-place step.
+        // Deflated game data expands roughly 1.4x; leave headroom for the swap.
         if (zipSize > 0) {
             long free = new StatFs(destination.getAbsolutePath()).getAvailableBytes();
             long needed = zipSize * 3 / 2 + 128L * 1024 * 1024;
             if (free < needed) throw new Failure(R.string.import_err_space, needed / 1048576, free / 1048576);
         }
+        InputStream raw = resolver.openInputStream(zip);
+        if (raw == null) throw new Failure(R.string.import_err_open);
+        return run(raw, zipSize, destination, cancelled, progress);
+    }
+
+    /** The import proper, free of Android types so it can be tested on the host. */
+    static Result run(InputStream zip, long zipSize, File destination, AtomicBoolean cancelled, Progress progress) throws IOException {
+        if (!destination.isDirectory() && !destination.mkdirs()) throw new Failure(R.string.import_err_access);
         File staging = new File(destination, ".import-" + System.currentTimeMillis());
         if (!staging.mkdirs()) throw new Failure(R.string.import_err_access);
         try {
-            Result unpacked = unpack(resolver, zip, zipSize, staging, cancelled, progress);
+            Result unpacked = unpack(zip, zipSize, staging, cancelled, progress);
             File root = findGameRoot(staging, 0);
             if (root == null) {
                 if (containsArchive(staging, 0)) throw new Failure(R.string.import_err_nested_archive);
@@ -91,60 +108,82 @@ final class GameImport {
             File exe = child(root, "Speed.exe");
             if (exe == null || exe.length() != SPEED_EXE_SIZE)
                 throw new Failure(R.string.import_err_bad_exe, exe == null ? 0 : exe.length());
+            String digest = sha256(exe);
+            if (!SPEED_EXE_SHA256.equalsIgnoreCase(digest))
+                throw new Failure(R.string.import_err_exe_hash, digest.substring(0, 12));
             List<String> missing = new ArrayList<>();
             for (String folder : REQUIRED_FOLDERS) if (child(root, folder) == null) missing.add(folder);
             if (!missing.isEmpty()) throw new Failure(R.string.import_err_missing_folders, String.join(", ", missing));
             if (cancelled.get()) throw new Failure(R.string.import_cancelled);
-            moveIntoPlace(root, destination);
+            swapIntoPlace(root, destination);
             return unpacked;
         } finally {
+            zip.close();
             deleteTree(staging);
         }
     }
 
-    private static Result unpack(ContentResolver resolver, Uri zip, long zipSize, File staging, AtomicBoolean cancelled,
-                                 Progress progress) throws IOException {
+    static Result unpack(InputStream zipStream, long zipSize, File staging, AtomicBoolean cancelled, Progress progress) throws IOException {
         String prefix = staging.getCanonicalPath() + File.separator;
-        InputStream raw = resolver.openInputStream(zip);
-        if (raw == null) throw new Failure(R.string.import_err_open);
-        CountingInputStream counting = new CountingInputStream(raw);
+        CountingInputStream counting = new CountingInputStream(zipStream);
         int files = 0;
         long bytes = 0;
         byte[] buffer = new byte[1 << 16];
-        try (ZipInputStream input = new ZipInputStream(counting)) {
-            ZipEntry entry;
-            while ((entry = input.getNextEntry()) != null) {
-                if (cancelled.get()) throw new Failure(R.string.import_cancelled);
-                if (++files > MAX_ENTRIES) throw new Failure(R.string.import_err_entry, "too many entries");
-                String name = entry.getName();
-                if (name.isEmpty() || name.startsWith("/") || name.contains("\\") || name.contains(":") || name.contains("../")
-                        || name.startsWith("..") || name.split("/").length > MAX_DEPTH)
-                    throw new Failure(R.string.import_err_entry, name);
-                File file = new File(staging, name);
-                if (!file.getCanonicalPath().startsWith(prefix)) throw new Failure(R.string.import_err_entry, name);
-                if (entry.isDirectory()) {
-                    if (!file.isDirectory() && !file.mkdirs()) throw new IOException("mkdir " + name);
-                    continue;
-                }
-                File parent = file.getParentFile();
-                if (parent != null && !parent.isDirectory() && !parent.mkdirs()) throw new IOException("mkdir " + parent);
-                progress.update(counting.count, zipSize, name);
-                try (OutputStream output = new FileOutputStream(file)) {
-                    int n;
-                    while ((n = input.read(buffer)) != -1) {
-                        bytes += n;
-                        if (bytes > MAX_BYTES) throw new Failure(R.string.import_err_entry, "archive too large");
-                        output.write(buffer, 0, n);
-                        if ((bytes & ((1 << 22) - 1)) < n) {   // every ~4 MB
-                            if (cancelled.get()) throw new Failure(R.string.import_cancelled);
-                            progress.update(counting.count, zipSize, name);
-                        }
+        ZipInputStream input = new ZipInputStream(counting);
+        ZipEntry entry;
+        while ((entry = input.getNextEntry()) != null) {
+            if (cancelled.get()) throw new Failure(R.string.import_cancelled);
+            if (++files > MAX_ENTRIES) throw new Failure(R.string.import_err_entry, "too many entries");
+            String name = entry.getName();
+            if (!safeEntryName(name)) throw new Failure(R.string.import_err_entry, name);
+            File file = new File(staging, name);
+            if (!file.getCanonicalPath().startsWith(prefix)) throw new Failure(R.string.import_err_entry, name);
+            if (entry.isDirectory()) {
+                if (!file.isDirectory() && !file.mkdirs()) throw new IOException("mkdir " + name);
+                continue;
+            }
+            File parent = file.getParentFile();
+            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) throw new IOException("mkdir " + parent);
+            progress.update(counting.count, zipSize, name);
+            try (OutputStream output = new FileOutputStream(file)) {
+                int n;
+                while ((n = input.read(buffer)) != -1) {
+                    bytes += n;
+                    if (bytes > MAX_BYTES) throw new Failure(R.string.import_err_entry, "archive too large");
+                    output.write(buffer, 0, n);
+                    if ((bytes & ((1 << 22) - 1)) < n) {   // every ~4 MB
+                        if (cancelled.get()) throw new Failure(R.string.import_cancelled);
+                        progress.update(counting.count, zipSize, name);
                     }
                 }
             }
         }
         progress.update(zipSize > 0 ? zipSize : counting.count, zipSize, "");
         return new Result(files, bytes);
+    }
+
+    /** Relative, forward-slash paths only: no drive letters, no backslashes, no parent segments, bounded depth. */
+    static boolean safeEntryName(String name) {
+        if (name == null || name.isEmpty() || name.startsWith("/") || name.contains("\\") || name.contains(":")) return false;
+        String[] parts = name.split("/");
+        if (parts.length > MAX_DEPTH) return false;
+        for (String part : parts) if (part.equals("..")) return false;
+        return true;
+    }
+
+    static String sha256(File file) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (InputStream input = new FileInputStream(file)) {
+                byte[] buffer = new byte[1 << 16];
+                for (int n; (n = input.read(buffer)) != -1;) digest.update(buffer, 0, n);
+            }
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest.digest()) hex.append(String.format(Locale.ROOT, "%02x", b));
+            return hex.toString();
+        } catch (NoSuchAlgorithmException error) {
+            throw new IOException(error);
+        }
     }
 
     /** The folder holding Speed.exe: the staging root or one of its subfolders, at most two levels down. */
@@ -180,22 +219,50 @@ final class GameImport {
         return null;
     }
 
-    private static void moveIntoPlace(File root, File destination) throws IOException {
+    /**
+     * Moves the game's entries from the unpacked root into the destination under their canonical names.
+     * Existing entries are first renamed to backups; only after every new entry is in place are the
+     * backups deleted. If a rename fails half way, the backups are put back, so the destination is
+     * either the old install or the new one, never a mix.
+     */
+    interface Mover { boolean rename(File from, File to); }
+    static final Mover RENAME = File::renameTo;
+
+    static void swapIntoPlace(File root, File destination) throws IOException { swapIntoPlace(root, destination, RENAME); }
+
+    static void swapIntoPlace(File root, File destination, Mover mover) throws IOException {
         List<String> names = new ArrayList<>();
         names.add("Speed.exe");
         for (String folder : GAME_FOLDERS) names.add(folder);
-        for (String name : names) {
-            File source = child(root, name);
-            if (source == null) continue;
-            File target = new File(destination, source.getName());
-            File existing = child(destination, source.getName());
-            if (existing != null) deleteTree(existing);
-            if (!source.renameTo(target)) {
-                // Different filesystem or a lingering handle: fall back to a copy.
-                copyTree(source, target);
-                deleteTree(source);
+        List<File[]> moved = new ArrayList<>();      // {backup (or null), target}
+        try {
+            for (String name : names) {
+                File source = child(root, name);
+                if (source == null) continue;
+                File target = new File(destination, name);
+                File existing = child(destination, name);
+                File backup = null;
+                if (existing != null) {
+                    backup = new File(destination, ".previous-" + name + "-" + System.nanoTime());
+                    if (!mover.rename(existing, backup)) throw new IOException("Could not set aside the existing " + existing.getName());
+                }
+                if (!mover.rename(source, target)) {
+                    // Different filesystem or a lingering handle: copy, then remove the source.
+                    copyTree(source, target);
+                    deleteTree(source);
+                }
+                moved.add(new File[] {backup, target});
             }
+        } catch (IOException error) {
+            // Undo: remove what was moved in, put the backups back.
+            for (int i = moved.size() - 1; i >= 0; i--) {
+                File backup = moved.get(i)[0], target = moved.get(i)[1];
+                deleteTree(target);
+                if (backup != null && !backup.renameTo(target)) deleteTree(backup);
+            }
+            throw error;
         }
+        for (File[] pair : moved) if (pair[0] != null) deleteTree(pair[0]);
     }
 
     private static void copyTree(File source, File target) throws IOException {
@@ -205,7 +272,7 @@ final class GameImport {
             if (children != null) for (File child : children) copyTree(child, new File(target, child.getName()));
             return;
         }
-        try (InputStream in = new java.io.FileInputStream(source); OutputStream out = new FileOutputStream(target)) {
+        try (InputStream in = new FileInputStream(source); OutputStream out = new FileOutputStream(target)) {
             byte[] buffer = new byte[1 << 16];
             for (int n; (n = in.read(buffer)) != -1;) out.write(buffer, 0, n);
         }

@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <set>
+#include <vector>
 using namespace graphics_quality;
 static void require(bool ok, const char* message) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); } }
 int main() {
@@ -23,8 +24,11 @@ int main() {
     require(chooseMultisample(4, [&](unsigned s) { return only2.count(s) != 0; }) == 2, "4x falls back to 2x when only 2x is supported");
     std::set<unsigned> only4 = {4};
     require(chooseMultisample(8, [&](unsigned s) { return only4.count(s) != 0; }) == 4, "8x falls back to 4x");
-    unsigned asked = 0;
-    chooseMultisample(8, [&](unsigned s) { asked |= s; return false; });
-    require(asked == (8 | 4 | 2), "every lower count is tried before giving up");
+    std::vector<unsigned> asked;
+    chooseMultisample(8, [&](unsigned s) { asked.push_back(s); return false; });
+    require(asked == std::vector<unsigned>{8, 4, 2}, "counts are tried from the requested one downwards, each once");
+    asked.clear();
+    chooseMultisample(4, [&](unsigned s) { asked.push_back(s); return s == 2; });
+    require(asked == std::vector<unsigned>{4, 2}, "probing stops at the first supported count");
     std::puts("Graphics quality policy passed: anisotropy clamp/config and MSAA fallback order");
 }

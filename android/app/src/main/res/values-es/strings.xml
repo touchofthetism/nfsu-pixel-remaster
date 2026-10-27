@@ -119,6 +119,7 @@
 
     <string name="updates_title">Actualizaciones</string>
     <string name="updates_up_to_date">Tienes la versión %1$s. No hay una versión más reciente.</string>
+    <string name="updates_private">Tienes la versión %1$s. Las versiones de esta compilación están en un repositorio privado que la app no puede leer; ábrelo en GitHub para ver si hay una más nueva.</string>
     <string name="updates_unreachable">No se pudo consultar GitHub. Comprueba tu conexión e inténtalo después.</string>
     <string name="update_available_title">Nueva versión disponible: %1$s</string>
     <string name="update_available_message">Puedes descargarla desde GitHub o seguir jugando con esta versión. Instala el APK encima del actual para conservar tus partidas y ajustes.</string>
@@ -162,6 +163,7 @@
     <string name="import_failed">La importación falló: %1$s</string>
     <string name="import_err_no_exe">El ZIP no contiene Speed.exe.</string>
     <string name="import_err_bad_exe">El Speed.exe del ZIP no es la versión 1.4 que necesita este port (%1$d bytes).</string>
+    <string name="import_err_exe_hash">El Speed.exe del ZIP no es el ejecutable 1.4 original del que se hizo este port (SHA-256 empieza por %1$s). Un ejecutable modificado o no-CD no funcionará aquí.</string>
     <string name="import_err_entry">El ZIP contiene una ruta no válida: %1$s</string>
     <string name="import_err_space">No hay espacio suficiente: se necesitan %1$d MB y hay %2$d MB libres.</string>
     <string name="import_err_open">No se pudo abrir el ZIP.</string>

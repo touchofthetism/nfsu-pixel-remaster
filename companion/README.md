@@ -14,6 +14,6 @@ this folder, byte for byte, so the whole system can be read and audited from the
   private release asset (repository secrets take precedence when set).
 - `BUILD` — the build manifest (`ref=`, `lto=`).
 - `ci/gamedata.source` — the pointer to the owner's copy (the Drive id itself is only in the private repository).
-- `ci/package_gamedata.py` lives at the repository root (`ci/package_gamedata.py`); the companion uses the same file.
+- The packaging script is this repository's `ci/package_gamedata.py`, checked out by the workflow (sparse) — one copy, no drift.
 
 Nothing else exists there.

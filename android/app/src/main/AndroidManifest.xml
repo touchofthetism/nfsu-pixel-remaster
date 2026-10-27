@@ -12,7 +12,10 @@
         </activity>
         <activity android:name=".GpuProbeActivity" android:exported="false"
             android:process=":gpu_probe" android:screenOrientation="sensorLandscape" />
+        <!-- configChanges: a 180° flip between the two landscape orientations must not recreate the
+             launcher while an import is streaming into nfsu1 (the dialog and worker belong to this instance). -->
         <activity android:name=".LauncherActivity" android:exported="true" android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

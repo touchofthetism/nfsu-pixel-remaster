@@ -6,7 +6,7 @@ name: gamedata
 on:
   push:
     branches: [main]
-    paths: [ci/gamedata.source, ci/package_gamedata.py, .github/workflows/gamedata.yml]
+    paths: [ci/gamedata.source, .github/workflows/gamedata.yml]
   workflow_dispatch:
 permissions:
   contents: write
@@ -18,7 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The packaging script is the public repository's ci/package_gamedata.py: one copy, no drift.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: touchofthetism/nfsu-pixel-remaster
+          path: code
+          sparse-checkout: ci/package_gamedata.py
+          sparse-checkout-cone-mode: false
       - name: Tools
         run: |
           sudo apt-get update -q
@@ -51,7 +58,7 @@ jobs:
           ls "/tmp/gd/inner/${{ steps.source.outputs.game_root }}"
       - name: Package
         run: |
-          python3 ci/package_gamedata.py "/tmp/gd/inner/${{ steps.source.outputs.game_root }}" /tmp/gd/out \
+          python3 code/ci/package_gamedata.py "/tmp/gd/inner/${{ steps.source.outputs.game_root }}" /tmp/gd/out \
             --expect-sha256 "${{ steps.source.outputs.sha }}"
       - name: Publish private release assets
         env:

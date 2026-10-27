@@ -116,7 +116,10 @@ std::string dxvkConfigPath;
 std::atomic<unsigned> activeMultisample{0};
 std::atomic<uint32_t> activeBackBufferWidth{0},activeBackBufferHeight{0};
 // MSAA is only valid on a DISCARD swap chain, and the game must not read the back buffer back.
+std::atomic<bool> activeAutoDepth{true};
 void applyAntialiasing(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRESENT_PARAMETERS& p){
+    // Whatever happens below describes the device about to exist: start from "no MSAA".
+    activeMultisample=0;activeBackBufferWidth=p.BackBufferWidth;activeBackBufferHeight=p.BackBufferHeight;activeAutoDepth=p.EnableAutoDepthStencil!=0;
     unsigned wanted=requestedMultisample.load();
     if(!wanted||p.MultiSampleType!=D3DMULTISAMPLE_NONE)return;
     auto supported=[&](unsigned samples){
@@ -127,7 +130,7 @@ void applyAntialiasing(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRESENT_P
     unsigned samples=graphics_quality::chooseMultisample(wanted,supported);
     static unsigned logged=~0u;
     if(logged!=samples){logged=samples;NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Anti-aliasing: %ux MSAA requested, %ux usable on this GPU for format %u/%u",wanted,samples,unsigned(p.BackBufferFormat),unsigned(p.AutoDepthStencilFormat));}
-    activeMultisample=samples;activeBackBufferWidth=p.BackBufferWidth;activeBackBufferHeight=p.BackBufferHeight;
+    activeMultisample=samples;
     if(!samples)return;
     p.MultiSampleType=static_cast<D3DMULTISAMPLE_TYPE>(samples);p.MultiSampleQuality=0;p.SwapEffect=D3DSWAPEFFECT_DISCARD;
 }
@@ -182,6 +185,7 @@ void configureD3D9Bridge(void* base,uint32_t (*allocator)(uint32_t),void (*deall
     if(std::getenv("NFS_D3D9_TEST_DISPLAY")){auto window=dxvkCreateTestWindow();if(!window)throw std::runtime_error("Xlib test display unavailable");setD3D9HostWindow(window);acknowledgeD3D9Surface(true);}
 #endif
 }
+extern bool deviceResetPending;  // defined below, with the Reset handling
 void shutdownD3D9Bridge(){
     for(auto& lock:resourceLocks)freeGuest(lock.second.guest);resourceLocks.clear();
     for(uint32_t kind=15;kind;--kind)for(auto it=objects.begin();it!=objects.end();){
@@ -190,6 +194,7 @@ void shutdownD3D9Bridge(){
         uint32_t table;std::memcpy(&table,pointer(it->first),4);freeGuest(table);freeGuest(it->first);addresses.erase(object.native);it=objects.erase(it);
     }
     surfaceRequested=false;surfaceAvailable=false;
+    activeMultisample=0;activeBackBufferWidth=0;activeBackBufferHeight=0;activeAutoDepth=true;deviceResetPending=false;
 #ifndef __ANDROID__
     if(std::getenv("NFS_D3D9_TEST_DISPLAY")){auto window=hostWindow.load();setD3D9HostWindow(nullptr);dxvkDestroyTestWindow(window);}
 #endif
@@ -332,7 +337,12 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
     }
     if(kind==2){auto device=static_cast<IDirect3DDevice9*>(object);switch(method){
         case 9:{*argumentCount=2;D3DDEVICE_CREATION_PARAMETERS p{};HRESULT status=device->GetCreationParameters(&p);if(SUCCEEDED(status)){write(args[1],p.AdapterOrdinal);write(args[1]+4,p.DeviceType);write(args[1]+8,0xf0000301);write(args[1]+12,p.BehaviorFlags);}return status;}
-        case 13:{*argumentCount=3;auto p=presentation(args[1]);IDirect3DSwapChain9* result=nullptr;HRESULT status=device->CreateAdditionalSwapChain(&p,&result);write(args[2],SUCCEEDED(status)?wrap(result,Kind::SwapChain):0);return status;}
+        case 13:{*argumentCount=3;auto p=presentation(args[1]);
+            {IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation{};unsigned keepSamples=activeMultisample.load(),keepW=activeBackBufferWidth.load(),keepH=activeBackBufferHeight.load();bool keepAuto=activeAutoDepth.load();
+             if(SUCCEEDED(device->GetDirect3D(&d3d))&&d3d){if(SUCCEEDED(device->GetCreationParameters(&creation)))applyAntialiasing(d3d,creation.AdapterOrdinal,creation.DeviceType,p);d3d->Release();}
+             // An additional swap chain does not change which back buffer the game's depth surfaces belong to.
+             activeMultisample=keepSamples;activeBackBufferWidth=keepW;activeBackBufferHeight=keepH;activeAutoDepth=keepAuto;}
+            IDirect3DSwapChain9* result=nullptr;HRESULT status=device->CreateAdditionalSwapChain(&p,&result);write(args[2],SUCCEEDED(status)?wrap(result,Kind::SwapChain):0);return status;}
         case 16:{*argumentCount=2;auto p=presentation(args[1]);HRESULT status=D3DERR_DEVICELOST;
             {IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation{};
              if(SUCCEEDED(device->GetDirect3D(&d3d))&&d3d){if(SUCCEEDED(device->GetCreationParameters(&creation)))applyAntialiasing(d3d,creation.AdapterOrdinal,creation.DeviceType,p);d3d->Release();}}
@@ -361,8 +371,10 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
             write(args[6],address);return status;}
         case 29:{*argumentCount=9;IDirect3DSurface9* surface=nullptr;if(args[8])throw std::runtime_error("D3D9 shared resource handles pending");
             auto samples=static_cast<D3DMULTISAMPLE_TYPE>(args[4]);DWORD quality=args[5];unsigned active=activeMultisample.load();
-            // A full-size depth surface for a multisampled back buffer must carry the same sample count.
-            if(active&&samples==D3DMULTISAMPLE_NONE&&args[1]==activeBackBufferWidth.load()&&args[2]==activeBackBufferHeight.load()){
+            // When the device has no automatic depth buffer, the full-size depth surface the game creates is
+            // the back buffer's and must carry its sample count. With an automatic one, extra depth surfaces
+            // belong to offscreen passes and are left alone (a mismatch there would break those passes).
+            if(active&&!activeAutoDepth.load()&&samples==D3DMULTISAMPLE_NONE&&args[1]==activeBackBufferWidth.load()&&args[2]==activeBackBufferHeight.load()){
                 IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation{};DWORD levels=0;
                 if(SUCCEEDED(device->GetDirect3D(&d3d))&&d3d){
                     if(SUCCEEDED(device->GetCreationParameters(&creation))&&SUCCEEDED(d3d->CheckDeviceMultiSampleType(creation.AdapterOrdinal,creation.DeviceType,static_cast<D3DFORMAT>(args[3]),TRUE,static_cast<D3DMULTISAMPLE_TYPE>(active),&levels))){
