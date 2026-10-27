@@ -171,7 +171,7 @@ void setD3D9GraphicsQuality(unsigned anisotropy,unsigned msaaSamples,const std::
         if(!file){NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Could not write %s; texture filtering stays at the game's own",path.c_str());path.clear();}
     }
     {std::lock_guard<std::mutex> lock(qualityMutex);dxvkConfigPath=path;}
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Graphics quality: anisotropy %u (%s), MSAA %u requested",graphics_quality::clampAnisotropy(anisotropy),path.empty()?"not forced":path.c_str(),msaaSamples);
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Graphics quality for this game session: anisotropy %u (%s, read by DXVK at Direct3DCreate9), MSAA %u requested (applied at CreateDevice/Reset)",graphics_quality::clampAnisotropy(anisotropy),path.empty()?"not forced":path.c_str(),msaaSamples);
 }
 void configureD3D9Bridge(void* base,uint32_t (*allocator)(uint32_t),void (*deallocator)(uint32_t)){
     guestBase=base;allocateGuest=allocator;freeGuest=deallocator;
