@@ -15,6 +15,9 @@ std::map<uint32_t,uint32_t> soundMethodCalls;
 uint32_t soundToken{};
 #ifdef __ANDROID__
 AAudioStream* soundStream=nullptr;
+// Audio counters at the moment the stream closed, so a complete session's record still carries them.
+struct AudioStats{int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0;};
+AudioStats lastAudioStats;
 int32_t soundLastXruns=0;
 std::atomic<uint32_t> soundCallbackPeakUs{0};
 aaudio_data_callback_result_t soundCallback(AAudioStream*,void*,void* data,int32_t frames){
@@ -98,7 +101,11 @@ bool startSoundStream(){return true;} // Host tests inspect the mixer; no physic
 #endif
 void shutdownGuestSound(){
 #ifdef __ANDROID__
-    if(soundStream){AAudioStream_requestStop(soundStream);AAudioStream_close(soundStream);soundStream=nullptr;}
+    if(soundStream){
+        // Keep the final counters: the session record is written after the stream is gone.
+        lastAudioStats={AAudioStream_getXRunCount(soundStream),AAudioStream_getBufferSizeInFrames(soundStream),AAudioStream_getFramesPerBurst(soundStream),soundMixer.rate};
+        AAudioStream_requestStop(soundStream);AAudioStream_close(soundStream);soundStream=nullptr;
+    }
 #endif
     for(auto& item:soundObjects){auto& object=item.second;if(object.voice)soundMixer.remove(object.voice);
         if(object.guestSamples)heaps->free(GuestHeaps::process,object.guestSamples);

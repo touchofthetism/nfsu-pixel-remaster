@@ -839,6 +839,7 @@ std::string guestTelemetryJson(bool live){
     int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0;
 #ifdef __ANDROID__
     if(soundStream){xruns=AAudioStream_getXRunCount(soundStream);bufferFrames=AAudioStream_getBufferSizeInFrames(soundStream);burst=AAudioStream_getFramesPerBurst(soundStream);rate=soundMixer.rate;}
+    else{xruns=lastAudioStats.xruns;bufferFrames=lastAudioStats.bufferFrames;burst=lastAudioStats.burst;rate=lastAudioStats.rate;}
 #endif
     std::snprintf(tail,sizeof tail,",\"pipelines\":{\"graphics\":%llu,\"compute\":%llu,\"totalMs\":%.1f,\"maxMs\":%.1f,\"over10Ms\":%llu},"
         "\"audio\":{\"xruns\":%d,\"bufferFrames\":%d,\"burstFrames\":%d,\"rate\":%u},\"render\":{\"width\":%u,\"height\":%u,\"display\":[%u,%u]}",
