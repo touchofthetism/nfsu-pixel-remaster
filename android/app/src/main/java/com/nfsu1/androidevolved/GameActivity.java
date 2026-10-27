@@ -164,6 +164,8 @@ public final class GameActivity extends NativeActivity {
     /** Texture filtering (max anisotropy, 0 = the game's own) and anti-aliasing (MSAA samples, 0 = off); configDir holds dxvk.conf. */
     private static native void nativeGraphicsQuality(int anisotropy, int msaaSamples, String configDir);
     private static native void nativeWidescreen(boolean enabled);
+    private static native void nativeWrongWayWarning(boolean enabled);
+    private static native void nativeCpuPlacement(int placement);
     private static native void nativeOnlineServer(String host);
     private static native void nativeGamepadConnected(boolean connected);
     private static native void nativeGamepadDevices(int[] ids);
@@ -242,9 +244,12 @@ public final class GameActivity extends NativeActivity {
         String language = launch.getStringExtra("language");
         nativeLanguage(language != null ? language : GameOptions.language(this, LauncherActivity.gameRoot()));
         nativeFrameLimit(launch.getIntExtra("frameCap", GameOptions.intValue(this, GameOptions.FPS)));
+        nativeCpuPlacement(launch.getStringExtra("cpuPlacement") != null ? ("system".equals(launch.getStringExtra("cpuPlacement")) ? 0 : 1)
+                : (GameOptions.get(this, GameOptions.CPU).equals("system") ? 0 : 1));
         nativeGraphicsQuality(launch.getIntExtra("anisotropy", GameOptions.intValue(this, GameOptions.ANISOTROPY)),
                 launch.getIntExtra("antialias", GameOptions.intValue(this, GameOptions.ANTIALIAS)), getFilesDir().getAbsolutePath());
         nativeWidescreen(launch.getBooleanExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on")));
+        nativeWrongWayWarning(launch.getBooleanExtra("wrongWay", GameOptions.get(this, GameOptions.WRONGWAY).equals("on")));
         String server = launch.getStringExtra("onlineServer");
         nativeOnlineServer(GameOptions.validServer(server) ? server : GameOptions.onlineServer(this));
         nativeMinimapTop(launch.getBooleanExtra("minimapTop", GameOptions.get(this, GameOptions.MINIMAP).equals("top")));

@@ -18,7 +18,7 @@ common=(--target=aarch64-linux-android29 -fsyntax-only -Wall -Wextra -Werror -Wn
         -I"$pcrecomp/runtime/recomp32" -I"$pcrecomp/runtime/win32hle" -I"$here/src/runtime"
         -I"$ndk/sources/android/native_app_glue" -I"$parent/nfsu2-recompiled/third_party/libadrenotools/include")
 status=0
-for source in main.cpp guest_runtime.cpp d3d9_bridge.cpp vulkan_driver.cpp gpu_probe.cpp; do
+for source in main.cpp guest_runtime.cpp d3d9_bridge.cpp host_perf.cpp vulkan_driver.cpp gpu_probe.cpp; do
     if "$clang" -x c++ -std=c++17 "${common[@]}" "$cpp/$source"; then echo "[syntax] ok   $source"; else echo "[syntax] FAIL $source"; status=1; fi
 done
 for source in overrides.c widescreen.c abk_code.c; do

@@ -241,19 +241,19 @@ It holds this app\'s logs and session telemetry (frame times, heat, memory), the
     <string name="session_header">LAST SESSION</string>
     <string name="session_details_title">Session %1$s</string>
     <string name="opt_saves_backup">Back up saves</string>
-    <string name="opt_saves_backup_value">ZIP to Download/NFSU1</string>
+    <string name="opt_saves_backup_value">Profile folder → ZIP in Download/NFSU1</string>
     <string name="opt_saves_restore">Restore saves</string>
     <string name="opt_saves_restore_value">From a backup ZIP</string>
     <string name="saves_title">Saves</string>
     <string name="saves_working">Working on the save folder…</string>
-    <string name="saves_none">No save folder yet: the game creates nfsu1/Save when a profile is saved.</string>
+    <string name="saves_none">No profile folder yet: the game creates nfsu1/NFS Underground when a profile is saved.</string>
     <string name="saves_backup_done">%1$d files backed up to:
 %2$s
 
 Share the ZIP to Drive to keep a copy off the phone.</string>
     <string name="saves_share_chooser">Share the save backup</string>
-    <string name="saves_restore_message">Choose a save backup ZIP (made with Back up saves). The current nfsu1/Save folder is replaced; the game is closed first.</string>
-    <string name="saves_restore_done">%1$d files restored to nfsu1/Save.</string>
+    <string name="saves_restore_message">Choose a save backup ZIP (made with Back up saves). The current profile folder (nfsu1/NFS Underground) is replaced; the game is closed first.</string>
+    <string name="saves_restore_done">%1$d files restored to the profile folder.</string>
     <string name="saves_failed">Could not finish: %1$s</string>
     <string name="saves_err_open">The chosen file could not be opened.</string>
     <string name="saves_err_staging">Could not write next to the save folder.</string>
@@ -282,4 +282,10 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
         <item quantity="one">%d installed</item>
         <item quantity="other">%d installed</item>
     </plurals>
+    <string name="opt_wrongway">Wrong-way warning</string>
+    <string name="wrongway_on">On · game default</string>
+    <string name="wrongway_off">Off · for free roam</string>
+    <string name="opt_cpu">CPU placement</string>
+    <string name="cpu_fast">Fastest core + performance hints</string>
+    <string name="cpu_system">System scheduler</string>
 </resources>

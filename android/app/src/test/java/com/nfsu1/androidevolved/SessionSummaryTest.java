@@ -11,7 +11,7 @@ public class SessionSummaryTest {
             + "\"durationS\":754,\"complete\":true,\"cores\":8,\"options\":{\"renderWidth\":2992,\"renderHeight\":1344,\"frameCap\":120,\"antialias\":0},"
             + "\"display\":{\"mode\":\"2992x1344@120.0\",\"modes\":[\"2992x1344@60.0\",\"2992x1344@120.0\"],\"preferredRefresh\":120},"
             + "\"native\":{\"frames\":{\"frames\":61234,\"activeSeconds\":512.0,\"avgFps\":119.6,\"p50Ms\":8.5,\"p90Ms\":9.0,\"p99Ms\":11.9,\"p999Ms\":40.0,"
-            + "\"maxMs\":182.0,\"onePercentLowFps\":84.0,\"hitches\":7,\"stalls\":2,\"gaps\":1,\"presentMsAvg\":2.1,\"targetFps\":120,"
+            + "\"maxMs\":182.0,\"onePercentLowFps\":84.0,\"hitches\":7,\"stalls\":2,\"gaps\":1,\"spikes\":4,\"presentMsAvg\":2.1,\"targetFps\":120,"
             + "\"histogramUs\":[[8500,50000],[9000,11000],[250000,2]],\"perSecond\":[[0,118,9.1],[120,61,182.0],[121,97,40.0]]},"
             + "\"pipelines\":{\"graphics\":212,\"compute\":3,\"totalMs\":1830.0,\"maxMs\":96.0,\"over10Ms\":41},"
             + "\"audio\":{\"xruns\":0,\"bufferFrames\":1920,\"burstFrames\":192,\"rate\":48000},\"render\":{\"width\":2992,\"height\":1344,\"display\":[2992,1344]},"
@@ -22,7 +22,7 @@ public class SessionSummaryTest {
 
     @Test public void shortLineForTheLauncherCard() throws Exception {
         SessionSummary summary = SessionSummary.parse(RECORD);
-        assertEquals("12 min 34 s · 120 FPS avg · 1% low 84 · 7 hitches · light", summary.shortLine());
+        assertEquals("12 min 34 s · 120 FPS avg · 1% low 84 · 4 spikes · light", summary.shortLine());
         assertEquals(61234, summary.frames);
         assertEquals(215, summary.pipelineCompiles);
         assertEquals(1, summary.thermalMax);
@@ -39,7 +39,7 @@ public class SessionSummaryTest {
                 "Options: antialias=0 frameCap=120 renderHeight=1344 renderWidth=2992",
                 "Display: 2992x1344@120.0",
                 "Frames 61234 over 512 s active: avg 119.6 FPS, 1% low 84 FPS (p99 11.9 ms)",
-                "Hitches 7 (>2.5 frame periods), stalls 2 (>100 ms), gaps 1 (>2 s); Present avg 2.10 ms; frame cap 120",
+                "Spikes 4 (>2.5x the frames around them), hitches 7 (>2.5 cap periods), stalls 2 (>100 ms), gaps 1 (>2 s); Present avg 2.10 ms; frame cap 120",
                 "Frame-time histogram (≤ms: frames): 8.5:50000 9.0:11000 250.0:2",
                 "Seconds below 80% of the cap: 1 of 3. Worst seconds (t, fps, max ms): [120: 61 fps, 182 ms]",
                 "Pipelines compiled: 212 graphics + 3 compute, 1830 ms total, worst 96 ms, 41 over 10 ms",

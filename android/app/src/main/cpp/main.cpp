@@ -331,6 +331,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
 }
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeResolution(JNIEnv*,jclass,jint width,jint height){setGuestResolution(unsigned(width),unsigned(height));}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeFrameLimit(JNIEnv*,jclass,jint cap){setGuestFrameLimit(unsigned(cap));}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeCpuPlacement(JNIEnv*,jclass,jint placement){setGuestCpuPlacement(int(placement));}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeGamepadConnected(JNIEnv*,jclass,jboolean connected){setGuestPadConnected(connected==JNI_TRUE);}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeGamepadDevices(JNIEnv* env,jclass,jintArray ids){
     std::vector<int32_t> devices;
@@ -341,6 +342,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     gamepadDevices=std::move(devices);
 }
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeWidescreen(JNIEnv*,jclass,jboolean enabled){setGuestWidescreen(enabled==JNI_TRUE);}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeWrongWayWarning(JNIEnv*,jclass,jboolean enabled){setGuestWrongWayWarning(enabled==JNI_TRUE);}
 // Minimap at the top-left: the bottom-left corner sits under the steering thumb.
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeOnlineServer(JNIEnv* env,jclass,jstring host){
     const char* text=env->GetStringUTFChars(host,nullptr);setGuestOnlineServer(text?text:"");env->ReleaseStringUTFChars(host,text);

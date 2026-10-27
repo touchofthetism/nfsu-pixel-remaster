@@ -37,12 +37,20 @@ int main(){
     require(s.stalls==1,"only the 120 ms frame is a stall");
     require(s.gaps==1,"a 3 s interval is a gap");
     require(near(s.maxMs,120,.01),"max frame time");
+    require(s.spikes==2,"both slow frames are spikes against the 8.3 ms typical frame");
     // An announced pause: no interval is measured across it.
     telemetry.pause();
     telemetry.present(time+=seconds(30),milliseconds(1),120);
     telemetry.present(time+=microseconds(8333),milliseconds(1),120);
     s=telemetry.summary();
     require(s.gaps==1&&s.frames==1202,"pause() hides the background time");
+    // A session that runs at a steady 33 FPS below a 120 cap: every frame is a "hitch" against the cap
+    // (30 ms > the 25 ms floor) but none is a spike.
+    FrameTelemetry slow33;auto t33=Clock::time_point(seconds(9));
+    for(int i=0;i<600;++i){slow33.present(t33,milliseconds(1),120);t33+=milliseconds(30);}
+    require(slow33.summary().hitches==599&&slow33.summary().spikes==0,"steady slow frames are not spikes");
+    slow33.present(t33+=milliseconds(60),milliseconds(1),120);   // 90 ms after the last Present
+    require(slow33.summary().spikes==1,"a 90 ms frame among 30 ms frames is a spike");
     // At 30 FPS the hitch threshold is 2.5 periods (83 ms): a 50 ms frame is normal there.
     FrameTelemetry slow;auto t2=Clock::time_point(seconds(5));
     slow.present(t2,milliseconds(2),30);slow.present(t2+=milliseconds(50),milliseconds(2),30);slow.present(t2+=milliseconds(90),milliseconds(2),30);

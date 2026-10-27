@@ -123,9 +123,10 @@ final class GameTelemetry {
     /** Final record (complete=true) and the end of the log capture; safe to call from the UI thread. */
     void stop() {
         synchronized (this) { if (stopped) return; stopped = true; }
+        // The sampler first: the final flush must not race with a sample being appended.
+        if (handler != null) handler.removeCallbacksAndMessages(null);
         append("stop", null);
         flush(true);
-        if (handler != null) handler.removeCallbacksAndMessages(null);
         thread.quitSafely();
         if (logcat != null) { logcat.destroy(); logcat = null; }
     }
@@ -269,10 +270,18 @@ final class GameTelemetry {
                     try { record.put("native", new JSONObject(nativeText)); }
                     catch (JSONException malformed) { record.put("nativeRaw", nativeText); }
                 }
-                synchronized (samples) { record.put("samples", samples); }
-                synchronized (events) { record.put("events", events); }
+                // Serialise while holding both lists: toString walks them, and the sampler thread appends
+                // (build 2 crashed at exit with a ConcurrentModificationException here).
+                String text;
+                synchronized (samples) {
+                    synchronized (events) {
+                        record.put("samples", samples);
+                        record.put("events", events);
+                        text = record.toString();
+                    }
+                }
                 try (Writer writer = new OutputStreamWriter(new FileOutputStream(sessionTemp), StandardCharsets.UTF_8)) {
-                    writer.write(record.toString());
+                    writer.write(text);
                 }
                 if (!sessionTemp.renameTo(sessionFile)) throw new IOException("rename");
             }

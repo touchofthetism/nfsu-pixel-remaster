@@ -32,7 +32,7 @@ public:
     static constexpr size_t kMaxSeconds = 4 * 3600;
 
     struct Summary {
-        uint64_t frames = 0, hitches = 0, stalls = 0, gaps = 0;
+        uint64_t frames = 0, hitches = 0, stalls = 0, gaps = 0, spikes = 0;
         double activeSeconds = 0, avgFps = 0, p50Ms = 0, p90Ms = 0, p99Ms = 0, p999Ms = 0, maxMs = 0, presentMsAvg = 0;
         unsigned targetFps = 0;
     };
@@ -122,6 +122,10 @@ private:
         uint32_t hitchUs = std::max<uint32_t>(25000, 2500000u / target);  // 2.5 frame periods
         if (us > hitchUs) ++hitches_;
         if (us > kStallUs) ++stalls_;
+        // Spikes: frames much slower than the frames around them, whatever the cap (the cap may be
+        // unreachable, and then "hitches" counts nearly everything). Typical = exponential average.
+        if (typicalUs_ > 0 && us > typicalUs_ * 5 / 2 && us > 12000) ++spikes_;
+        typicalUs_ = typicalUs_ ? (typicalUs_ * 15 + us) / 16 : us;
         size_t bucket = size_t(std::lower_bound(kBoundsUs.begin(), kBoundsUs.end(), us) - kBoundsUs.begin());
         ++histogram_[std::min(bucket, kBoundsUs.size() - 1)];
         recent_[recentNext_] = us;
@@ -149,7 +153,7 @@ private:
 
     Summary summaryLocked() const {
         Summary s;
-        s.frames = frames_; s.hitches = hitches_; s.stalls = stalls_; s.gaps = gaps_; s.targetFps = targetFps_;
+        s.frames = frames_; s.hitches = hitches_; s.stalls = stalls_; s.gaps = gaps_; s.spikes = spikes_; s.targetFps = targetFps_;
         s.activeSeconds = totalUs_ / 1e6;
         s.avgFps = totalUs_ ? frames_ * 1e6 / double(totalUs_) : 0;
         s.p50Ms = percentileMsLocked(.5); s.p90Ms = percentileMsLocked(.9);
@@ -165,11 +169,11 @@ private:
         char text[512];
         std::snprintf(text, sizeof text,
             "{\"frames\":%llu,\"activeSeconds\":%.1f,\"avgFps\":%.1f,\"p50Ms\":%.2f,\"p90Ms\":%.2f,\"p99Ms\":%.2f,"
-            "\"p999Ms\":%.2f,\"maxMs\":%.2f,\"onePercentLowFps\":%.1f,\"hitches\":%llu,\"stalls\":%llu,\"gaps\":%llu,"
+            "\"p999Ms\":%.2f,\"maxMs\":%.2f,\"onePercentLowFps\":%.1f,\"hitches\":%llu,\"stalls\":%llu,\"gaps\":%llu,\"spikes\":%llu,"
             "\"presentMsAvg\":%.2f,\"targetFps\":%u",
             static_cast<unsigned long long>(s.frames), s.activeSeconds, s.avgFps, s.p50Ms, s.p90Ms, s.p99Ms, s.p999Ms,
             s.maxMs, s.p99Ms > 0 ? 1000.0 / s.p99Ms : 0.0, static_cast<unsigned long long>(s.hitches),
-            static_cast<unsigned long long>(s.stalls), static_cast<unsigned long long>(s.gaps), s.presentMsAvg, s.targetFps);
+            static_cast<unsigned long long>(s.stalls), static_cast<unsigned long long>(s.gaps), static_cast<unsigned long long>(s.spikes), s.presentMsAvg, s.targetFps);
         return text;
     }
 
@@ -177,8 +181,8 @@ private:
     bool started_ = false;
     Clock::time_point start_{}, last_{};
     unsigned targetFps_ = 0;
-    uint64_t frames_ = 0, hitches_ = 0, stalls_ = 0, gaps_ = 0, totalUs_ = 0, presentNs_ = 0, presentCalls_ = 0;
-    uint32_t maxUs_ = 0;
+    uint64_t frames_ = 0, hitches_ = 0, stalls_ = 0, gaps_ = 0, spikes_ = 0, totalUs_ = 0, presentNs_ = 0, presentCalls_ = 0;
+    uint32_t maxUs_ = 0, typicalUs_ = 0;
     std::array<uint64_t, kBoundsUs.size()> histogram_{};
     std::array<uint32_t, kRecentFrames> recent_{};
     size_t recentNext_ = 0, recentCount_ = 0;

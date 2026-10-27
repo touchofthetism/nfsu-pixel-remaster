@@ -1,0 +1,114 @@
+# Builds the HD texture pack (a launcher mod pack ZIP) from the private game data with the public
+# repository's tools/nfstex (Real-ESRGAN on the runner's CPU) and publishes it here as a release:
+# hdpack-v<version> with nfsu-hdpack-v<version>.zip and SHA256SUMS. Install it on the phone with
+# Install mod pack (ZIP) in the launcher.
+#
+# Trigger: push a change to HDPACK (ref of the public code, profile, version) or run manually.
+name: hdpack
+on:
+  push:
+    branches: [main]
+    paths: [HDPACK]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch of the public repository (tools/nfstex)
+        default: main
+      profile:
+        description: Which bundles (hud = gauges only, ui = whole interface)
+        type: choice
+        options: ["hud", "ui"]
+        default: "ui"
+      version:
+        description: Pack version (release hdpack-v<version>)
+        default: "1"
+permissions:
+  contents: write
+concurrency:
+  group: hdpack
+  cancel-in-progress: true
+env:
+  CODE_REPO: touchofthetism/nfsu-pixel-remaster
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { path: private }
+      - name: Manifest
+        id: manifest
+        working-directory: private
+        run: |
+          set -a; source HDPACK; set +a
+          input_ref="${{ github.event.inputs.ref }}"; ref="${input_ref:-${ref:-main}}"
+          input_profile="${{ github.event.inputs.profile }}"; profile="${input_profile:-${profile:-ui}}"
+          input_version="${{ github.event.inputs.version }}"; version="${input_version:-${version:-1}}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"; echo "profile=$profile" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "HD pack v$version, profile $profile, tools from $CODE_REPO @ $ref"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ steps.manifest.outputs.ref }}
+          path: code
+          fetch-depth: 1
+          sparse-checkout: tools
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - name: Python packages (CPU torch)
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install --quiet numpy pillow
+          python -c "import torch, PIL; print('torch', torch.__version__, 'threads', torch.get_num_threads(), 'pillow', PIL.__version__)"
+      - name: Real-ESRGAN weights
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: weights
+        with:
+          path: models
+          key: realesrgan-weights-v1
+      - name: Download weights
+        if: steps.weights.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models && cd models
+          curl -sSfL -o realesr-animevideov3.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth
+          curl -sSfL -o RealESRGAN_x4plus.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
+          curl -sSfL -o RealESRGAN_x4plus_anime_6B.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth
+          sha256sum *.pth
+      - name: Game bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download gamedata -p nfsu-gamedata.zip -D /tmp/data --repo "$GITHUB_REPOSITORY"
+          mkdir -p /tmp/game
+          # Only the bundles the pack rewrites (the ZIP keeps the game folder's own paths).
+          unzip -q /tmp/data/nfsu-gamedata.zip -d /tmp/game \
+            'Global/HUDTEX.BIN' 'Global/INGAMEB.BUN' 'FrontEnd/FrontB.lzc' 'FrontEnd/TSELECT.BIN' \
+            'FrontEnd/MAGAZINE_TEXTURES.BIN' 'FrontEnd/Road_Segment.bin' 'Speed.exe' || true
+          rm -f /tmp/data/nfsu-gamedata.zip
+          ls -la /tmp/game /tmp/game/Global /tmp/game/FrontEnd
+      - name: Toolkit tests
+        working-directory: code/tools
+        run: python -m unittest discover -s . -p "test_*.py"
+      - name: Build the pack
+        working-directory: code/tools
+        run: |
+          mkdir -p /tmp/out
+          python nfstex/hdpack.py --game /tmp/game --out "/tmp/out/nfsu-hdpack-v${{ steps.manifest.outputs.version }}.zip" \
+            --models "$GITHUB_WORKSPACE/models" --profile "${{ steps.manifest.outputs.profile }}" \
+            --name "HD interface pack" --version "${{ steps.manifest.outputs.version }}" 2>&1 | tee /tmp/out/build.log | grep -v "^  "
+          cd /tmp/out && sha256sum *.zip > SHA256SUMS && cat SHA256SUMS && ls -la
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hdpack-v${{ steps.manifest.outputs.version }}
+          path: /tmp/out/*
+          retention-days: 30
+      - name: Publish release (private)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="hdpack-v${{ steps.manifest.outputs.version }}"
+          notes="HD interface pack v${{ steps.manifest.outputs.version }} (profile ${{ steps.manifest.outputs.profile }}), built from the game's own textures with Real-ESRGAN by $CODE_REPO @ ${{ steps.manifest.outputs.ref }}.
+          Install: download the ZIP on the phone, then launcher -> Install mod pack (ZIP). Remove it any time under Mod packs."
+          gh release delete "$tag" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release create "$tag" /tmp/out/*.zip /tmp/out/SHA256SUMS /tmp/out/build.log --repo "$GITHUB_REPOSITORY" --title "HD interface pack v${{ steps.manifest.outputs.version }}" --notes "$notes"

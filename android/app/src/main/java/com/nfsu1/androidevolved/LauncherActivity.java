@@ -758,6 +758,8 @@ public final class LauncherActivity extends Activity {
                 .putExtra("anisotropy", GameOptions.intValue(this, GameOptions.ANISOTROPY))
                 .putExtra("antialias", GameOptions.intValue(this, GameOptions.ANTIALIAS))
                 .putExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on"))
+                .putExtra("wrongWay", GameOptions.get(this, GameOptions.WRONGWAY).equals("on"))
+                .putExtra("cpuPlacement", GameOptions.get(this, GameOptions.CPU))
                 .putExtra("minimapTop", GameOptions.get(this, GameOptions.MINIMAP).equals("top"))
                 .putExtra("backBuffers", GameOptions.intValue(this, GameOptions.LATENCY))
                 .putExtra("cpuTextures", GameOptions.get(this, GameOptions.TEXTURES).equals("cpu"))

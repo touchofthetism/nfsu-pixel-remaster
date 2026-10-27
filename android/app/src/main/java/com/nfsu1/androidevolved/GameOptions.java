@@ -43,7 +43,7 @@ final class GameOptions {
 
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
-            ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog";
+            ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -61,9 +61,18 @@ final class GameOptions {
             new Option(WIDESCREEN, R.string.opt_widescreen,
                     new String[] {"on", "off"},
                     new int[] {R.string.widescreen_on, R.string.widescreen_off}),
+            // Free roam (mod pack): the HUD's wrong-way warning and countdown make no sense off the circuit.
+            new Option(WRONGWAY, R.string.opt_wrongway,
+                    new String[] {"on", "off"},
+                    new int[] {R.string.wrongway_on, R.string.wrongway_off}),
             new Option(MINIMAP, R.string.opt_minimap,
                     new String[] {"top", "bottom"},
                     new int[] {R.string.minimap_top, R.string.minimap_bottom}),
+            // The game's one busy thread on the fastest core with a performance-hint session (host_perf.h);
+            // "system" leaves placement to the scheduler, which parked it on a mid core in build 2.
+            new Option(CPU, R.string.opt_cpu,
+                    new String[] {"fast", "system"},
+                    new int[] {R.string.cpu_fast, R.string.cpu_system}),
             new Option(LATENCY, R.string.opt_latency,
                     new String[] {"2", "1"},
                     new int[] {R.string.latency_performance, R.string.latency_low}),
@@ -135,6 +144,8 @@ final class GameOptions {
             case TEXTURES: return "auto";
             case GAMEPAD: return "keys";
             case OVERLAY: return "off";
+            case WRONGWAY: return "on";
+            case CPU: return "fast";
             case GFXLOG: return "info";
             default: throw new IllegalArgumentException(key);
         }

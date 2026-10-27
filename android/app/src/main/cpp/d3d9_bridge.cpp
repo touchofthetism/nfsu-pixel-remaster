@@ -46,6 +46,22 @@ std::atomic<bool> surfaceRequested{false},surfaceAvailable{false};
 // Session call counts per D3D9 method, indexed like the first-call log (kind*256+method); the
 // telemetry JSON reports the non-zero ones so a frame's draw/state profile is visible in a report.
 std::atomic<uint32_t> methodTotals[4096];
+// A race frame makes ~45,000 device calls (Pixel 10 Pro XL telemetry: 7,200 SetSamplerState, 6,400
+// SetRenderState, 4,300 SetVertexShaderConstantF...). The device handle is resolved without the hash
+// map, and render/sampler/texture-stage states that repeat the current value return before DXVK (which
+// would also drop them, after its own lock). The shadow is forgotten whenever something else could have
+// changed device state: Reset, a state block, device loss.
+uint32_t cachedDeviceHandle=0;IDirect3DDevice9* cachedDevice=nullptr;
+constexpr unsigned kRenderStates=256,kSamplers=20,kSamplerStates=16,kStages=8,kStageStates=40;
+uint32_t renderStateShadow[kRenderStates];bool renderStateKnown[kRenderStates];
+uint32_t samplerShadow[kSamplers][kSamplerStates];bool samplerKnown[kSamplers][kSamplerStates];
+uint32_t stageShadow[kStages][kStageStates];bool stageKnown[kStages][kStageStates];
+uint64_t statesFiltered=0,statesForwarded=0;
+// Between BeginStateBlock and EndStateBlock every setter must reach DXVK: it is recorded, not applied.
+bool recordingStateBlock=false;
+void forgetStateShadow(){
+    std::memset(renderStateKnown,0,sizeof renderStateKnown);std::memset(samplerKnown,0,sizeof samplerKnown);std::memset(stageKnown,0,sizeof stageKnown);
+}
 void* pointer(uint32_t address){return address?static_cast<uint8_t*>(guestBase)+address:nullptr;}
 void write(uint32_t address,uint32_t value){if(!address)throw std::runtime_error("Null D3D9 output");std::memcpy(pointer(address),&value,4);}
 uint32_t wrap(IUnknown* native,Kind kind){
@@ -79,6 +95,7 @@ template<class T>T* nativeObject(uint32_t address){
 uint32_t wrapTexture(IDirect3DBaseTexture9* texture){if(!texture)return 0;switch(texture->GetType()){case D3DRTYPE_TEXTURE:return wrap(texture,Kind::Texture);case D3DRTYPE_CUBETEXTURE:return wrap(texture,Kind::Cube);case D3DRTYPE_VOLUMETEXTURE:return wrap(texture,Kind::VolumeTexture);default:throw std::runtime_error("Unknown D3D9 base texture type");}}
 void retireGuestObject(uint32_t address){
     auto found=objects.find(address);if(found==objects.end())return;
+    if(address==cachedDeviceHandle){cachedDeviceHandle=0;cachedDevice=nullptr;forgetStateShadow();}
     uint32_t table;std::memcpy(&table,pointer(address),4);
     freeGuest(table);freeGuest(address);addresses.erase(found->second.native);objects.erase(found);
 }
@@ -214,6 +231,10 @@ void shutdownD3D9Bridge(){
     }
     surfaceRequested=false;surfaceAvailable=false;
     activeMultisample=0;activeBackBufferWidth=0;activeBackBufferHeight=0;activeAutoDepth=true;deviceResetPending=false;
+    cachedDeviceHandle=0;cachedDevice=nullptr;recordingStateBlock=false;forgetStateShadow();
+    if(statesFiltered||statesForwarded)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 state calls this session: %llu repeated the current value (dropped here), %llu forwarded",
+        static_cast<unsigned long long>(statesFiltered),static_cast<unsigned long long>(statesForwarded));
+    statesFiltered=statesForwarded=0;
 #ifndef __ANDROID__
     if(std::getenv("NFS_D3D9_TEST_DISPLAY")){auto window=hostWindow.load();setD3D9HostWindow(nullptr);dxvkDestroyTestWindow(window);}
 #endif
@@ -264,6 +285,24 @@ std::vector<D3DDISPLAYMODE> adapterModes(IDirect3D9* d3d,UINT adapter,D3DFORMAT 
 bool deviceResetPending=false;
 uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumentCount){
     uint32_t kind=(token-methodBase)/4096,method=((token-methodBase)%4096)/16;
+    methodTotals[((token-methodBase)/16)&4095].fetch_add(1,std::memory_order_relaxed);
+    // Device state setters: the hot path. Resolved without the map and filtered against the shadow.
+    if(kind==2&&args[0]==cachedDeviceHandle&&cachedDevice&&!recordingStateBlock){
+        switch(method){
+        case 57:{*argumentCount=3;uint32_t state=args[1],value=args[2];
+            if(state<kRenderStates){if(renderStateKnown[state]&&renderStateShadow[state]==value){++statesFiltered;return D3D_OK;}renderStateShadow[state]=value;renderStateKnown[state]=true;}
+            ++statesForwarded;return cachedDevice->SetRenderState(static_cast<D3DRENDERSTATETYPE>(state),static_cast<DWORD>(value));}
+        case 69:{*argumentCount=4;uint32_t sampler=args[1],state=args[2],value=args[3];
+            // D3DDMAPSAMPLER and the vertex texture samplers (257..260) map to 16..19.
+            unsigned slot=sampler<16?sampler:sampler==256?16:sampler>=257&&sampler<=259?sampler-257+17:kSamplers;
+            if(slot<kSamplers&&state<kSamplerStates){if(samplerKnown[slot][state]&&samplerShadow[slot][state]==value){++statesFiltered;return D3D_OK;}samplerShadow[slot][state]=value;samplerKnown[slot][state]=true;}
+            ++statesForwarded;return cachedDevice->SetSamplerState(static_cast<DWORD>(sampler),static_cast<D3DSAMPLERSTATETYPE>(state),static_cast<DWORD>(value));}
+        case 67:{*argumentCount=4;uint32_t stage=args[1],state=args[2],value=args[3];
+            if(stage<kStages&&state<kStageStates){if(stageKnown[stage][state]&&stageShadow[stage][state]==value){++statesFiltered;return D3D_OK;}stageShadow[stage][state]=value;stageKnown[stage][state]=true;}
+            ++statesForwarded;return cachedDevice->SetTextureStageState(static_cast<DWORD>(stage),static_cast<D3DTEXTURESTAGESTATETYPE>(state),static_cast<DWORD>(value));}
+        default:break;
+        }
+    }
     auto found=objects.find(args[0]);
     if(found==objects.end()||static_cast<uint32_t>(found->second.kind)!=kind){
         NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","Invalid D3D9 COM call object=%08x token=%08x kind=%u method=%u actualKind=%u",args[0],token,kind,method,
@@ -271,7 +310,11 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
         throw std::runtime_error("Invalid guest D3D9 COM object");
     }
     auto object=found->second.native;
-    if((kind==2&&method==17)||(kind==13&&method==3))methodTotals[((token-methodBase)/16)&4095].fetch_add(1,std::memory_order_relaxed);
+    if(kind==2&&args[0]!=cachedDeviceHandle){cachedDeviceHandle=args[0];cachedDevice=static_cast<IDirect3DDevice9*>(object);forgetStateShadow();}
+    // State blocks apply state behind the shadow's back: forget it around their methods, and record
+    // every setter while one is being built (BeginStateBlock 60 .. EndStateBlock 61).
+    if(kind==11)forgetStateShadow();
+    if(kind==2&&(method==60||method==61)){recordingStateBlock=method==60;forgetStateShadow();}
     // Android may replace ANativeWindow after backgrounding, even at the same
     // pointer address. Override the destination with this surface generation so
     // DXVK recreates its presenter while keeping the game's device/resources.
@@ -283,7 +326,6 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
         return kind==2?static_cast<IDirect3DDevice9*>(object)->Present(source,destination,window,dirty):
             static_cast<IDirect3DSwapChain9*>(object)->Present(source,destination,window,dirty,args[5]);
     }
-    methodTotals[((token-methodBase)/16)&4095].fetch_add(1,std::memory_order_relaxed);
     // Log the first calls of each method; tokens span 0x7e000000..0x7e00ffff.
     static uint8_t methodCalls[4096];auto& calls=methodCalls[((token-methodBase)/16)&4095];
     if(calls<3&&++calls)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 COM kind=%u method=%u",kind,method);
@@ -376,7 +418,7 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
                     NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","D3D9 Reset raised a DXVK error (attempt %d)",attempt+1);status=D3DERR_DEVICELOST;
                     if(!attempt)std::this_thread::sleep_for(std::chrono::milliseconds(100));}
             }
-            deviceResetPending=status==D3DERR_DEVICELOST;
+            deviceResetPending=status==D3DERR_DEVICELOST;forgetStateShadow();
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 Reset backbuffer %ux%u result=%08x",p.BackBufferWidth,p.BackBufferHeight,uint32_t(status));return status;}
         case 23:{*argumentCount=9;if(args[8])throw std::runtime_error("Shared texture handle pending");if(!args[7])return D3DERR_INVALIDCALL;
             auto original=static_cast<D3DFORMAT>(args[5]),format=nativeTextureFormat(device,original,args[4],D3DRTYPE_TEXTURE);IDirect3DTexture9* texture=nullptr;
@@ -391,6 +433,9 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
             uint32_t address=SUCCEEDED(status)?wrap(texture,Kind::Cube):0;
             if(address&&format!=original)objects.at(address).compressed.texture=std::make_shared<CompressedTexture>(original,args[1],args[1],texture->GetLevelCount(),6);
             write(args[6],address);return status;}
+        case 57:{*argumentCount=3;++statesForwarded;return device->SetRenderState(static_cast<D3DRENDERSTATETYPE>(args[1]),static_cast<DWORD>(args[2]));}
+        case 67:{*argumentCount=4;++statesForwarded;return device->SetTextureStageState(static_cast<DWORD>(args[1]),static_cast<D3DTEXTURESTAGESTATETYPE>(args[2]),static_cast<DWORD>(args[3]));}
+        case 69:{*argumentCount=4;++statesForwarded;return device->SetSamplerState(static_cast<DWORD>(args[1]),static_cast<D3DSAMPLERSTATETYPE>(args[2]),static_cast<DWORD>(args[3]));}
         case 29:{*argumentCount=9;IDirect3DSurface9* surface=nullptr;if(args[8])throw std::runtime_error("D3D9 shared resource handles pending");
             auto samples=static_cast<D3DMULTISAMPLE_TYPE>(args[4]);DWORD quality=args[5];unsigned active=activeMultisample.load();
             // When the device has no automatic depth buffer, the full-size depth surface the game creates is

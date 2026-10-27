@@ -47,7 +47,7 @@ final class Diagnostics {
     private static final String PREFS = "nfsu1_diagnostics";
     /** Game-folder entries the port expects; anything else is listed one level deep in the report. */
     private static final String[] KNOWN_ENTRIES = {"cars", "frontend", "global", "languages", "movies", "sound", "tracks",
-            "sndstreams", "speechstreams", "fx", "save", "speed.exe", "scripts", "binkw32.dll", "speed.cfg"};
+            "sndstreams", "speechstreams", "fx", "save", "nfs underground", ModPacks.STORE.toLowerCase(Locale.ROOT), "speed.exe", "scripts", "binkw32.dll", "speed.cfg"};
 
     /** Where the report landed: the MediaStore document and a path the player recognises. */
     static final class Saved {
@@ -216,10 +216,8 @@ final class Diagnostics {
      * in-game detail settings or a crash on a particular career. Skipped when larger than SAVE_LIMIT.
      */
     private static void addSaveFolder(ZipOutputStream zip, File root) throws IOException {
-        File save = null;
-        File[] children = root.listFiles();
-        if (children != null) for (File child : children) if (child.isDirectory() && child.getName().equalsIgnoreCase("save")) save = child;
-        if (save == null) return;
+        File save = SaveBackup.saveFolder(root);
+        if (!save.isDirectory()) return;
         List<File> files = new ArrayList<>();
         long total = collect(save, files, 0);
         if (total > SAVE_LIMIT || files.size() > 200) { add(zip, "save/SKIPPED.txt", ("Save folder is " + total + " bytes in " + files.size() + " files; not included.\n").getBytes(StandardCharsets.UTF_8)); return; }

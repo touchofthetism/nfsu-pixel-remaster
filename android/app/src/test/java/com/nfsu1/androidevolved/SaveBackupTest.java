@@ -57,6 +57,17 @@ public class SaveBackupTest {
         assertEquals("career", new String(Files.readAllBytes(new File(root, "Save/PLAYER/career.sav").toPath()), StandardCharsets.UTF_8));
     }
 
+    @Test public void profileFolderIsNfsUndergroundThenLegacySave() throws Exception {
+        File root = Files.createTempDirectory("nfsu1").toFile();
+        assertEquals("NFS Underground", SaveBackup.saveFolder(root).getName());      // nothing yet: canonical name
+        assertTrue(new File(root, "Save").mkdirs());
+        assertEquals("Save", SaveBackup.saveFolder(root).getName());
+        assertTrue(new File(root, "NFS Underground").mkdirs());
+        assertEquals("NFS Underground", SaveBackup.saveFolder(root).getName());      // the game's own folder wins
+        assertEquals("shef.opt", SaveBackup.entryName("NFS Underground/shef.opt"));
+        assertEquals("shef_autosave.ugd", SaveBackup.entryName("nfs underground\\shef_autosave.ugd"));
+    }
+
     @Test public void restoreRefusesAGameDataArchive() throws Exception {
         File root = Files.createTempDirectory("nfsu1").toFile();
         ByteArrayOutputStream bad = new ByteArrayOutputStream();

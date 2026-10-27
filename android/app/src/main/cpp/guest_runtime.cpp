@@ -8,6 +8,7 @@
 #include "runtime_log.h"
 #include "frame_pacer.h"
 #include "frame_telemetry.h"
+#include "host_perf.h"
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 #include "d3d9_bridge.h"
 #include "nfs_widescreen.h"
@@ -66,6 +67,9 @@ std::atomic<unsigned> frameLimit{0};
 // Session frame telemetry (Present intervals); read as JSON by GameActivity for the overlay and the
 // session record. See frame_telemetry.h.
 FrameTelemetry frameTelemetry;
+// Launcher "CPU placement" (host_perf.h): applied on the render thread at its first Present.
+std::atomic<int> cpuPlacement{int(host_perf::Placement::FastestCores)};
+std::chrono::steady_clock::time_point frameWorkStart{};
 std::string hex(uint32_t va) {
     std::ostringstream out; out << "0x" << std::hex << std::setw(8) << std::setfill('0') << va;
     return out.str();
@@ -160,6 +164,23 @@ uint32_t lastImport{};
 std::string hostGameRoot;
 std::string guestLanguage="Spanish";
 bool guestWidescreen=true;
+// Launcher "Wrong-way warning": off blanks the HUD's wrong-way element names in the mapped image (the
+// hashed lookups then find nothing), which is what the Free Roam Mod's patcher does to Speed.exe so
+// driving against the circuit direction is not flagged in free roam.
+bool guestWrongWayWarning=true;
+void* ptr(uint32_t va, uint64_t bytes);
+void applyWrongWayPatch(){
+    struct Patch{uint32_t va;const char* expected;};
+    static const Patch patches[]={{0x6c6958u,"HUD_FEATURE_WRONG_WAY"},{0x6c71e0u,"WrongWay_CountDown"},{0x6c71f4u,"WrongWayImage"},{0x6c7204u,"WrongWayText"}};
+    unsigned applied=0;
+    for(const auto& patch:patches){
+        size_t length=std::strlen(patch.expected);
+        if(!memory->readable(patch.va,uint64_t(length)+1))continue;
+        if(std::memcmp(ptr(patch.va,length),patch.expected,length)!=0)continue;  // not the image these offsets belong to
+        std::memset(ptr(patch.va,length),0,length);++applied;
+    }
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Wrong-way warning disabled: %u of 4 HUD names blanked",applied);
+}
 std::atomic<bool> stopRequested{false};
 std::atomic<bool> guestPaused{false};
 std::chrono::steady_clock::time_point bootDeadline;
@@ -337,7 +358,13 @@ void d3dDispatch(){
     try{result=dispatchGuestD3D9(token,args,&count);}catch(...){
         NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","D3D9 guest caller=%08x stack=%08x token=%08x self=%08x",g_cur_func,g_esp,token,args[0]);throw;}
     if(timed){auto done=std::chrono::steady_clock::now();auto spent=done-bridgeStart;bridgeTime+=token==0x7e002110u?spent:spent*64;presentTime+=token==0x7e002110u?spent:std::chrono::nanoseconds{};
-        if(token==0x7e002110u&&result==0)frameTelemetry.present(done,std::chrono::duration_cast<std::chrono::nanoseconds>(spent),frameLimit.load(std::memory_order_relaxed));}
+        if(token==0x7e002110u&&result==0){
+            frameTelemetry.present(done,std::chrono::duration_cast<std::chrono::nanoseconds>(spent),frameLimit.load(std::memory_order_relaxed));
+            // The thread that presents is the game's busy thread: place it once, then feed the frame's
+            // CPU work (from the end of the previous pacer sleep to now) to the performance hint session.
+            host_perf::adoptRenderThread(static_cast<host_perf::Placement>(cpuPlacement.load()),frameLimit.load(std::memory_order_relaxed));
+            if(frameWorkStart.time_since_epoch().count())host_perf::reportFrame(std::chrono::duration_cast<std::chrono::nanoseconds>(done-frameWorkStart));
+        }}
     if(token==0x7e002110u){nfs_widescreen_apply_frame_rate();lastPresentMs=steadyMs();startStallWatch();saveChangedOptions();}
     if(token==0x7e002110u&&result==0){
         static FramePacer pacer;
@@ -348,6 +375,7 @@ void d3dDispatch(){
         renderThread=true;
         if(deadline>now)yieldGuestMachine(0,deadline);
         else if(machine.hasWaiters())yieldGuestMachine();
+        frameWorkStart=std::chrono::steady_clock::now();
         static unsigned frames=0;static auto since=std::chrono::steady_clock::now();
         if(++frames==120){serviceGuestSound();auto now=std::chrono::steady_clock::now();double seconds=std::chrono::duration<double>(now-since).count();
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest D3D9 presentation %.1f FPS over %.2f seconds; bridge ~%.2f ms/frame (present %.2f), %.0f calls/frame",
@@ -726,6 +754,7 @@ std::string connectGuestRuntime(const char* executable) {
         configureD3D9Bridge(memory->base(),allocate,freeD3DGuest);
 #endif
         loadImage(executable);
+        if(!guestWrongWayWarning)applyWrongWayPatch();
         nfs_frontend_cursor_units(1);  // touch hands out the cursor in front-end units
         if(guestWidescreen){
             nfs_widescreen_init(hostGameRoot.c_str());
@@ -749,7 +778,7 @@ std::string connectGuestRuntime(const char* executable) {
         fresh.load();
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Entering actual lifted CRT entry %08x",entry);
         uint32_t result=callGuest(entry,{});
-        joinGuestThreads(guard);machineLease=nullptr;shutdownGuestSound();
+        joinGuestThreads(guard);machineLease=nullptr;shutdownGuestSound();host_perf::release();
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
         shutdownD3D9Bridge();
 #endif
@@ -815,12 +844,14 @@ std::string guestTelemetryJson(bool live){
         "\"audio\":{\"xruns\":%d,\"bufferFrames\":%d,\"burstFrames\":%d,\"rate\":%u},\"render\":{\"width\":%u,\"height\":%u,\"display\":[%u,%u]}",
         static_cast<unsigned long long>(pipelines[0]),static_cast<unsigned long long>(pipelines[1]),pipelines[2]/1e6,pipelines[3]/1e6,
         static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load());
-    std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail;
+    std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail+",\"host\":"+host_perf::statusJson();
     if(!live)json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
     return json+"}";
 }
+void setGuestCpuPlacement(int placement){cpuPlacement=placement==0?0:1;}
 void setGuestFrameLimit(unsigned framesPerSecond){
     frameLimit=(framesPerSecond>=30&&framesPerSecond<=240)?framesPerSecond:0;
+    host_perf::setTargetFps(frameLimit.load());
     // The game paces itself to 1/60 s; let it run at the cap (uncapped: the 120 Hz display).
     nfs_widescreen_set_frame_rate(frameLimit.load()?frameLimit.load():120);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Android frame limit %u FPS (0 means uncapped)",frameLimit.load());
@@ -835,6 +866,7 @@ void setGuestPointer(float x,float y,int phase){
 void typeGuestText(const std::vector<uint32_t>& characters){enqueueGuestText(characters);}
 void setGuestOnlineServer(const std::string& host){std::lock_guard<MachineMutex> lock(machine);if(!memory&&!host.empty())onlineServer=host;}
 void setGuestWidescreen(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWidescreen=enabled;}
+void setGuestWrongWayWarning(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWrongWayWarning=enabled;}
 void setGuestLanguage(const char* language){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;
     for(const char* known:{"Spanish","English","French","German","Italian","Dutch","Swedish","Korean","Chinese"})

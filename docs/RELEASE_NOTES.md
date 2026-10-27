@@ -7,6 +7,15 @@
 
 ## What's new
 
+### Build 3 — the fast build
+- **The game thread runs on the big core.** Build 2's telemetry showed the race at 45–50 FPS with the game's single busy thread parked on a mid core at ~2.7 GHz while the Cortex‑X sat idle. The render guest thread is now pinned to the fastest cluster, raised in priority, and registered in an Android performance‑hint (ADPF) session with the frame cap as its target, so the governor keeps the clock up. **CPU placement** option: *Fastest core + performance hints* (default) or *System scheduler*.
+- **Fewer D3D calls reach DXVK.** A race frame issues ~45,000 device calls; render, sampler and texture‑stage states that repeat the current value are now answered in the bridge, and the device handle is resolved without a hash lookup.
+- **Mod packs.** *Install mod pack (ZIP)* puts game‑relative files (Global/, Tracks/, FrontEnd/, Cars/…) over Internal storage/nfsu1, keeps every replaced original, and *Mod packs* removes them again in reverse order. This is how the HD interface pack and community data mods such as the Free Roam Mod Beta 2.0 install; programs and Speed.exe inside a ZIP are ignored.
+- **Wrong‑way warning** option (off for free roam): blanks the HUD's wrong‑way elements the way the Free Roam Mod's own patcher does.
+- Saves: the game's profile folder is `nfsu1/NFS Underground` (not `Save`); backup, restore and the diagnostics report now use it.
+- Telemetry: *spikes* (frames 2.5× slower than their neighbours) replace cap‑relative hitches on the Last session card, which were meaningless while the cap was out of reach; the session record carries the thread placement result.
+- Fix: the game process crashed on exit in build 2 (the session recorder raced its own sampler); the record is now written under lock after the sampler stops.
+
 ### Build 2 — the measuring build
 - **Session recorder.** Every game session now writes its own complete log (`files/logs`, a logcat follower on the game process: the shared buffer had already lost the first report's game run) and a telemetry record (`files/telemetry`): frame-time distribution and 1 % lows, hitches/stalls, time inside Present, DXVK pipeline compiles (count and worst case), audio underruns, the D3D9 call profile, and a device sample every 2 s — thermal status and headroom, battery temperature, memory, CPU clocks and the panel's live refresh rate. Flushed every 30 s, so a crash keeps everything up to its last half minute.
 - **Last session** card in the launcher: duration, average FPS, 1 % low, hitches, peak thermal state; tap for the full readable summary.

@@ -31,7 +31,7 @@ final class SessionSummary {
     }
 
     final String session, app;
-    final long durationS, frames, hitches, stalls, gaps;
+    final long durationS, frames, hitches, stalls, gaps, spikes;
     final double avgFps, onePercentLowFps, p50Ms, p99Ms, maxMs, presentMsAvg;
     final long pipelineCompiles, pipelineOver10Ms;
     final double pipelineTotalMs, pipelineMaxMs;
@@ -52,6 +52,7 @@ final class SessionSummary {
         hitches = frames == null ? 0 : frames.optLong("hitches");
         stalls = frames == null ? 0 : frames.optLong("stalls");
         gaps = frames == null ? 0 : frames.optLong("gaps");
+        spikes = frames == null ? 0 : frames.optLong("spikes");
         avgFps = frames == null ? 0 : frames.optDouble("avgFps", 0);
         onePercentLowFps = frames == null ? 0 : frames.optDouble("onePercentLowFps", 0);
         p50Ms = frames == null ? 0 : frames.optDouble("p50Ms", 0);
@@ -82,7 +83,7 @@ final class SessionSummary {
     /** One line for the launcher card. */
     String shortLine() {
         if (frames == 0) return String.format(Locale.US, "%s · no frames recorded%s", duration(), complete ? "" : " · ended abruptly");
-        return String.format(Locale.US, "%s · %.0f FPS avg · 1%% low %.0f · %d hitches · %s%s", duration(), avgFps, onePercentLowFps, hitches,
+        return String.format(Locale.US, "%s · %.0f FPS avg · 1%% low %.0f · %d spikes · %s%s", duration(), avgFps, onePercentLowFps, spikes,
                 THERMAL[Math.min(THERMAL.length - 1, Math.max(0, thermalMax))], complete ? "" : " · ended abruptly");
     }
 
@@ -111,8 +112,8 @@ final class SessionSummary {
             out.append(String.format(Locale.US, "  Frames %d over %.0f s active: avg %.1f FPS, 1%% low %.0f FPS (p99 %.1f ms), p50 %.1f ms, p90 %.1f ms, p99.9 %.1f ms, max %.0f ms\n",
                     frames.optLong("frames"), frames.optDouble("activeSeconds"), avgFps, onePercentLowFps, p99Ms, p50Ms, frames.optDouble("p90Ms"),
                     frames.optDouble("p999Ms"), maxMs));
-            out.append(String.format(Locale.US, "  Hitches %d (>2.5 frame periods), stalls %d (>100 ms), gaps %d (>2 s); Present avg %.2f ms; frame cap %d\n",
-                    hitches, stalls, gaps, presentMsAvg, frames.optInt("targetFps")));
+            out.append(String.format(Locale.US, "  Spikes %d (>2.5x the frames around them), hitches %d (>2.5 cap periods), stalls %d (>100 ms), gaps %d (>2 s); Present avg %.2f ms; frame cap %d\n",
+                    frames.optLong("spikes"), hitches, stalls, gaps, presentMsAvg, frames.optInt("targetFps")));
             JSONArray histogram = frames.optJSONArray("histogramUs");
             if (histogram != null && histogram.length() > 0) {
                 StringBuilder line = new StringBuilder("  Frame-time histogram (≤ms: frames):");

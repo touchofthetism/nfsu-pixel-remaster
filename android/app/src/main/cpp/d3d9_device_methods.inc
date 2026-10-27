@@ -48,7 +48,6 @@ case 53:{*argumentCount=3;return device->LightEnable(static_cast<DWORD>(args[1])
 case 54:{*argumentCount=3;return device->GetLightEnable(static_cast<DWORD>(args[1]),static_cast<WINBOOL*>(pointer(args[2])));}
 case 55:{*argumentCount=3;return device->SetClipPlane(static_cast<DWORD>(args[1]),static_cast<const float*>(pointer(args[2])));}
 case 56:{*argumentCount=3;return device->GetClipPlane(static_cast<DWORD>(args[1]),static_cast<float*>(pointer(args[2])));}
-case 57:{*argumentCount=3;return device->SetRenderState(static_cast<D3DRENDERSTATETYPE>(args[1]),static_cast<DWORD>(args[2]));}
 case 58:{*argumentCount=3;return device->GetRenderState(static_cast<D3DRENDERSTATETYPE>(args[1]),static_cast<DWORD*>(pointer(args[2])));}
 case 59:{*argumentCount=3;IDirect3DStateBlock9* object2=nullptr;HRESULT status=device->CreateStateBlock(static_cast<D3DSTATEBLOCKTYPE>(args[1]),args[2]?&object2:nullptr);if(args[2])write(args[2],SUCCEEDED(status)?wrap(object2,Kind::StateBlock):0);return status;}
 case 60:{*argumentCount=1;return device->BeginStateBlock();}
@@ -58,9 +57,7 @@ case 63:{*argumentCount=2;return device->GetClipStatus(static_cast<D3DCLIPSTATUS
 case 64:{*argumentCount=3;IDirect3DBaseTexture9* object2=nullptr;HRESULT status=device->GetTexture(static_cast<DWORD>(args[1]),args[2]?&object2:nullptr);if(args[2])write(args[2],SUCCEEDED(status)?wrapTexture(object2):0);return status;}
 case 65:{*argumentCount=3;return device->SetTexture(static_cast<DWORD>(args[1]),nativeObject<IDirect3DBaseTexture9>(args[2]));}
 case 66:{*argumentCount=4;return device->GetTextureStageState(static_cast<DWORD>(args[1]),static_cast<D3DTEXTURESTAGESTATETYPE>(args[2]),static_cast<DWORD*>(pointer(args[3])));}
-case 67:{*argumentCount=4;return device->SetTextureStageState(static_cast<DWORD>(args[1]),static_cast<D3DTEXTURESTAGESTATETYPE>(args[2]),static_cast<DWORD>(args[3]));}
 case 68:{*argumentCount=4;return device->GetSamplerState(static_cast<DWORD>(args[1]),static_cast<D3DSAMPLERSTATETYPE>(args[2]),static_cast<DWORD*>(pointer(args[3])));}
-case 69:{*argumentCount=4;return device->SetSamplerState(static_cast<DWORD>(args[1]),static_cast<D3DSAMPLERSTATETYPE>(args[2]),static_cast<DWORD>(args[3]));}
 case 70:{*argumentCount=2;return device->ValidateDevice(static_cast<DWORD*>(pointer(args[1])));}
 case 71:{*argumentCount=3;return device->SetPaletteEntries(static_cast<UINT>(args[1]),static_cast<const PALETTEENTRY*>(pointer(args[2])));}
 case 72:{*argumentCount=3;return device->GetPaletteEntries(static_cast<UINT>(args[1]),static_cast<PALETTEENTRY*>(pointer(args[2])));}

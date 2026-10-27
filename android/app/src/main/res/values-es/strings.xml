@@ -228,19 +228,19 @@ Contiene los registros y la telemetría de sesión de esta app (tiempos de fotog
     <string name="session_header">ÚLTIMA SESIÓN</string>
     <string name="session_details_title">Sesión %1$s</string>
     <string name="opt_saves_backup">Copia de las partidas</string>
-    <string name="opt_saves_backup_value">ZIP en Download/NFSU1</string>
+    <string name="opt_saves_backup_value">Carpeta de perfiles → ZIP en Download/NFSU1</string>
     <string name="opt_saves_restore">Restaurar partidas</string>
     <string name="opt_saves_restore_value">Desde un ZIP de copia</string>
     <string name="saves_title">Partidas</string>
     <string name="saves_working">Trabajando con la carpeta de partidas…</string>
-    <string name="saves_none">Aún no hay carpeta de partidas: el juego crea nfsu1/Save al guardar un perfil.</string>
+    <string name="saves_none">Aún no hay carpeta de perfiles: el juego crea nfsu1/NFS Underground al guardar un perfil.</string>
     <string name="saves_backup_done">%1$d archivos copiados en:
 %2$s
 
 Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
     <string name="saves_share_chooser">Compartir la copia de partidas</string>
-    <string name="saves_restore_message">Elige un ZIP de copia de partidas (hecho con Copia de las partidas). La carpeta nfsu1/Save actual se sustituye; el juego se cierra antes.</string>
-    <string name="saves_restore_done">%1$d archivos restaurados en nfsu1/Save.</string>
+    <string name="saves_restore_message">Elige un ZIP de copia de partidas (hecho con Copia de las partidas). La carpeta de perfiles actual (nfsu1/NFS Underground) se sustituye; el juego se cierra antes.</string>
+    <string name="saves_restore_done">%1$d archivos restaurados en la carpeta de perfiles.</string>
     <string name="saves_failed">No se pudo terminar: %1$s</string>
     <string name="saves_err_open">No se pudo abrir el archivo elegido.</string>
     <string name="saves_err_staging">No se pudo escribir junto a la carpeta de partidas.</string>
@@ -270,4 +270,10 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
         <item quantity="many">%d instalados</item>
         <item quantity="other">%d instalados</item>
     </plurals>
+    <string name="opt_wrongway">Aviso de sentido contrario</string>
+    <string name="wrongway_on">Activado · como el juego</string>
+    <string name="wrongway_off">Desactivado · para free roam</string>
+    <string name="opt_cpu">Ubicación en la CPU</string>
+    <string name="cpu_fast">Núcleo más rápido + sugerencias de rendimiento</string>
+    <string name="cpu_system">Planificador del sistema</string>
 </resources>

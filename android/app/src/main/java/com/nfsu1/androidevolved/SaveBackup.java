@@ -29,7 +29,9 @@ import java.util.zip.ZipOutputStream;
  * (any failure puts the old folder back). Both refuse to run while the game process is alive.
  */
 final class SaveBackup {
-    static final String FOLDER = "Save";
+    /** The game writes profiles to "My Documents\NFS Underground"; the port maps My Documents to the game folder. */
+    static final String FOLDER = "NFS Underground";
+    static final String LEGACY_FOLDER = "Save";
     static final long MAX_BYTES = 256L * 1024 * 1024;
     static final int MAX_ENTRIES = 2000;
 
@@ -38,10 +40,11 @@ final class SaveBackup {
         Result(int files, long bytes, Uri uri, String location) { this.files = files; this.bytes = bytes; this.uri = uri; this.location = location; }
     }
 
-    /** The Save folder whatever its case on disk, or the canonical path when none exists yet. */
+    /** The profile folder whatever its case on disk (NFS Underground, else a legacy Save), or the canonical path when none exists yet. */
     static File saveFolder(File root) {
         File[] children = root.listFiles();
         if (children != null) for (File child : children) if (child.isDirectory() && child.getName().equalsIgnoreCase(FOLDER)) return child;
+        if (children != null) for (File child : children) if (child.isDirectory() && child.getName().equalsIgnoreCase(LEGACY_FOLDER)) return child;
         return new File(root, FOLDER);
     }
 
@@ -122,12 +125,12 @@ final class SaveBackup {
             File previous = new File(root, ".save-previous-" + System.nanoTime());
             boolean hadPrevious = save.isDirectory();
             if (hadPrevious && !save.renameTo(previous)) throw new IOException(context.getString(R.string.saves_err_replace));
-            if (!staging.renameTo(new File(root, FOLDER))) {
+            if (!staging.renameTo(save)) {
                 if (hadPrevious) previous.renameTo(save);
                 throw new IOException(context.getString(R.string.saves_err_replace));
             }
             if (hadPrevious) deleteTree(previous);
-            return new Result(files, bytes, null, FOLDER);
+            return new Result(files, bytes, null, save.getName());
         } finally {
             if (staging.exists()) deleteTree(staging);
         }
@@ -142,7 +145,8 @@ final class SaveBackup {
         while (name.startsWith("/")) name = name.substring(1);
         if (name.contains(":") || name.contains("\0")) return null;
         for (String part : name.split("/")) if (part.equals("..") || part.equals(".")) return null;
-        if (name.toLowerCase(Locale.ROOT).startsWith(FOLDER.toLowerCase(Locale.ROOT) + "/")) name = name.substring(FOLDER.length() + 1);
+        for (String folder : new String[] {FOLDER, LEGACY_FOLDER})
+            if (name.toLowerCase(Locale.ROOT).startsWith(folder.toLowerCase(Locale.ROOT) + "/")) { name = name.substring(folder.length() + 1); break; }
         // Anything else nested under a top-level folder of the game (Cars/..., Tracks/...) is not a save.
         String top = name.contains("/") ? name.substring(0, name.indexOf('/')).toLowerCase(Locale.ROOT) : "";
         for (String folder : new String[] {"cars", "frontend", "global", "languages", "movies", "sound", "tracks", "fx", "sndstreams", "speechstreams"})
