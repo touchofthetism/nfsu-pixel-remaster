@@ -40,7 +40,9 @@ PROFILES = {
            ("FrontEnd/MAGAZINE_TEXTURES.BIN", "FrontEnd/MAGAZINE_TEXTURES.BIN", "photo"),
            ("FrontEnd/Road_Segment.bin", "FrontEnd/Road_Segment.bin", "photo")],
 }
-PROFILES["all"] = PROFILES["ui"]
+# Car detail textures (lights, badges, interiors): every Cars/<car>/TEXTURES.BIN found in the game folder.
+PROFILES["cars"] = [("Cars/*/TEXTURES.BIN", "Cars/*/TEXTURES.BIN", "car")]
+PROFILES["all"] = PROFILES["ui"] + PROFILES["cars"]
 
 # Policy: (model, max output edge, factor for inputs <= 128, factor for inputs <= 256, factor above).
 POLICIES = {
@@ -50,6 +52,8 @@ POLICIES = {
     # on a CPU and the gain on these mostly-dark 2003 renders is small at 2x.
     # ...and 512-px photographs stay as they are: the magazine covers alone would grow to 200 MB at 2x.
     "photo": ("animevideo", 512, 4, 2, 1),
+    # Cars: small detail maps 4x, 256-px ones 2x, the few 512-px ones as they are (several cars stay loaded).
+    "car": ("animevideo", 512, 4, 2, 1),
 }
 
 
@@ -153,7 +157,7 @@ def main() -> None:
     parser.add_argument("--game", required=True, help="game folder (holds Speed.exe)")
     parser.add_argument("--out", required=True, help="output ZIP")
     parser.add_argument("--models", required=True, help="directory with the Real-ESRGAN .pth files")
-    parser.add_argument("--profile", default="ui", choices=sorted(PROFILES))
+    parser.add_argument("--profile", default="ui", choices=sorted(PROFILES))   # hud | ui | cars | all
     parser.add_argument("--name", default="HD interface pack")
     parser.add_argument("--version", default="1")
     parser.add_argument("--only", help="comma-separated bundle names to build (others skipped)")
@@ -162,6 +166,11 @@ def main() -> None:
     files = {}
     for relative, output, policy in PROFILES[args.profile]:
         if args.only and relative not in args.only.split(","):
+            continue
+        if "*" in relative:
+            for path in sorted(game.glob(relative)):
+                rel = path.relative_to(game).as_posix()
+                files[rel] = process_bundle(game, rel, policy, args.models, print)
             continue
         files[output] = process_bundle(game, relative, policy, args.models, print)
     manifest = {
