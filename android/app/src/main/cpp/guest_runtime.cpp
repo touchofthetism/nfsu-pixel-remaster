@@ -1011,10 +1011,13 @@ void setGuestFrameLimit(unsigned framesPerSecond){
     host_perf::setTargetFps(frameLimit.load());
     // The game paces itself to 1/60 s with a busy-wait (src/runtime/framerate.c): its target follows the
     // cap, and its time-step floor, tick rule, audio update, particle step and steering snap are corrected
-    // for rates above 60 as in ThirteenAG's fix. Uncapped means the 120 Hz panel's rate.
+    // for rates above 60 as in ThirteenAG's fix. With a cap the frame pacer below sleeps to it and the
+    // game's own spin is switched off (in series the two made the spin fill the pacer's slack); uncapped,
+    // the game's limiter alone paces at the 120 Hz panel's rate.
     unsigned gamePacing=frameLimit.load()?frameLimit.load():120;
-    nfs_widescreen_set_frame_rate(gamePacing);
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Android frame limit %u FPS (0 means uncapped); game pacing target %u FPS (its own 60 FPS limiter follows the cap)",frameLimit.load(),gamePacing);
+    nfs_widescreen_set_frame_rate(gamePacing,frameLimit.load()!=0);
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Android frame limit %u FPS (0 means uncapped); game pacing target %u FPS, %s",frameLimit.load(),gamePacing,
+        frameLimit.load()?"the launcher sleeps to the cap (the game's own busy-wait off)":"the game's own busy-wait paces it");
 }
 void setGuestKey(unsigned scan,bool down){if(scan>=256)return;std::lock_guard<std::mutex> lock(inputMutex);if(bool(inputKeys[scan])==down)return;inputKeys[scan]=down?0x80:0;recordInputKey(scan,down);enqueueGuestKey(scan,down);}
 void clearGuestInput(){std::lock_guard<std::mutex> lock(inputMutex);for(unsigned scan=0;scan<256;++scan)if(inputKeys[scan]){recordInputKey(scan,false);enqueueGuestKey(scan,false);}inputKeys.fill(0);inputMouseButtons.fill(0);inputMouseX=inputMouseY=inputMouseZ=0;touchButtons.clear();touchMoved=false;}

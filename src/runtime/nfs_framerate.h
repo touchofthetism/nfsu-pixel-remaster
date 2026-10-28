@@ -35,13 +35,38 @@ extern "C" {
  * game (1/60, 1/60, 1/30). Above 60 the step follows the frame; at or below 60
  * the game keeps its 1/60 floor exactly as shipped. The threshold is
  * max(2 x target, 1/30): the stock 1/30 at every cap of 60 and above, 2/cap
- * below (the busy-wait is skipped when the time left exceeds it). */
-static inline void nfs_fr_plan(unsigned fps, float *target, float *min_step, float *wait_threshold) {
+ * below (the busy-wait is skipped when the time left exceeds it).
+ *
+ * host_paced: something outside the game already holds frames to the cap (the
+ * Android runtime's frame pacer sleeps after each Present until the next
+ * deadline). The game's own spin must then stay off, so the threshold is 0 (the
+ * time left is never below it). The two limiters do not add up harmlessly: the
+ * game measures each frame from the end of its previous wait, so the pacer's
+ * period minus the game's last spin is what it sees, and it spins that much
+ * again plus the few microseconds its own bookkeeping took. The spin grows by
+ * that much every frame until it fills all the time the pacer would have slept:
+ * build 9 spent 10 % of all guest time in PrepareRealTimestep, and in the menus
+ * the big core spun through nearly every frame. Without the spin each frame's
+ * step is its real elapsed time, floored at min_step as before. [0x6CCDEC] has
+ * one other reader, the CRT static initializer 0x692F90 (RealTimeElapsed =
+ * frames x 1/30), which runs before the first present writes the threshold. */
+static inline void nfs_fr_plan(unsigned fps, int host_paced, float *target, float *min_step, float *wait_threshold) {
     float sixty = 1.0f / 60.0f, thirty = 1.0f / 30.0f;
     if (fps == 0) { *target = sixty; *min_step = sixty; *wait_threshold = thirty; return; }
     *target = 1.0f / (float)fps;
     *min_step = *target < sixty ? *target : sixty;
-    *wait_threshold = 2.0f * *target > thirty ? 2.0f * *target : thirty;
+    *wait_threshold = host_paced ? 0.0f : 2.0f * *target > thirty ? 2.0f * *target : thirty;
+}
+
+/* PrepareRealTimestep's own wait (0x585B98..0x585C4C), for the tests: the time
+ * left until `target` since the end of the previous wait, spun away when it is
+ * above 0 and below the threshold; the frame then reports exactly `target`.
+ * Returns the seconds spun and leaves the frame's reported time in *reported. */
+static inline double nfs_fr_game_wait(double elapsed, float target, float wait_threshold, double *reported) {
+    double left = (double)target - elapsed;
+    if (left > 0.0 && left < (double)wait_threshold) { *reported = (double)target; return left; }
+    *reported = elapsed;
+    return 0.0;
 }
 
 /* 0x585CB5: ST0 holds the step being floored (the carried remainder

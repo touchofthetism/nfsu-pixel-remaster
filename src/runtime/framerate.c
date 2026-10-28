@@ -31,9 +31,9 @@ static float s_audio_time;                  /* EAXSound::Update batching (time n
 static float fr_rdf(uint32_t va) { uint32_t v = MEM32(va); float f; memcpy(&f, &v, 4); return f; }
 static void fr_wrf(uint32_t va, float f) { uint32_t v; memcpy(&v, &f, 4); MEM32(va) = v; }
 
-void nfs_widescreen_set_frame_rate(unsigned fps) {
+void nfs_widescreen_set_frame_rate(unsigned fps, int host_paced) {
     s_fps = fps;
-    nfs_fr_plan(fps, &s_target, &s_min_step, &s_wait_threshold);
+    nfs_fr_plan(fps, host_paced, &s_target, &s_min_step, &s_wait_threshold);
     s_audio_time = 0.0f;
 }
 
