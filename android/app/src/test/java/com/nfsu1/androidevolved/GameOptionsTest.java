@@ -76,4 +76,14 @@ public class GameOptionsTest {
         assertTrue(!GameOptions.validServer(""));
         assertTrue(!GameOptions.validServer(null));
     }
+
+    @Test public void batterySaverHoldsTheCapToThePanel() {
+        assertEquals(60, GameOptions.effectiveFrameLimit(120, true, 60f));
+        assertEquals(60, GameOptions.effectiveFrameLimit(90, true, 60.0001f));
+        assertEquals(30, GameOptions.effectiveFrameLimit(30, true, 60f));
+        assertEquals(120, GameOptions.effectiveFrameLimit(120, false, 60f));
+        assertEquals(0, GameOptions.effectiveFrameLimit(0, true, 60f));
+        assertEquals(120, GameOptions.effectiveFrameLimit(120, true, Float.NaN));
+        assertEquals(120, GameOptions.effectiveFrameLimit(120, true, 0f));
+    }
 }

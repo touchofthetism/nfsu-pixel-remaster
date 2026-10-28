@@ -188,7 +188,7 @@ public final class GameActivity extends NativeActivity {
         new AlertDialog.Builder(this).setTitle(option.title(this))
                 .setSingleChoiceItems(option.labels(this),selected,(dialog,which)->{
                     GameOptions.set(this,GameOptions.FPS,option.values[which]);
-                    nativeFrameLimit(Integer.parseInt(option.values[which]));dialog.dismiss();
+                    setChosenFrameLimit(Integer.parseInt(option.values[which]));dialog.dismiss();
                 }).setNegativeButton(R.string.cancel,null).show();
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -247,7 +247,7 @@ public final class GameActivity extends NativeActivity {
         nativeResolution(launch.getIntExtra("renderWidth", size[0]), launch.getIntExtra("renderHeight", size[1]));
         String language = launch.getStringExtra("language");
         nativeLanguage(language != null ? language : GameOptions.language(this, LauncherActivity.gameRoot()));
-        nativeFrameLimit(launch.getIntExtra("frameCap", GameOptions.intValue(this, GameOptions.FPS)));
+        setChosenFrameLimit(launch.getIntExtra("frameCap", GameOptions.intValue(this, GameOptions.FPS)));
         nativeCpuPlacement(launch.getStringExtra("cpuPlacement") != null ? ("system".equals(launch.getStringExtra("cpuPlacement")) ? 0 : 1)
                 : (GameOptions.get(this, GameOptions.CPU).equals("system") ? 0 : 1));
         nativeReadHandover(launch.getStringExtra("reads") != null ? !"atomic".equals(launch.getStringExtra("reads"))
@@ -272,6 +272,8 @@ public final class GameActivity extends NativeActivity {
         nativeGraphicsHud(overlayFull ? GameOptions.DXVK_HUD_FULL : "");
         telemetry = new GameTelemetry(this, launch, GameActivity::nativeTelemetryJson);
         telemetry.start();
+        if (appliedFrameLimit != chosenFrameLimit)
+            telemetry.event("frame limit", appliedFrameLimit + " (Battery Saver holds the panel to its refresh rate; chosen " + chosenFrameLimit + ")");
         if (!overlayMode.equals("off")) {
             overlay = new TextView(this);
             overlay.setTextColor(0xFFE8F0FF);
@@ -356,8 +358,28 @@ public final class GameActivity extends NativeActivity {
         }
         if (hold) lanBroadcasts.acquire(); else lanBroadcasts.release();
     }
+    // The cap the player chose (launcher or the in-game menu) and the one in force (GameOptions.effectiveFrameLimit):
+    // Battery Saver holds the panel at 60 Hz, and the cap follows it until Battery Saver is off again.
+    private int chosenFrameLimit = 60, appliedFrameLimit = -1;
+    private final android.content.BroadcastReceiver powerSaveReceiver = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context context, Intent intent) { applyFrameLimit(); }
+    };
+    private void setChosenFrameLimit(int framesPerSecond) { chosenFrameLimit = framesPerSecond; applyFrameLimit(); }
+    private void applyFrameLimit() {
+        android.os.PowerManager power = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        boolean powerSave = power != null && power.isPowerSaveMode();
+        android.view.Display display = Build.VERSION.SDK_INT >= 30 ? getDisplay() : getWindowManager().getDefaultDisplay();
+        float refresh = display != null ? display.getRefreshRate() : 0f;
+        int effective = GameOptions.effectiveFrameLimit(chosenFrameLimit, powerSave, refresh);
+        if (effective == appliedFrameLimit) return;
+        appliedFrameLimit = effective;
+        nativeFrameLimit(effective);
+        if (telemetry != null) telemetry.event("frame limit", effective == chosenFrameLimit ? String.valueOf(effective)
+                : effective + " (Battery Saver holds the panel at " + Math.round(refresh) + " Hz; chosen " + chosenFrameLimit + ")");
+    }
     @Override protected void onPause() {
         foreground=false;
+        try { unregisterReceiver(powerSaveReceiver); } catch (IllegalArgumentException notRegistered) { }
         holdLanBroadcasts(false);
         updateTiltSensor();
         if(inputManager!=null)inputManager.unregisterInputDeviceListener(gamepadListener);
@@ -373,6 +395,10 @@ public final class GameActivity extends NativeActivity {
     @Override protected void onResume() {
         super.onResume();
         foreground=true;
+        android.content.IntentFilter powerSaveChanges = new android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(powerSaveReceiver, powerSaveChanges, android.content.Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(powerSaveReceiver, powerSaveChanges);
+        applyFrameLimit();
         if (telemetry != null) telemetry.event("resume", null);
         holdLanBroadcasts(true);
         updateTiltSensor();

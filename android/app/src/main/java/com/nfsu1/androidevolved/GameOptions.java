@@ -176,6 +176,17 @@ final class GameOptions {
 
     static String defaultValue(Context context, String key) { return defaultValue(key, totalMemory(context)); }
 
+    /**
+     * The frame cap in force for the cap the player chose (0 = unlimited). While Battery Saver is on it holds
+     * the panel at 60 Hz, and a higher cap only renders frames the screen never shows (build 9: 88 FPS on a
+     * 60 Hz panel, a third of the work thrown away as heat, the rest unevenly spaced): the cap then follows
+     * the panel's refresh rate until Battery Saver is off. Unlimited stays the player's explicit choice.
+     */
+    static int effectiveFrameLimit(int chosen, boolean powerSave, float refreshHz) {
+        if (chosen <= 0 || !powerSave || !(refreshHz >= 30f)) return chosen;
+        return Math.min(chosen, Math.round(refreshHz));
+    }
+
     static String get(Context context, String key) {
         Option o = find(key);
         String fallback = defaultValue(context, key);

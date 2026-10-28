@@ -44,7 +44,7 @@ import java.util.Locale;
  *    busy phone; the first report's logcat had already lost the whole game run.
  *  - {@code files/telemetry/session-<session>.json}: the frame-time record from the native runtime
  *    (frame_telemetry.h), DXVK pipeline compiles, audio underruns, the D3D9 call profile, plus a device
- *    sample every {@link #SAMPLE_MS}: thermal status and headroom, battery temperature, memory, CPU
+ *    sample every {@link #SAMPLE_MS}: thermal status and headroom, Battery Saver, battery temperature, memory, CPU
  *    clocks, the panel's current refresh rate and this process' CPU use. Written every
  *    {@link #FLUSH_MS} and when the activity pauses or ends, so a crash still leaves the record up to
  *    its last half minute.
@@ -184,6 +184,8 @@ final class GameTelemetry {
         PowerManager power = (PowerManager) activity.getSystemService(Context.POWER_SERVICE);
         if (power != null) {
             sample.put("thermal", power.getCurrentThermalStatus());
+            // Battery Saver caps the panel at 60 Hz (a late frame then waits a whole 16.7 ms vsync) and lowers clocks.
+            sample.put("powerSave", power.isPowerSaveMode());
             if (Build.VERSION.SDK_INT >= 30) {
                 float headroom = power.getThermalHeadroom(0);
                 if (!Float.isNaN(headroom)) sample.put("headroom", Math.round(headroom * 100) / 100.0);
