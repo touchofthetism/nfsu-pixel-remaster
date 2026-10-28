@@ -234,6 +234,7 @@ final class SessionSummary {
             // Per-cpu clock average and maximum over the samples: the render thread's core is the one that
             // matters, and a session-wide maximum hid that it ran far below its cap.
             long[] clockSum = new long[16]; int[] clockMax = new int[16], clockSamples = new int[16]; int clockCpus = 0;
+            long[] capSum = new long[16]; int[] capMin = new int[16], capSamples = new int[16]; int capCpus = 0;
             Map<String, Integer> refresh = new HashMap<>();
             Integer levelStart = null, levelEnd = null; boolean charging = false;
             int powerSave = 0, powerSaveKnown = 0;
@@ -256,6 +257,13 @@ final class SessionSummary {
                     clockSum[c] += value; clockSamples[c]++; clockMax[c] = Math.max(clockMax[c], value);
                     clockCpus = Math.max(clockCpus, c + 1);
                 }
+                // Build 12: the clock each cpu was allowed (thermal and battery caps, scaling_max_freq).
+                JSONArray cap = s.optJSONArray("cpuCapMhz");
+                if (cap != null) for (int c = 0; c < Math.min(16, cap.length()); c++) {
+                    int value = cap.optInt(c);
+                    capSum[c] += value; capSamples[c]++; capMin[c] = capSamples[c] == 1 ? value : Math.min(capMin[c], value);
+                    capCpus = Math.max(capCpus, c + 1);
+                }
                 if (s.has("refresh")) { String hz = String.valueOf(Math.round(s.optDouble("refresh"))); refresh.put(hz, refresh.getOrDefault(hz, 0) + 1); }
             }
             out.append(String.format(Locale.US, "  Thermal: max %s (status %d) at %d s; headroom min %s; battery %s→%s°C (min %s, max %s), level %s→%s%%%s\n",
@@ -266,8 +274,12 @@ final class SessionSummary {
             StringBuilder clocks = new StringBuilder();
             for (int c = 0; c < clockCpus; c++)
                 if (clockSamples[c] > 0) clocks.append(String.format(Locale.US, " cpu%d %d/%d", c, clockSum[c] / clockSamples[c], clockMax[c]));
-            out.append(String.format(Locale.US, "  CPU: game process %s%% of one core on average (cores=%d); clocks avg/max MHz:%s\n",
-                    cpuCount == 0 ? "?" : String.valueOf(cpuSum / cpuCount), record.optInt("cores"), clocks.length() == 0 ? " ?" : clocks.toString()));
+            StringBuilder allowed = new StringBuilder();
+            for (int c = 0; c < capCpus; c++)
+                if (capSamples[c] > 0) allowed.append(String.format(Locale.US, " cpu%d %d/%d", c, capSum[c] / capSamples[c], capMin[c]));
+            out.append(String.format(Locale.US, "  CPU: game process %s%% of one core on average (cores=%d); clocks avg/max MHz:%s%s\n",
+                    cpuCount == 0 ? "?" : String.valueOf(cpuSum / cpuCount), record.optInt("cores"), clocks.length() == 0 ? " ?" : clocks.toString(),
+                    allowed.length() == 0 ? "" : "; allowed avg/min MHz:" + allowed));
             if (!refresh.isEmpty()) {
                 StringBuilder line = new StringBuilder("  Panel refresh (samples):");
                 for (Map.Entry<String, Integer> e : refresh.entrySet()) line.append(' ').append(e.getKey()).append(" Hz×").append(e.getValue());
@@ -286,6 +298,8 @@ final class SessionSummary {
             out.append(String.format(Locale.US, "  Threads: %s, %s%s; performance hints: %s (%d reports, %d failed)%s\n",
                     host.optString("affinity", "?"), host.optString("priority", "?"), dxvk.isEmpty() ? "" : "; " + dxvk,
                     host.optString("adpf", "?"), host.optLong("reports"), host.optLong("reportFailures"), kept));
+            String cores = coresLine(host, frames == null ? null : frames.optJSONArray("perSecond"));
+            if (cores != null) out.append(cores);
         }
         JSONObject calls = nat == null ? null : nat.optJSONObject("d3d9Calls");
         if (calls != null && frames != null && frames.optLong("frames") > 0) {
@@ -406,6 +420,51 @@ final class SessionSummary {
             out.append(line).append('\n');
         }
         return out.toString();
+    }
+
+    /** Build 12: where the render thread ran as the phone capped its clocks (host_perf.cpp "clusters", with the
+     *  CPU option "fast") and the frame rate on each cluster (the per-second series split at the recorded
+     *  moves), e.g. "  Render thread: cpu 5-6 62% at 71 FPS, cpu 7 38% at 52 FPS (moved 9 times)". Null without
+     *  clusters (other options, earlier builds). */
+    static String coresLine(JSONObject host, JSONArray perSecond) {
+        JSONArray clusters = host.optJSONArray("clusters");
+        if (clusters == null || clusters.length() == 0) return null;
+        // Frames and seconds on each cluster: moves are [second since the first frame, cpus], the home cluster first.
+        Map<String, long[]> rate = new HashMap<>();
+        JSONArray moves = host.optJSONArray("moves");
+        if (moves != null && moves.length() > 0 && perSecond != null && host.optBoolean("movesComplete", true)) {
+            int move = 0;
+            for (int i = 0; i < perSecond.length(); i++) {
+                JSONArray second = perSecond.optJSONArray(i);
+                if (second == null) continue;
+                long t = second.optLong(0);
+                while (move + 1 < moves.length() && moves.optJSONArray(move + 1) != null && moves.optJSONArray(move + 1).optLong(0) <= t) move++;
+                JSONArray at = moves.optJSONArray(move);
+                if (at == null || at.optLong(0) > t) continue;
+                long[] sum = rate.get(at.optString(1));
+                if (sum == null) rate.put(at.optString(1), sum = new long[2]);
+                sum[0] += second.optLong(1);
+                sum[1]++;
+            }
+        }
+        double total = 0;
+        for (int i = 0; i < clusters.length(); i++) {
+            JSONObject c = clusters.optJSONObject(i);
+            if (c != null) total += Math.max(0, c.optDouble("seconds", 0));
+        }
+        StringBuilder where = new StringBuilder();
+        for (int i = 0; i < clusters.length() && total > 0; i++) {
+            JSONObject c = clusters.optJSONObject(i);
+            double seconds = c == null ? 0 : c.optDouble("seconds", 0);
+            if (!(seconds > 0)) continue;
+            String cpus = c.optString("cpus", "?");
+            where.append(where.length() == 0 ? "" : ", ").append(String.format(Locale.US, "cpu %s %.0f%%", cpus, 100 * seconds / total));
+            long[] sum = rate.get(cpus);
+            if (sum != null && sum[1] > 0) where.append(String.format(Locale.US, " at %.0f FPS", sum[0] / (double) sum[1]));
+        }
+        long moveCount = host.optLong("coreMoves");
+        return String.format(Locale.US, "  Render thread: %s (moved %d time%s)\n", where.length() == 0 ? "no time playing yet" : where.toString(),
+                moveCount, moveCount == 1 ? "" : "s");
     }
 
     static String methodName(String key) {

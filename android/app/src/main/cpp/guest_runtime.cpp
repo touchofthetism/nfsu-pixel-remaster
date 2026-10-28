@@ -1158,7 +1158,7 @@ std::string guestTelemetryJson(bool live){
         static_cast<unsigned long long>(pipelines[0]),static_cast<unsigned long long>(pipelines[1]),pipelines[2]/1e6,pipelines[3]/1e6,
         static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load(),
         backBuffer[0],backBuffer[1]);
-    std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail+",\"host\":"+host_perf::statusJson();
+    std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail+",\"host\":"+host_perf::statusJson(!live);
     if(!live)json+=",\"buildId\":\""+nativeBuildId()+"\"";
     if(!live){
         json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
@@ -1175,7 +1175,7 @@ std::string guestTelemetryJson(bool live){
     }
     return json+"}";
 }
-void setGuestCpuPlacement(int placement){cpuPlacement=placement==0?0:1;}
+void setGuestCpuPlacement(int placement){cpuPlacement=placement==0?0:placement==2?2:1;}   // host_perf::Placement
 void setGuestReadHandover(bool overlapped){
     readHandover.store(overlapped,std::memory_order_relaxed);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Loader reads: %s",overlapped?"overlapped (reads of 64 KB and more hand the guest machine over while the kernel copies)":"atomic (every read holds the guest machine)");

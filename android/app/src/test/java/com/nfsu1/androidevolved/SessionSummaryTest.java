@@ -178,4 +178,60 @@ public class SessionSummaryTest {
                 + "\"adpf\":\"x\",\"reports\":1,\"reportFailures\":0,\"placementRestored\":0,\"placementFailed\":0},\"d3d9Calls\":{");
         assertTrue(SessionSummary.parse(held).report.contains("(1 reports, 0 failed); placement held all session"));
     }
+
+    @Test public void renderThreadFollowsTheFastestCluster() throws Exception {
+        // Build 12: the clock each cpu was allowed (two samples), and where the render thread ran as the X4 was capped.
+        String record = RECORD.replace("\"cpuMhz\":[1700,2600]}", "\"cpuMhz\":[1700,2600],\"cpuCapMhz\":[2246,3782]},"
+                        + "{\"t\":4,\"cpuMhz\":[1300,600],\"cpuCapMhz\":[2246,1152]}")
+                .replace("\"d3d9Calls\":{", "\"host\":{\"affinity\":\"render thread on cpu 7 (follows the fastest cluster)\",\"priority\":\"nice -10\","
+                        + "\"adpf\":\"x\",\"reports\":1,\"reportFailures\":0,\"placementRestored\":0,\"placementFailed\":0,\"renderCpus\":\"5-6\","
+                        + "\"coreMoves\":9,\"clusters\":[{\"cpus\":\"0-1\",\"capacity\":280,\"maxMhz\":2246,\"seconds\":0,\"capMinMhz\":2246,\"capAvgMhz\":2246},"
+                        + "{\"cpus\":\"2-4\",\"capacity\":760,\"maxMhz\":3052,\"seconds\":0,\"capMinMhz\":2688,\"capAvgMhz\":2950},"
+                        + "{\"cpus\":\"5-6\",\"capacity\":760,\"maxMhz\":3052,\"seconds\":310,\"capMinMhz\":2688,\"capAvgMhz\":2967},"
+                        + "{\"cpus\":\"7\",\"capacity\":1024,\"maxMhz\":3782,\"seconds\":190,\"capMinMhz\":533,\"capAvgMhz\":1402}],"
+                        // From the first frame on the X4, to cpu 5-6 at 120 s (the RECORD's seconds 0 and 120-121 are then split 1:2).
+                        + "\"moves\":[[0,\"7\"],[120,\"5-6\"]]},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "clocks avg/max MHz: cpu0 1500/1700 cpu1 1600/2600; allowed avg/min MHz: cpu0 2246/2246 cpu1 2467/1152",
+                "Threads: render thread on cpu 7 (follows the fastest cluster), nice -10;",
+                "  Render thread: cpu 5-6 62% at 79 FPS, cpu 7 38% at 118 FPS (moved 9 times)\n"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+        org.json.JSONArray perSecond = new org.json.JSONArray("[[0,40],[1,44],[2,90],[3,96],[5,100]]");
+        String host = "{\"coreMoves\":2,\"clusters\":[{\"cpus\":\"5-6\",\"seconds\":2},{\"cpus\":\"7\",\"seconds\":4}],";
+        // Back home at 5 s: 7 at 40-44 FPS until 2 s, 5-6 at 90-96, 7 again at 100.
+        assertEquals("  Render thread: cpu 5-6 33% at 93 FPS, cpu 7 67% at 61 FPS (moved 2 times)\n", SessionSummary.coresLine(new org.json.JSONObject(
+                host + "\"moves\":[[0,\"7\"],[2,\"5-6\"],[5,\"7\"]]}"), perSecond));
+        // A move list that ran out: no rates rather than wrong ones; none in an older record either.
+        assertEquals("  Render thread: cpu 5-6 33%, cpu 7 67% (moved 2 times)\n", SessionSummary.coresLine(new org.json.JSONObject(
+                host + "\"moves\":[[0,\"7\"],[2,\"5-6\"]],\"movesComplete\":false}"), perSecond));
+        assertEquals("  Render thread: cpu 5-6 33%, cpu 7 67% (moved 2 times)\n", SessionSummary.coresLine(new org.json.JSONObject(
+                host + "\"x\":0}"), perSecond));
+        // Moved once; no time yet; and records before build 12 (no clusters) have no such line.
+        assertEquals("  Render thread: cpu 7 100% (moved 1 time)\n", SessionSummary.coresLine(new org.json.JSONObject(
+                "{\"coreMoves\":1,\"clusters\":[{\"cpus\":\"7\",\"seconds\":12}]}"), null));
+        assertEquals("  Render thread: no time playing yet (moved 0 times)\n", SessionSummary.coresLine(new org.json.JSONObject(
+                "{\"coreMoves\":0,\"clusters\":[{\"cpus\":\"7\",\"seconds\":0}]}"), perSecond));
+        assertEquals(null, SessionSummary.coresLine(new org.json.JSONObject("{\"affinity\":\"render thread on cpu 7\"}"), perSecond));
+        assertTrue(!SessionSummary.parse(RECORD).report.contains("Render thread:"));
+        assertTrue(!SessionSummary.parse(RECORD).report.contains("allowed avg/min"));
+    }
+
+    @Test public void overlayShowsTheRenderCores() throws Exception {
+        org.json.JSONObject sample = new org.json.JSONObject("{\"cpuCapMhz\":[2246,2246,2688,2688,2688,2688,2688,1152]}");
+        assertEquals("render cpu 5-6 (≤2688 MHz)  moved 3", GameTelemetry.renderLine(
+                new org.json.JSONObject("{\"renderCpus\":\"5-6\",\"coreMoves\":3}"), sample));
+        // "big": pinned without moves; no sample yet; caps unreadable on this phone.
+        assertEquals("render cpu 7 (≤1152 MHz)", GameTelemetry.renderLine(new org.json.JSONObject("{\"renderCpus\":\"7\"}"), sample));
+        assertEquals("render cpu 7", GameTelemetry.renderLine(new org.json.JSONObject("{\"renderCpus\":\"7\"}"), null));
+        assertEquals("render cpu 9", GameTelemetry.renderLine(new org.json.JSONObject("{\"renderCpus\":\"9\"}"), sample));
+        // "system": not pinned, no line.
+        assertEquals(null, GameTelemetry.renderLine(new org.json.JSONObject("{\"affinity\":\"system placement\"}"), sample));
+        assertEquals(null, GameTelemetry.renderLine(null, sample));
+        assertEquals(5, GameTelemetry.firstCpu("5-6"));
+        assertEquals(0, GameTelemetry.firstCpu("0,2"));
+        assertEquals(-1, GameTelemetry.firstCpu(""));
+        assertEquals(-1, GameTelemetry.firstCpu("x"));
+    }
 }

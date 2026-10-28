@@ -80,11 +80,14 @@ final class GameOptions {
             new Option(MINIMAP, R.string.opt_minimap,
                     new String[] {"top", "bottom"},
                     new int[] {R.string.minimap_top, R.string.minimap_bottom}),
-            // The game's one busy thread on the fastest core with a performance-hint session (host_perf.h);
-            // "system" leaves placement to the scheduler, which parked it on a mid core in build 2.
+            // The game's one busy thread on the fastest core with a performance-hint session (host_perf.h). "fast"
+            // follows the fastest cluster as the phone caps its clocks (build 12, core_choice.h: the X4 spent 60-84 %
+            // of long sessions at 0.9-1.4 GHz while the A725s averaged 2.1-2.5); "big" keeps it on the biggest core
+            // whatever its clock (builds 3-11); "system" leaves placement to the scheduler, which parked it on a
+            // mid core in build 2.
             new Option(CPU, R.string.opt_cpu,
-                    new String[] {"fast", "system"},
-                    new int[] {R.string.cpu_fast, R.string.cpu_system}),
+                    new String[] {"fast", "big", "system"},
+                    new int[] {R.string.cpu_fast, R.string.cpu_big, R.string.cpu_system}),
             // Reads of 64 KB and more (loader, music/stream blocks) let the other guest threads run while the kernel
             // copies; "atomic" holds the game for every read as builds 1-3 did (guest_files.inc).
             new Option(READS, R.string.opt_reads,
@@ -182,6 +185,12 @@ final class GameOptions {
     }
 
     static String defaultValue(Context context, String key) { return defaultValue(key, totalMemory(context)); }
+
+    /** The CPU placement option as native host_perf::Placement: 0 the system scheduler, 1 the fastest cluster as
+     *  the phone caps clocks ("fast", the default, and anything unknown), 2 the biggest core whatever its clock. */
+    static int cpuPlacement(String value) {
+        return "system".equals(value) ? 0 : "big".equals(value) ? 2 : 1;
+    }
 
     /**
      * The frame cap in force for the cap the player chose (0 = unlimited). While Battery Saver is on it holds

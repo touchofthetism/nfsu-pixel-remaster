@@ -25,7 +25,7 @@ Later builds install straight over the previous one (same signing key, higher ve
 
 ## What the diagnostics ZIP holds
 - `report.txt` — device, RAM, thermal state, display modes, options and their defaults, the game folder listing (unexpected entries listed one level deep), and the crash log: every crash Android still keeps, marked *THIS BUILD* or *older build* (Android keeps crashes across installs).
-- `session-summary.txt` — every recorded session in readable lines: frames, average FPS, 1 % low, p50/p99/max, hitches and stalls, pipeline compiles, audio underruns, thermal/battery/memory/CPU ranges, refresh-rate changes, D3D9 calls per frame, long D3D9 calls, DXVK's queue, events. A session whose record was never closed says what ended it (swiped away, crashed, closed for memory). Read this first.
+- `session-summary.txt` — every recorded session in readable lines: frames, average FPS, 1 % low, p50/p99/max, hitches and stalls, pipeline compiles, audio underruns, thermal/battery/memory/CPU ranges (each core's clock and the clock it was allowed), where the game thread ran and the frame rate it reached on each group of cores, refresh-rate changes, D3D9 calls per frame, long D3D9 calls, DXVK's queue, events. A session whose record was never closed says what ended it (swiped away, crashed, closed for memory). Read this first.
 - `telemetry/session-*.json` — the full records those lines come from (histogram, per-second FPS and worst frame, 2 s device samples).
 - `logs/game-*.log` — the complete log of each game process (NFSU1 runtime, DXVK at info level, crashes); `logs/tail-*.txt` — the log buffer as the launcher saw it right after each game.
 - `logcat-now.txt`, `exits.txt`, native crash/ANR traces if any.
@@ -48,3 +48,5 @@ Later builds install straight over the previous one (same signing key, higher ve
 - `CPU DXT fallback texture` — the GPU lacks BC formats; textures are decoded on the CPU (expected on some PowerVR drivers; costs load time, not frame time).
 - `D3D9 CreateCubeTexture … status=` — reflection cubemaps; a failing status explains missing car reflections.
 - `E DXVK` lines — DXVK errors; the first one after `CreateDevice` is usually the story.
+- `CPU topology: … clusters: cpu 0-1 (capacity …), …` — the groups of cores sharing a clock and the kernel's capacity for each (1024 = the X4 at its top clock): what the placement works from. `(estimated)` means the kernel didn't say.
+- `Render thread to cpu 5-6, allowed … MHz (speed …), from cpu 7 allowed … MHz (speed …); DXVK threads on …` — the game thread moved because the X4's allowed clock fell (or came back). No such line in a long session means the caps never favoured a move, or the phone doesn't show them: the summary's *allowed* clocks tell which.

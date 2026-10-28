@@ -250,8 +250,8 @@ public final class GameActivity extends NativeActivity {
         String language = launch.getStringExtra("language");
         nativeLanguage(language != null ? language : GameOptions.language(this, LauncherActivity.gameRoot()));
         setChosenFrameLimit(launch.getIntExtra("frameCap", GameOptions.intValue(this, GameOptions.FPS)));
-        nativeCpuPlacement(launch.getStringExtra("cpuPlacement") != null ? ("system".equals(launch.getStringExtra("cpuPlacement")) ? 0 : 1)
-                : (GameOptions.get(this, GameOptions.CPU).equals("system") ? 0 : 1));
+        nativeCpuPlacement(GameOptions.cpuPlacement(launch.getStringExtra("cpuPlacement") != null ? launch.getStringExtra("cpuPlacement")
+                : GameOptions.get(this, GameOptions.CPU)));
         nativeReadHandover(launch.getStringExtra("reads") != null ? !"atomic".equals(launch.getStringExtra("reads"))
                 : !GameOptions.get(this, GameOptions.READS).equals("atomic"));
         nativeCleanupThread(launch.getBooleanExtra("cleanupThread", GameOptions.get(this, GameOptions.CLEANUP).equals("thread")));

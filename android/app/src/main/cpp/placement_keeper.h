@@ -57,6 +57,13 @@ public:
     void clear() { threads_.clear(); }
     size_t size() const { return threads_.size(); }
 
+    // A placed thread's mask from now on (host_perf moved it on purpose: core_choice.h). False if not placed.
+    bool setMask(int32_t tid, const cpu_set_t& mask) {
+        for (Thread& thread : threads_)
+            if (thread.tid == tid && thread.keepMask) { thread.mask = mask; thread.failing = false; return true; }
+        return false;
+    }
+
     // One pass over the placed threads. A failure is reported the first time; the next success is reported.
     std::vector<Change> check(unsigned cpus) {
         std::vector<Change> changes;

@@ -283,7 +283,8 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
     <string name="wrongway_on">Activado · como el juego</string>
     <string name="wrongway_off">Desactivado · para free roam</string>
     <string name="opt_cpu">Ubicación en la CPU</string>
-    <string name="cpu_fast">Núcleo más rápido + sugerencias de rendimiento</string>
+    <string name="cpu_fast">Núcleo más rápido · cambia cuando el teléfono limita la frecuencia de un núcleo (versión 12)</string>
+    <string name="cpu_big">Solo el núcleo más grande, como las versiones 3–11</string>
     <string name="cpu_system">Planificador del sistema</string>
     <string name="opt_cleanup">Limpieza de la GPU</string>
     <string name="cleanup_thread">Hilo propio · el trabajo terminado no retiene los fotogramas (versión 11)</string>

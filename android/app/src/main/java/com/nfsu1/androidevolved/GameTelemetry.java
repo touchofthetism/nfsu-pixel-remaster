@@ -72,6 +72,7 @@ final class GameTelemetry {
     private final long startedAt = SystemClock.elapsedRealtime(), startedWall = System.currentTimeMillis();
     private long lastCpuMs = -1, lastCpuAt = -1, lastFlushAt;
     private boolean cpuFreqAvailable = true, stopped;
+    private boolean cpuCapAvailable = true;
     private final int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
 
     GameTelemetry(Activity activity, Intent launch, NativeJson nativeJson) {
@@ -162,7 +163,30 @@ final class GameTelemetry {
                 text.append(String.format(Locale.US, "  clocks %d-%d MHz", min, max));
             }
         }
+        String render = renderLine(live == null ? null : live.optJSONObject("host"), sample);
+        if (render != null) text.append('\n').append(render);
         return text.toString();
+    }
+
+    /** Build 12, the overlay's last line: the cores the render thread is on now, the clock they may run at (the
+     *  latest sample's caps) and how often it moved, e.g. "render cpu 5-6 (≤2688 MHz)  moved 3". Null when the
+     *  thread is not pinned (CPU option "system"). */
+    static String renderLine(JSONObject host, JSONObject sample) {
+        if (host == null || !host.has("renderCpus")) return null;
+        String cpus = host.optString("renderCpus");
+        StringBuilder line = new StringBuilder("render cpu ").append(cpus);
+        JSONArray caps = sample == null ? null : sample.optJSONArray("cpuCapMhz");
+        int first = firstCpu(cpus);
+        if (caps != null && first >= 0 && first < caps.length()) line.append(String.format(Locale.US, " (≤%d MHz)", caps.optInt(first)));
+        if (host.has("coreMoves")) line.append(String.format(Locale.US, "  moved %d", host.optLong("coreMoves")));
+        return line.toString();
+    }
+
+    /** The first cpu of a list such as "5-6", "7" or "0,2" (-1 if none). */
+    static int firstCpu(String cpus) {
+        int end = 0;
+        while (end < cpus.length() && end < 4 && Character.isDigit(cpus.charAt(end))) end++;
+        return end == 0 ? -1 : Integer.parseInt(cpus.substring(0, end));
     }
 
     // ---- Sampling --------------------------------------------------------------------------------------
@@ -220,6 +244,16 @@ final class GameTelemetry {
                 mhz.put(khz / 1000);
             }
             if (cpuFreqAvailable) sample.put("cpuMhz", mhz);
+        }
+        // The clock each cpu may run at now (thermal and battery caps): build 12 moves the render thread by it.
+        if (cpuCapAvailable) {
+            JSONArray cap = new JSONArray();
+            for (int cpu = 0; cpu < cores; cpu++) {
+                Integer khz = readInt(new File("/sys/devices/system/cpu/cpu" + cpu + "/cpufreq/scaling_max_freq"));
+                if (khz == null) { cpuCapAvailable = false; break; }
+                cap.put(khz / 1000);
+            }
+            if (cpuCapAvailable) sample.put("cpuCapMhz", cap);
         }
         Display display = Build.VERSION.SDK_INT >= 30 ? activity.getDisplay() : activity.getWindowManager().getDefaultDisplay();
         if (display != null) sample.put("refresh", Math.round(display.getRefreshRate() * 10) / 10.0);

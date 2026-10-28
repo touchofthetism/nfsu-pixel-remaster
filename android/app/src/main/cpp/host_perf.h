@@ -15,17 +15,26 @@
 //    governor raises clocks to meet it instead of settling at the cheapest "busy enough" point.
 //    (DXVK's threads carry names only since build 9: until then the session held the render thread alone.)
 //  - DXVK's command-stream, submit, queue and cleanup threads are kept off the render thread's cores (with
-//    FastestCores), and the command stream gets the render thread's priority.
+//    FastestCores and BigCore), and the command stream gets the render thread's priority.
 //  - The placement is kept: Android can replace a thread's affinity (build 10 lost it nine minutes into a
 //    session), so the profiler's sampler calls maintainPlacement() once a second (placement_keeper.h).
+//  - With FastestCores the render thread also follows the fastest cluster as the phone caps its clocks (build
+//    12): the same once-a-second check reads each cluster's allowed clock and moves the render thread (and
+//    DXVK's threads off its new cores) when core_choice.h says another cluster is clearly faster. BigCore keeps
+//    builds 3-11's fixed placement on the biggest core. Tested end to end against a fake cpu sysfs with real
+//    threads and affinity calls in tests/host_perf.cpp.
+#include "core_choice.h"
+
 namespace host_perf {
-    enum class Placement { System = 0, FastestCores = 1 };
+    enum class Placement { System = 0, FastestCores = 1, BigCore = 2 };
 
     struct CpuTopology {
         unsigned cpus = 0;
         unsigned maxKhz = 0;
         std::string fastest;   // cpu list of the fastest cluster, e.g. "7"
         std::string summary;   // for the log: per-cpu max MHz
+        std::vector<CoreChoice::Cluster> clusters;   // cpus sharing a clock, by first cpu
+        std::string clusterSummary;                    // for the log: "cpu 0-1 (capacity 280), ..."
     };
     CpuTopology readTopology();
 
@@ -39,8 +48,8 @@ namespace host_perf {
     void maintainPlacement();
     // Session end.
     void release();
-    // One line for the telemetry JSON.
-    std::string statusJson();
+    // One object for the telemetry JSON; `full` (the session record, not the overlay) adds the list of moves.
+    std::string statusJson(bool full);
     // The render thread and DXVK's threads as found at adoption ("render", "dxvk-cs", ...), for snapshots.
     std::vector<std::pair<std::string, int32_t>> trackedThreads();
 }

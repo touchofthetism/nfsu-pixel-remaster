@@ -124,6 +124,23 @@ int main() {
     require(changes.size() == 1 && changes[0].label == "dxvk-cs" && changes[0].what == "nice 0, put back to -10" && threads[101].nice == -10,
             "nice put back");
 
+    // Build 12: host_perf moves the render thread to cpu 5-6 on purpose (core_choice.h) and DXVK's threads off
+    // them. The keeper takes the new masks as the placement: it neither undoes the move nor reports it, and a
+    // later loss is put back to the new masks.
+    const cpu_set_t mid = cpus({5, 6}), offMid = cpus({0, 1, 2, 3, 4, 7});
+    threads[100].mask = mid; threads[101].mask = offMid; threads[102].mask = offMid;
+    require(keeper.setMask(100, mid) && keeper.setMask(101, offMid) && keeper.setMask(102, offMid), "new masks taken");
+    before = setCalls;
+    require(keeper.check(count).empty() && setCalls == before, "a deliberate move is not undone");
+    threads[100].mask = all;
+    changes = keeper.check(count);
+    require(changes.size() == 1 && changes[0].what == "affinity cpu 0-7, put back to cpu 5-6" && CPU_EQUAL(&threads[100].mask, &mid),
+            "lost again: put back to the new cluster");
+    require(!keeper.setMask(999, mid), "a thread that was never placed is not taken");
+    // And back to the big core.
+    threads[100].mask = big; threads[101].mask = rest; threads[102].mask = rest;
+    require(keeper.setMask(100, big) && keeper.setMask(101, rest) && keeper.setMask(102, rest) && keeper.check(count).empty(), "moved home");
+
     // The queue thread ends and its id goes to a new thread with another name: dropped, never touched.
     threads[102] = {"AsyncTask #3", all, 0};
     before = setCalls;

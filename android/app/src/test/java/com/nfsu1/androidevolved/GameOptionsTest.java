@@ -70,6 +70,21 @@ public class GameOptionsTest {
         GameImport.deleteTree(spanishOnly);
     }
 
+    @Test public void cpuPlacementFollowsTheFastestClusterByDefault() {
+        // Build 12: "fast" follows the fastest cluster as the phone caps clocks; "big" keeps builds 3-11's pin.
+        assertEquals("fast", GameOptions.defaultValue(GameOptions.CPU, 16 * GB));
+        GameOptions.Option cpu = null;
+        for (GameOptions.Option option : GameOptions.ALL) if (option.key.equals(GameOptions.CPU)) cpu = option;
+        assertTrue(cpu != null);
+        assertArrayEquals(new String[] {"fast", "big", "system"}, cpu.values);
+        // The codes are host_perf::Placement: System 0, FastestCores 1, BigCore 2.
+        assertEquals(1, GameOptions.cpuPlacement("fast"));
+        assertEquals(2, GameOptions.cpuPlacement("big"));
+        assertEquals(0, GameOptions.cpuPlacement("system"));
+        assertEquals(1, GameOptions.cpuPlacement(null));        // no saved choice: the default
+        assertEquals(1, GameOptions.cpuPlacement("fastest"));   // a value from no build: the default
+    }
+
     @Test public void onlineServerNamesAreValidated() {
         assertTrue(GameOptions.validServer("eahub.eu"));
         assertTrue(GameOptions.validServer("192.168.1.20"));
