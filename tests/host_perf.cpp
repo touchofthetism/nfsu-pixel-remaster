@@ -1,9 +1,11 @@
-// host_perf.cpp's placement end to end on this machine (Linux; the Android-only parts fall back as on a phone
-// without them): a fake cpu sysfs gives the clusters, capacities and caps; real threads named as the game's are
-// placed with real sched_setaffinity calls. Checks the clusters read from related_cpus and cpu_capacity (and the
-// fallbacks without them), the adoption, the move to a faster cluster when the big core's cap falls, DXVK's threads
-// moving out of its way, a mask Android replaces put back to the new cluster, the way home, "Biggest core only"
-// (no moves), "System scheduler" (no placement), and the JSON the overlay and the session summary read.
+// host_perf.cpp's placement end to end (Linux; the Android-only parts fall back as on a phone without them).
+// A fake cpu directory gives the clusters, capacities and caps, and real threads named as the game's are placed:
+//  - on this machine's own cpus with real affinity calls (any machine with two cpus or more);
+//  - on the Pixel 10 Pro XL's eight cpus (cpu0-1, cpu2-4, cpu5-6, cpu7), simulated with the caps of 2026-10-28.
+// Checks the clusters read from related_cpus and cpu_capacity (and the fallbacks without them), the adoption, the
+// move to a faster cluster when the big core's cap falls (and between the mid clusters), DXVK's threads moving
+// out of its way, a mask Android replaces put back to the new cluster, the way home, "Biggest core only" (no
+// moves), "System scheduler" (no placement), hidden caps (no moves) and the JSON the overlay and summary read.
 #include "../android/app/src/main/cpp/host_perf.cpp"
 
 #include <condition_variable>
@@ -11,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <regex>
 #include <thread>
 
@@ -35,7 +38,13 @@ void writeFile(const fs::path& path, const std::string& text) {
 void writeCap(const FakeCluster& cluster, unsigned khz) {
     for (int cpu : cluster.cpus) writeFile(root / ("cpu" + std::to_string(cpu)) / "cpufreq/scaling_max_freq", std::to_string(khz));
 }
-void writeTree() {
+// A fresh cpu directory for `clusters`, every cluster at its top clock.
+void writeTree(std::vector<FakeCluster> clusters) {
+    if (!root.empty()) fs::remove_all(root);
+    char pattern[] = "/tmp/host_perf_XXXXXX";
+    require(mkdtemp(pattern) != nullptr, "mkdtemp");
+    root = pattern;
+    layout = std::move(clusters);
     for (const auto& cluster : layout) {
         std::string related;
         for (int cpu : cluster.cpus) related += std::to_string(cpu) + " ";
@@ -47,21 +56,32 @@ void writeTree() {
         }
         writeCap(cluster, cluster.maxKhz);
     }
+    host_perf::cpuSysfs = root.string();
 }
 
 std::vector<int> affinity(int32_t tid) {
     cpu_set_t set; CPU_ZERO(&set);
-    require(sched_getaffinity(pid_t(tid), sizeof set, &set) == 0, "sched_getaffinity");
+    require(host_perf::os.getAffinity(tid, &set) == 0, "getAffinity");
     std::vector<int> cpus;
     for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) if (CPU_ISSET(cpu, &set)) cpus.push_back(cpu);
     return cpus;
 }
 std::string list(const std::vector<int>& cpus) { return CoreChoice::describe(cpus); }
+std::vector<int> range(int first, int last) { std::vector<int> out; for (int cpu = first; cpu <= last; ++cpu) out.push_back(cpu); return out; }
 std::vector<int> concat(std::initializer_list<std::vector<int>> parts) {
     std::vector<int> out;
     for (const auto& part : parts) out.insert(out.end(), part.begin(), part.end());
     std::sort(out.begin(), out.end());
     return out;
+}
+bool has(const std::string& json, const std::string& part) { return json.find(part) != std::string::npos; }
+// Checks until the render thread is on `cpus` (at most `limit`); how many it took, or -1.
+int checksUntil(int32_t render, const std::vector<int>& cpus, int limit) {
+    for (int checks = 0; checks <= limit; ++checks) {
+        if (affinity(render) == cpus) return checks;
+        if (checks < limit) host_perf::maintainPlacement();
+    }
+    return -1;
 }
 
 // A thread with a name of its own that runs `start` and then waits until the test ends it.
@@ -93,41 +113,28 @@ private:
     bool ready_ = false, stop_ = false;
     int32_t tid_ = 0;
 };
+void adoptFastest() { host_perf::adoptRenderThread(host_perf::Placement::FastestCores, 60); }
 
-bool has(const std::string& json, const std::string& part) { return json.find(part) != std::string::npos; }
-}  // namespace
-
-int main() {
-    long count = sysconf(_SC_NPROCESSORS_CONF);
+// This machine's cpus as clusters, with real affinity calls. n = 2: a mid and a big core; n = 3: little, mid,
+// big; n >= 4: little, two mid clusters, big.
+void realMachine() {
+    long count = host_perf::os.cpus();
     std::vector<int> usable = affinity(0);
     bool contiguous = count >= 2 && usable.size() == size_t(count);
     for (size_t i = 0; contiguous && i < usable.size(); ++i) contiguous = usable[i] == int(i);
-    if (!contiguous) { std::puts("host_perf: skipped (needs cpus 0..n-1 all usable, n >= 2)"); return 0; }
+    if (!contiguous) { std::puts("host_perf: this machine skipped (needs cpus 0..n-1 all usable, n >= 2)"); return; }
     const int n = int(count), big = n - 1;
-
-    // n = 2: a mid and a big core; n = 3: little, mid, big; n >= 4: little, two mid clusters, big (the Pixel's shape).
-    std::vector<int> all(static_cast<size_t>(n));
-    for (int i = 0; i < n; ++i) all[size_t(i)] = i;
-    if (n == 2) layout = {{{0}, 700, 3000000}, {{1}, 1024, 3800000}};
-    else if (n == 3) layout = {{{0}, 300, 2000000}, {{1}, 700, 3000000}, {{2}, 1024, 3800000}};
-    else {
-        std::vector<int> midB;
-        for (int cpu = 2; cpu < big; ++cpu) midB.push_back(cpu);
-        layout = {{{0}, 300, 2000000}, {{1}, 700, 3000000}, {midB, 700, 3000000}, {{big}, 1024, 3800000}};
-    }
-    const FakeCluster& home = layout.back();
+    const std::vector<int> all = range(0, big);
+    if (n == 2) writeTree({{{0}, 700, 3000000}, {{1}, 1024, 3800000}});
+    else if (n == 3) writeTree({{{0}, 300, 2000000}, {{1}, 700, 3000000}, {{2}, 1024, 3800000}});
+    else writeTree({{{0}, 300, 2000000}, {{1}, 700, 3000000}, {range(2, big - 1), 700, 3000000}, {{big}, 1024, 3800000}});
+    const FakeCluster home = layout.back();
     // Where the render thread goes when the big core is capped (ties: the higher cpus), and DXVK's threads then.
     const std::vector<int> away = layout[layout.size() - 2].cpus;
     const std::vector<int> helpersAway = n >= 4 ? concat({layout[0].cpus, layout[1].cpus})          // not the capped big core
                                        : n == 3 ? concat({layout[0].cpus, home.cpus})                // only the little core else
                                                 : home.cpus;
-    std::vector<int> helpersHome(all.begin(), all.end() - 1);
-
-    char pattern[] = "/tmp/host_perf_XXXXXX";
-    require(mkdtemp(pattern) != nullptr, "mkdtemp");
-    root = pattern;
-    writeTree();
-    host_perf::cpuSysfs = root.string();
+    const std::vector<int> helpersHome = range(0, big - 1);
 
     // The clusters as the kernel describes them.
     {
@@ -144,7 +151,7 @@ int main() {
 
     // "Fastest core": adopted on the big core, DXVK's thread everywhere else.
     {
-        NamedThread render("render-test", [] { host_perf::adoptRenderThread(host_perf::Placement::FastestCores, 60); });
+        NamedThread render("render-test", adoptFastest);
         require(affinity(render.tid()) == home.cpus, "render on the big core: " + list(affinity(render.tid())));
         require(affinity(dxvk.tid()) == helpersHome, "DXVK off it: " + list(affinity(dxvk.tid())));
         std::string json = host_perf::statusJson(false);
@@ -171,18 +178,16 @@ int main() {
         require(!has(host_perf::statusJson(false), "\"moves\""), "the overlay's JSON carries no move list");
 
         // Android replaces the mask: put back to the new cluster, not the old one.
-        cpu_set_t everything; CPU_ZERO(&everything);
-        for (int cpu : all) CPU_SET(cpu, &everything);
-        require(sched_setaffinity(pid_t(render.tid()), sizeof everything, &everything) == 0, "widen");
+        cpu_set_t everything = host_perf::maskOf(all);
+        require(host_perf::os.setAffinity(render.tid(), everything) == 0, "widen");
         host_perf::maintainPlacement();
         require(affinity(render.tid()) == away, "put back to " + list(away) + ": " + list(affinity(render.tid())));
         require(has(host_perf::statusJson(false), "\"placementRestored\":1"), host_perf::statusJson(false));
 
         // The cap lifts: home again (after five checks as fast, and ten since the move).
         writeCap(home, home.maxKhz);
-        int checks = 0;
-        while (affinity(render.tid()) != home.cpus && checks < 20) { host_perf::maintainPlacement(); ++checks; }
-        require(affinity(render.tid()) == home.cpus && checks >= 5, "home after " + std::to_string(checks) + " checks");
+        int checks = checksUntil(render.tid(), home.cpus, 20);
+        require(checks >= 5, "home after " + std::to_string(checks) + " checks");
         require(affinity(dxvk.tid()) == helpersHome, "DXVK back: " + list(affinity(dxvk.tid())));
         json = host_perf::statusJson(true);
         require(has(json, "\"coreMoves\":2") && has(json, "\"renderCpus\":\"" + homeList + "\""), json);
@@ -212,7 +217,7 @@ int main() {
     // A phone that hides its caps keeps the big core.
     {
         for (int cpu : all) fs::remove(root / ("cpu" + std::to_string(cpu)) / "cpufreq/scaling_max_freq");
-        NamedThread render("render-test", [] { host_perf::adoptRenderThread(host_perf::Placement::FastestCores, 60); });
+        NamedThread render("render-test", adoptFastest);
         for (int i = 0; i < 20; ++i) host_perf::maintainPlacement();
         require(affinity(render.tid()) == home.cpus, "unreadable caps: stays");
         host_perf::release();
@@ -230,8 +235,87 @@ int main() {
         size_t expected = n >= 4 ? 3 : layout.size();   // the two mid clusters share 3.0 GHz
         require(topology.clusters.size() == expected && topology.fastest == std::to_string(big), topology.clusterSummary);
     }
+    std::printf("host_perf: this machine's %d cpus ok\n", n);
+}
 
-    fs::remove_all(root);
+// The Pixel 10 Pro XL: eight cpus simulated (the affinity calls kept in a table, refused like the kernel's when
+// no cpu of the mask exists), the clusters as Tensor G5 has them (capacities illustrative), the caps of 2026-10-28.
+struct Simulated {
+    std::mutex mutex;
+    std::map<int32_t, cpu_set_t> masks;
+} simulated;
+
+void pixel() {
+    host_perf::os.cpus = [] { return 8L; };
+    host_perf::os.getAffinity = [](int32_t tid, cpu_set_t* mask) {
+        std::lock_guard<std::mutex> lock(simulated.mutex);
+        auto it = simulated.masks.find(tid);
+        *mask = it == simulated.masks.end() ? host_perf::maskOf(range(0, 7)) : it->second;
+        return 0;
+    };
+    host_perf::os.setAffinity = [](int32_t tid, const cpu_set_t& mask) {
+        cpu_set_t usable = host_perf::maskOf({});
+        for (int cpu = 0; cpu < 8; ++cpu) if (CPU_ISSET(cpu, &mask)) CPU_SET(cpu, &usable);
+        if (CPU_COUNT(&usable) == 0) return EINVAL;
+        std::lock_guard<std::mutex> lock(simulated.mutex);
+        simulated.masks[tid] = usable;
+        return 0;
+    };
+    writeTree({{{0, 1}, 280, 2246000}, {{2, 3, 4}, 760, 3052000}, {{5, 6}, 760, 3052000}, {{7}, 1024, 3782000}});
+    const FakeCluster little = layout[0], midA = layout[1], midB = layout[2], x4 = layout[3];
+    {
+        auto topology = host_perf::readTopology();
+        require(topology.clusterSummary == "cpu 0-1 (capacity 280), cpu 2-4 (capacity 760), cpu 5-6 (capacity 760), cpu 7 (capacity 1024)"
+                    && topology.fastest == "7", topology.clusterSummary);
+    }
+    NamedThread cs("dxvk-cs", nullptr), submit("dxvk-submit", nullptr), queue("dxvk-queue", nullptr), recycle("dxvk-recycle", nullptr);
+    const NamedThread* dxvk[] = {&cs, &submit, &queue, &recycle};
+    auto dxvkOn = [&](const std::vector<int>& cpus) {
+        for (const NamedThread* thread : dxvk) if (affinity(thread->tid()) != cpus) return false;
+        return true;
+    };
+    NamedThread render("Thread-7", adoptFastest);
+    std::string json = host_perf::statusJson(false);
+    require(affinity(render.tid()) == x4.cpus && dxvkOn(range(0, 6)), "adopted: render on cpu 7, DXVK on 0-6");
+    require(has(json, "\"dxvk\":\"4 of 4 DXVK threads off cpu 7"), json);
+
+    // 05:40: the X4 allowed 1152 MHz (speed 312), both A725 clusters 2688 (669). To cpu 5-6 on the third check;
+    // DXVK's threads off it and off the X4.
+    writeCap(little, 2246000); writeCap(midA, 2688000); writeCap(midB, 2688000); writeCap(x4, 1152000);
+    require(checksUntil(render.tid(), midB.cpus, 10) == 3, "to cpu 5-6 on the third check");
+    require(dxvkOn(range(0, 4)), "DXVK on cpu 0-4: " + list(affinity(cs.tid())));
+    json = host_perf::statusJson(true);
+    require(has(json, "\"renderCpus\":\"5-6\"") && has(json, "\"clusters\":[{\"cpus\":\"0-1\"") && has(json, "{\"cpus\":\"2-4\"")
+                && has(json, "{\"cpus\":\"5-6\"") && has(json, "{\"cpus\":\"7\",\"capacity\":1024,\"maxMhz\":3782"), json);
+    require(std::regex_search(json, std::regex("\"moves\":\\[\\[0,\"7\"\\],\\[[0-9]+,\"5-6\"\\]\\]")), json);
+
+    // Android widens the render thread's mask: back to cpu 5-6.
+    require(host_perf::os.setAffinity(render.tid(), host_perf::maskOf(range(0, 7))) == 0, "widen");
+    host_perf::maintainPlacement();
+    require(affinity(render.tid()) == midB.cpus, "put back to cpu 5-6");
+
+    // cpu 5-6 capped harder (1536 MHz, speed 382) than cpu 2-4 (669): over to cpu 2-4 once ten checks have passed;
+    // DXVK's threads then on the little cores and cpu 5-6.
+    writeCap(midB, 1536000);
+    require(checksUntil(render.tid(), midA.cpus, 20) > 0, "to cpu 2-4");
+    require(dxvkOn(concat({little.cpus, midB.cpus})), "DXVK on cpu 0-1,5-6: " + list(affinity(cs.tid())));
+
+    // Everything uncapped: home to the X4, DXVK's threads back on cpu 0-6.
+    writeCap(midA, 3052000); writeCap(midB, 3052000); writeCap(x4, 3782000);
+    require(checksUntil(render.tid(), x4.cpus, 20) >= 5, "home to cpu 7");
+    require(dxvkOn(range(0, 6)), "DXVK back on cpu 0-6");
+    json = host_perf::statusJson(true);
+    require(has(json, "\"coreMoves\":3") && has(json, "\"renderCpus\":\"7\""), json);
+    require(std::regex_search(json, std::regex("\"moves\":\\[\\[0,\"7\"\\],\\[[0-9]+,\"5-6\"\\],\\[[0-9]+,\"2-4\"\\],\\[[0-9]+,\"7\"\\]\\]")), json);
+    host_perf::release();
+    std::puts("host_perf: Pixel 10 Pro XL simulated ok");
+}
+}  // namespace
+
+int main() {
+    realMachine();
+    pixel();
+    if (!root.empty()) fs::remove_all(root);
     std::puts("host_perf: ok");
     return 0;
 }

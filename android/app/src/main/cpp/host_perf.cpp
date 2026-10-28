@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <sched.h>
 #include <sys/resource.h>
@@ -55,8 +56,14 @@ constexpr size_t kMoveRecords=1000;          // ten seconds apart at least: hour
 std::vector<MoveRecord> moveRecord;
 bool moveRecordFull=false;
 std::chrono::steady_clock::time_point adoptedAt;
-// The kernel's cpu directory (tests/host_perf.cpp points it at a fake one).
+// The kernel's cpu directory, the cpu count and the affinity calls: replaceable by tests/host_perf.cpp, which
+// runs this file against a fake cpu directory, with this machine's cpus or with the Pixel's eight simulated.
 std::string cpuSysfs="/sys/devices/system/cpu";
+struct Os{
+    std::function<long()> cpus=[]{return sysconf(_SC_NPROCESSORS_CONF);};
+    std::function<int(int32_t,cpu_set_t*)> getAffinity=[](int32_t tid,cpu_set_t* mask){return sched_getaffinity(pid_t(tid),sizeof *mask,mask)==0?0:errno;};
+    std::function<int(int32_t,const cpu_set_t&)> setAffinity=[](int32_t tid,const cpu_set_t& mask){return sched_setaffinity(pid_t(tid),sizeof mask,&mask)==0?0:errno;};
+} os;
 
 // A thread of this process by id: its name, or ESRCH once it is gone (or the id is another process's).
 int threadName(int32_t tid,std::string* name){
@@ -67,8 +74,8 @@ int threadName(int32_t tid,std::string* name){
 PlacementKeeper::System systemCalls(){
     PlacementKeeper::System system;
     system.getName=threadName;
-    system.getAffinity=[](int32_t tid,cpu_set_t* mask){return sched_getaffinity(pid_t(tid),sizeof *mask,mask)==0?0:errno;};
-    system.setAffinity=[](int32_t tid,const cpu_set_t& mask){return sched_setaffinity(pid_t(tid),sizeof mask,&mask)==0?0:errno;};
+    system.getAffinity=[](int32_t tid,cpu_set_t* mask){return os.getAffinity(tid,mask);};
+    system.setAffinity=[](int32_t tid,const cpu_set_t& mask){return os.setAffinity(tid,mask);};
     system.getNice=[](int32_t tid,int* nice){errno=0;int value=getpriority(PRIO_PROCESS,id_t(tid));if(value==-1&&errno)return errno;*nice=value;return 0;};
     system.setNice=[](int32_t tid,int nice){return setpriority(PRIO_PROCESS,id_t(tid),nice)==0?0:errno;};
     return system;
@@ -132,7 +139,7 @@ std::vector<unsigned> readCaps(){
 
 CpuTopology readTopology(){
     CpuTopology topology;
-    long count=sysconf(_SC_NPROCESSORS_CONF);topology.cpus=count>0?unsigned(count):0;
+    long count=os.cpus();topology.cpus=count>0?unsigned(count):0;
     std::vector<unsigned> khz(topology.cpus),capacity(topology.cpus);
     std::vector<std::vector<int>> related(topology.cpus);
     char buffer[112];
@@ -209,9 +216,10 @@ void adoptRenderThread(Placement placement,unsigned targetFps){
             std::string needle=std::to_string(cpu);std::string list=","+topology.fastest+",";
             if(list.find(","+needle+",")!=std::string::npos)CPU_SET(cpu,&set);
         }
-        renderPinned=sched_setaffinity(tid,sizeof set,&set)==0;
+        int error=os.setAffinity(int32_t(tid),set);
+        renderPinned=error==0;
         if(renderPinned)affinityResult="render thread on cpu "+topology.fastest;
-        else affinityResult=std::string("sched_setaffinity failed: ")+std::strerror(errno);
+        else affinityResult=std::string("sched_setaffinity failed: ")+std::strerror(error);
         // DXVK's threads stay off the render thread's cores. The performance hint boosts them too, and the
         // scheduler places a boosted thread on the biggest core that fits: the render thread's, where the
         // two would take turns. Build 8 races ran at 45-50 FPS under a 60 cap with that core idle 40 % of
@@ -222,7 +230,7 @@ void adoptRenderThread(Placement placement,unsigned targetFps){
         else if(!others)dxvkResult="DXVK threads: system placement (one cluster)";
         else{
             unsigned count=0;
-            for(size_t i=0;i<dxvkThreads.size();++i)if(sched_setaffinity(pid_t(dxvkThreads[i].second),sizeof rest,&rest)==0){dxvkPlaced[i]=true;++count;}
+            for(size_t i=0;i<dxvkThreads.size();++i)if(os.setAffinity(dxvkThreads[i].second,rest)==0){dxvkPlaced[i]=true;++count;}
             char text[128];std::snprintf(text,sizeof text,"%u of %zu DXVK threads off cpu %s",count,dxvk.size(),topology.fastest.c_str());dxvkResult=text;
         }
         for(size_t i=0;i<dxvkThreads.size();++i)if(dxvkPlaced[i])dxvkPlacedTids.push_back(dxvkThreads[i].second);
@@ -307,10 +315,7 @@ void maintainPlacement(){
             // name, so an id the system has handed to another thread is never moved.
             int error=0;
             if(!keeper.setMask(renderTid,renderMask))error=ESRCH;
-            else if(sched_setaffinity(pid_t(renderTid),sizeof renderMask,&renderMask)!=0){
-                error=errno;
-                keeper.setMask(renderTid,maskOf(choice.cluster(size_t(from)).cpus));
-            }
+            else if((error=os.setAffinity(renderTid,renderMask))!=0)keeper.setMask(renderTid,maskOf(choice.cluster(size_t(from)).cpus));
             char text[256];
             if(error){
                 choice.undo(from);
@@ -322,7 +327,7 @@ void maintainPlacement(){
                     auto since=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now()-adoptedAt).count();
                     moveRecord.push_back({uint32_t(since>0?since:0),to});
                 }else moveRecordFull=true;
-                for(int32_t thread:dxvkPlacedTids)if(keeper.setMask(thread,rest))sched_setaffinity(pid_t(thread),sizeof rest,&rest);
+                for(int32_t thread:dxvkPlacedTids)if(keeper.setMask(thread,rest))os.setAffinity(thread,rest);
                 // The clock each may run at (an unreadable cap counts as the top clock, as in core_choice.h).
                 auto allowedMhz=[&](int i){unsigned cap=caps[size_t(i)],top=choice.cluster(size_t(i)).maxKhz;return (cap&&cap<top?cap:top)/1000;};
                 std::snprintf(text,sizeof text,"Render thread to %s, allowed %u MHz (speed %.0f), from %s allowed %u MHz (speed %.0f); DXVK threads on %s",
