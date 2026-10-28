@@ -55,6 +55,37 @@ public class SessionSummaryTest {
         assertTrue(report.contains("120 Hz×1") && report.contains("60 Hz×1"));
     }
 
+    @Test public void gpuBusyAndTheRealBackBuffer() throws Exception {
+        // Build 9 records: each second carries the GPU busy share, the render block the game's real back buffer.
+        String record = RECORD.replace("\"perSecond\":[[0,118,9.1],[120,61,182.0],[121,97,40.0]]",
+                        "\"perSecond\":[[0,118,9.1,55],[120,61,182.0,97],[121,97,40.0,-1]],\"gpuBusyAvg\":76.0")
+                .replace("\"render\":{\"width\":2992,\"height\":1344,\"display\":[2992,1344]}",
+                        "\"render\":{\"width\":2992,\"height\":1344,\"display\":[2992,1344],\"backBuffer\":[2992,1344]}");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "Worst seconds (t, fps, max ms): [120: 61 fps, 182 ms, GPU 97%] [121: 97 fps, 40 ms] [0: 118 fps, 9 ms, GPU 55%]",
+                "GPU busy: avg 76%; 1 of 2 measured seconds at 90% or more (1 of the slow ones)",
+                "Render 2992x1344 (game back buffer 2992x1344) on display [2992,1344]"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+        // Older records (no GPU column, no back buffer) read as before.
+        String old = SessionSummary.parse(RECORD).report;
+        assertTrue(old.contains("Render 2992x1344 on display [2992,1344]") && !old.contains("GPU busy"));
+    }
+
+    @Test public void guestProfileAndD3D9Time() throws Exception {
+        // 61234 frames; DrawIndexedPrimitive 122.468 s in all = 2.00 ms a frame, SetTexture 0.50 ms.
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"d3d9Ns\":{\"2/82\":122468000000,\"2/65\":30617000000},"
+                + "\"profile\":{\"intervalUs\":1000,\"samples\":1000,\"render\":{\"guest\":550,\"d3d9\":300,\"import\":20},\"other\":80,\"idle\":50,"
+                + "\"top\":[[\"004A1B20\",120,0,0],[\"0040B9C0\",10,90,0]],\"otherTop\":[[\"0052D0C0\",60]]},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "D3D9 time per frame: 2.50 ms; DrawIndexedPrimitive 2.00 SetTexture 0.50",
+                "Guest machine (1000 samples): render thread game code 55%, D3D9 30%, imports 2%; other threads 8%; idle 5%. Top: sub_004A1B20 12.0% sub_0040B9C0 10.0% (D3D9)"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+    }
+
     @Test public void incompleteAndEmptyRecordsAreReadable() throws Exception {
         SessionSummary crashed = SessionSummary.parse("{\"session\":\"x\",\"app\":\"1\",\"durationS\":42,\"complete\":false}");
         assertEquals("42 s · no frames recorded · ended abruptly", crashed.shortLine());

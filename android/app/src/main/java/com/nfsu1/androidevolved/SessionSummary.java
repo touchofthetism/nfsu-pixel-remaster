@@ -128,18 +128,26 @@ final class SessionSummary {
             JSONArray perSecond = frames.optJSONArray("perSecond");
             if (perSecond != null && perSecond.length() > 0) {
                 List<double[]> worst = new ArrayList<>();
-                int lowSeconds = 0;
+                int lowSeconds = 0, gpuMeasured = 0, gpuBound = 0, lowGpuBound = 0;
                 for (int i = 0; i < perSecond.length(); i++) {
                     JSONArray second = perSecond.optJSONArray(i);
                     if (second == null) continue;
-                    worst.add(new double[] {second.optDouble(0), second.optDouble(1), second.optDouble(2)});
-                    if (second.optDouble(1) < 0.8 * Math.max(30, frames.optInt("targetFps") == 0 ? 120 : frames.optInt("targetFps")) && second.optDouble(1) > 0) lowSeconds++;
+                    // [second, frames, worst ms, GPU busy % (-1 or absent: not measured)]
+                    double gpu = second.length() > 3 ? second.optDouble(3, -1) : -1;
+                    worst.add(new double[] {second.optDouble(0), second.optDouble(1), second.optDouble(2), gpu});
+                    boolean low = second.optDouble(1) < 0.8 * Math.max(30, frames.optInt("targetFps") == 0 ? 120 : frames.optInt("targetFps")) && second.optDouble(1) > 0;
+                    if (low) lowSeconds++;
+                    if (gpu >= 0) { gpuMeasured++; if (gpu >= 90) { gpuBound++; if (low) lowGpuBound++; } }
                 }
                 worst.sort((a, b) -> Double.compare(b[2], a[2]));
                 StringBuilder line = new StringBuilder(String.format(Locale.US, "  Seconds below 80%% of the cap: %d of %d. Worst seconds (t, fps, max ms):", lowSeconds, perSecond.length()));
                 for (int i = 0; i < Math.min(8, worst.size()); i++)
-                    line.append(String.format(Locale.US, " [%.0f: %.0f fps, %.0f ms]", worst.get(i)[0], worst.get(i)[1], worst.get(i)[2]));
+                    line.append(String.format(Locale.US, " [%.0f: %.0f fps, %.0f ms%s]", worst.get(i)[0], worst.get(i)[1], worst.get(i)[2],
+                            worst.get(i)[3] >= 0 ? String.format(Locale.US, ", GPU %.0f%%", worst.get(i)[3]) : ""));
                 out.append(line).append('\n');
+                // GPU busy >= 90% means the GPU set the pace that second; below it the CPU (game + bridge) did.
+                if (gpuMeasured > 0) out.append(String.format(Locale.US, "  GPU busy: avg %.0f%%; %d of %d measured seconds at 90%% or more (%d of the slow ones)\n",
+                        frames.optDouble("gpuBusyAvg", -1), gpuBound, gpuMeasured, lowGpuBound));
             }
         }
         if (pipelines != null) out.append(String.format(Locale.US, "  Pipelines compiled: %d graphics + %d compute, %.0f ms total, worst %.0f ms, %d over 10 ms\n",
@@ -148,7 +156,13 @@ final class SessionSummary {
         if (audio != null) out.append(String.format(Locale.US, "  Audio: xruns %d, buffer %d frames (burst %d), %d Hz\n",
                 audio.optInt("xruns"), audio.optInt("bufferFrames"), audio.optInt("burstFrames"), audio.optInt("rate")));
         JSONObject render = nat == null ? null : nat.optJSONObject("render");
-        if (render != null) out.append(String.format(Locale.US, "  Render %dx%d on display %s\n", render.optInt("width"), render.optInt("height"), render.optJSONArray("display")));
+        if (render != null) {
+            // backBuffer: what the game really rendered (its D3D9 device); width/height: what the launcher asked for.
+            org.json.JSONArray back = render.optJSONArray("backBuffer");
+            String game = back != null && back.length() == 2 && back.optInt(0) > 0
+                    ? String.format(Locale.US, " (game back buffer %dx%d)", back.optInt(0), back.optInt(1)) : "";
+            out.append(String.format(Locale.US, "  Render %dx%d%s on display %s\n", render.optInt("width"), render.optInt("height"), game, render.optJSONArray("display")));
+        }
         if (samples != null && samples.length() > 0) {
             double headroomMin = Double.NaN, battMin = Double.NaN, battMax = Double.NaN;
             int thermalMax = 0, thermalAt = -1, pssMax = 0, availMin = Integer.MAX_VALUE, cpuSum = 0, cpuCount = 0, clockMax = 0, lowMemory = 0;
@@ -191,6 +205,41 @@ final class SessionSummary {
             StringBuilder line = new StringBuilder("  D3D9 calls per frame:");
             for (int i = 0; i < Math.min(14, list.size()); i++)
                 line.append(String.format(Locale.US, " %s %.0f", methodName(list.get(i).getKey()), list.get(i).getValue() / (double) frames.optLong("frames")));
+            out.append(line).append('\n');
+        }
+        JSONObject methodNs = nat == null ? null : nat.optJSONObject("d3d9Ns");
+        if (methodNs != null && frames != null && frames.optLong("frames") > 0) {
+            // Bridge + DXVK time per frame by method: what a D3D9-side optimisation would buy.
+            List<Map.Entry<String, Long>> list = new ArrayList<>();
+            long totalNs = 0;
+            for (java.util.Iterator<String> it = methodNs.keys(); it.hasNext();) { String key = it.next(); long ns = methodNs.optLong(key); totalNs += ns; list.add(new java.util.AbstractMap.SimpleEntry<>(key, ns)); }
+            list.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+            double perFrame = 1e6 * frames.optLong("frames");
+            StringBuilder line = new StringBuilder(String.format(Locale.US, "  D3D9 time per frame: %.2f ms;", totalNs / perFrame));
+            for (int i = 0; i < Math.min(10, list.size()); i++)
+                line.append(String.format(Locale.US, " %s %.2f", methodName(list.get(i).getKey()), list.get(i).getValue() / perFrame));
+            out.append(line).append('\n');
+        }
+        JSONObject profile = nat == null ? null : nat.optJSONObject("profile");
+        if (profile != null && profile.optLong("samples") > 0) {
+            // Where the guest machine's time went (1 ms samples): the render thread in lifted game code, in D3D9
+            // calls or other imports; other guest threads (sound, loader); nobody (pacer sleep, GPU waits).
+            JSONObject renderThread = profile.optJSONObject("render");
+            double all = profile.optLong("samples");
+            double guest = renderThread == null ? 0 : renderThread.optLong("guest"), d3d9 = renderThread == null ? 0 : renderThread.optLong("d3d9"),
+                    imports = renderThread == null ? 0 : renderThread.optLong("import");
+            StringBuilder line = new StringBuilder(String.format(Locale.US,
+                    "  Guest machine (%d samples): render thread game code %.0f%%, D3D9 %.0f%%, imports %.0f%%; other threads %.0f%%; idle %.0f%%. Top:",
+                    profile.optLong("samples"), 100 * guest / all, 100 * d3d9 / all, 100 * imports / all,
+                    100 * profile.optLong("other") / all, 100 * profile.optLong("idle") / all));
+            JSONArray top = profile.optJSONArray("top");
+            for (int i = 0; top != null && i < Math.min(12, top.length()); i++) {
+                JSONArray f = top.optJSONArray(i);
+                if (f == null) continue;
+                long g = f.optLong(1), d = f.optLong(2), m = f.optLong(3);
+                line.append(String.format(Locale.US, " sub_%s %.1f%%%s", f.optString(0), 100 * (g + d + m) / all,
+                        d > g && d >= m ? " (D3D9)" : m > g && m > d ? " (import)" : ""));
+            }
             out.append(line).append('\n');
         }
         JSONArray events = record.optJSONArray("events");

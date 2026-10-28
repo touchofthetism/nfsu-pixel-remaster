@@ -46,6 +46,9 @@ std::atomic<bool> surfaceRequested{false},surfaceAvailable{false};
 // Session call counts per D3D9 method, indexed like the first-call log (kind*256+method); the
 // telemetry JSON reports the non-zero ones so a frame's draw/state profile is visible in a report.
 std::atomic<uint32_t> methodTotals[4096];
+// Session time per D3D9 method (nanoseconds, bridge + DXVK), same index: Present measured every time, the
+// rest estimated from the one call in 64 that d3dDispatch times (d3d9AddMethodTime).
+std::atomic<uint64_t> methodNanos[4096];
 // A race frame makes ~45,000 device calls (Pixel 10 Pro XL telemetry: 7,200 SetSamplerState, 6,400
 // SetRenderState, 4,300 SetVertexShaderConstantF...). The device handle is resolved without the hash
 // map, and render/sampler/texture-stage states that repeat the current value return before DXVK (which
@@ -139,6 +142,9 @@ std::string dxvkHud;
 // the back buffer gets the same sample count (D3D9 requires render target and depth to match).
 std::atomic<unsigned> activeMultisample{0};
 std::atomic<uint32_t> activeBackBufferWidth{0},activeBackBufferHeight{0};
+// The game device's back buffer after its last successful CreateDevice/Reset, kept past shutdown for the
+// session record (d3d9BackBufferSize).
+std::atomic<uint32_t> reportedBackBufferWidth{0},reportedBackBufferHeight{0};
 // MSAA is only valid on a DISCARD swap chain, and the game must not read the back buffer back.
 std::atomic<bool> activeAutoDepth{true};
 void applyAntialiasing(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRESENT_PARAMETERS& p){
@@ -182,6 +188,16 @@ D3DFORMAT nativeTextureFormat(IDirect3DDevice9* device,D3DFORMAT format,DWORD us
     return SUCCEEDED(supported)?format:D3DFMT_A8B8G8R8;
 }
 void describeOriginal(uint32_t address,D3DSURFACE_DESC* desc){auto view=compressionView(address);if(view.texture&&desc)desc->Format=static_cast<D3DFORMAT>(view.texture->format);}
+}
+void d3d9BackBufferSize(unsigned& width,unsigned& height){width=reportedBackBufferWidth.load();height=reportedBackBufferHeight.load();}
+void d3d9AddMethodTime(uint32_t token,uint64_t nanos){methodNanos[((token-methodBase)/16)&4095].fetch_add(nanos,std::memory_order_relaxed);}
+std::string d3d9MethodTimeJson(){
+    std::string json="{";bool first=true;
+    for(unsigned index=0;index<4096;++index){
+        uint64_t nanos=methodNanos[index].load(std::memory_order_relaxed);if(!nanos)continue;
+        char item[64];std::snprintf(item,sizeof item,"%s\"%u/%u\":%llu",first?"":",",index/256,index%256,static_cast<unsigned long long>(nanos));json+=item;first=false;
+    }
+    return json+"}";
 }
 std::string d3d9CallCountsJson(){
     std::string json="{";bool first=true;
@@ -388,6 +404,7 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
             applyAntialiasing(d3d,args[1],static_cast<D3DDEVTYPE>(args[2]),parameters);
             IDirect3DDevice9* device=nullptr;HRESULT status=d3d->CreateDevice(args[1],static_cast<D3DDEVTYPE>(args[2]),window,args[4],&parameters,&device);
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 backbuffer %ux%u CreateDevice result=%08x",parameters.BackBufferWidth,parameters.BackBufferHeight,uint32_t(status));
+            if(SUCCEEDED(status)){reportedBackBufferWidth=parameters.BackBufferWidth;reportedBackBufferHeight=parameters.BackBufferHeight;}
             // Without a device the game carries on and faults later in its own
             // code (PowerVR GE8322 reports): after its retry also fails, stop
             // here with the reason instead.
@@ -419,6 +436,7 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
                     if(!attempt)std::this_thread::sleep_for(std::chrono::milliseconds(100));}
             }
             deviceResetPending=status==D3DERR_DEVICELOST;forgetStateShadow();
+            if(SUCCEEDED(status)){reportedBackBufferWidth=p.BackBufferWidth;reportedBackBufferHeight=p.BackBufferHeight;}
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 Reset backbuffer %ux%u result=%08x",p.BackBufferWidth,p.BackBufferHeight,uint32_t(status));return status;}
         case 23:{*argumentCount=9;if(args[8])throw std::runtime_error("Shared texture handle pending");if(!args[7])return D3DERR_INVALIDCALL;
             auto original=static_cast<D3DFORMAT>(args[5]),format=nativeTextureFormat(device,original,args[4],D3DRTYPE_TEXTURE);IDirect3DTexture9* texture=nullptr;

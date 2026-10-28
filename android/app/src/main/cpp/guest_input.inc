@@ -308,6 +308,7 @@ void keyboardMouseObjectInfo(uint32_t kind){
     ret(0,4);
 }
 void inputDispatch(){
+    RenderPlace place(GuestProfile::Import);   // profiler: the render thread is in a host import
     uint32_t kind=(inputToken-inputMethodBase)/0x1000,method=((inputToken-inputMethodBase)%0x1000)/16;
     uint32_t self=arg(0);auto found=inputObjects.find(self);
     if(found==inputObjects.end()||found->second.kind!=kind)throw GuestStop("Invalid DirectInput object");

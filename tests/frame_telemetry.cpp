@@ -72,5 +72,23 @@ int main(){
     FrameTelemetry uncapped;auto t3=Clock::time_point(seconds(7));
     uncapped.present(t3,milliseconds(1),0);uncapped.present(t3+=milliseconds(30),milliseconds(1),0);
     require(uncapped.summary().hitches==1&&uncapped.summary().targetFps==0,"uncapped hitch rule");
-    std::puts("Frame telemetry passed: steady 120 FPS, stall/hitch/gap classification, pause(), 30 FPS threshold, JSON shape");
+    // GPU busy per second from a GPU idle counter (DXVK's measure): a second with 250 ms idle is 75% busy.
+    require(telemetry.summary().gpuBusyAvg<0,"no idle source: GPU busy not measured");
+    static uint64_t fakeIdle=0;
+    FrameTelemetry gpu;gpu.gpuIdleSource([]{return fakeIdle;});
+    auto t4=Clock::time_point(seconds(50));
+    for(int second=0;second<4;++second){
+        for(int frame=0;frame<60;++frame){gpu.present(t4,milliseconds(1),60);t4+=microseconds(16667);}
+        fakeIdle+=second==1?250000:second==2?900000:0;  // second 1: 75% busy, second 2: 10% busy, others 100%
+    }
+    std::string gj=gpu.json();
+    require(gj.find("[1,60,16.7,75]")!=std::string::npos,"second 1 measured 75% busy");
+    require(gj.find("[2,60,16.7,10]")!=std::string::npos,"second 2 measured 10% busy");
+    require(gj.find("[3,60,16.7,-1]")!=std::string::npos||gj.find("[3,59,16.7,-1]")!=std::string::npos,"the open last second is not measured");
+    require(near(gpu.summary().gpuBusyAvg,(100+75+10)/3.0,.6),"average over the measured seconds");
+    // A pause closes the second without measuring it (the GPU idles in the background).
+    gpu.pause();fakeIdle+=5000000;
+    for(int frame=0;frame<130;++frame){gpu.present(t4+=seconds(frame?0:30),milliseconds(1),60);t4+=microseconds(16667);}
+    require(gpu.summary().gpuBusyAvg>=0&&gpu.summary().gpuBusyAvg<=100,"pauses never produce a busy share outside 0..100");
+    std::puts("Frame telemetry passed: steady 120 FPS, stall/hitch/gap classification, pause(), 30 FPS threshold, JSON shape, GPU busy per second");
 }

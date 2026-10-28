@@ -7,6 +7,9 @@ Telemetry only; rendering is untouched:
     written to stderr, which Android discards, and they are exactly what a performance report needs.
   * Pipeline compilations are counted and timed (graphics and compute, total and worst case) and exposed
     as an extern "C" function the game runtime reads for the session telemetry and the overlay.
+  * The GPU's idle time (the HUD's "GPU load" counter: the time the submission queue had no command list
+    in flight) is mirrored into a process-wide counter, so each second of a session records how busy the
+    GPU was and a report can tell a GPU-bound frame from a CPU-bound one.
 
 Usage: dxvk_extra.py <prepared dxvk-source>. Each edit must apply exactly once; otherwise the pinned
 recipe changed and this script needs a look (the build fails loudly instead of silently losing data).
@@ -22,6 +25,8 @@ STATS_HEADER = '''#pragma once
 
 namespace dxvk::android_stats {
   extern std::atomic<uint64_t> graphicsCompiles, computeCompiles, compileNanos, compileMaxNanos, slowCompiles;
+  // Microseconds the submission queue waited with nothing in flight (DxvkSubmissionQueue::finishCmdLists).
+  extern std::atomic<uint64_t> gpuIdleMicros;
   inline void recordCompile(bool graphics, std::chrono::nanoseconds spent) {
     uint64_t nanos = uint64_t(spent.count() < 0 ? 0 : spent.count());
     (graphics ? graphicsCompiles : computeCompiles).fetch_add(1, std::memory_order_relaxed);
@@ -37,6 +42,13 @@ STATS_SOURCE = '''#include "dxvk_android_stats.h"
 
 namespace dxvk::android_stats {
   std::atomic<uint64_t> graphicsCompiles{0}, computeCompiles{0}, compileNanos{0}, compileMaxNanos{0}, slowCompiles{0};
+  std::atomic<uint64_t> gpuIdleMicros{0};
+}
+
+// GPU idle microseconds since the process started (all devices; the game has one). Busy share over an
+// interval = 1 - idle delta / interval, the same measure as DXVK's HUD "GPU load".
+extern "C" uint64_t dxvkAndroidGpuIdleMicros() {
+  return dxvk::android_stats::gpuIdleMicros.load(std::memory_order_relaxed);
 }
 
 // Read by the game runtime (guest_runtime.cpp): graphics compiles, compute compiles, total nanoseconds,
@@ -106,7 +118,14 @@ def main() -> None:
                 '      auto td = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);\n'
                 f'      Logger::debug(str::format("Dxvk{kind}Pipeline: Finished in ", td.count(), " ms"));\n'
                 '    }\n')
-    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats\n", encoding="ascii")
+    # 3. GPU idle time, mirrored from the submission queue's own counter.
+    replace(root, "src/dxvk/dxvk_queue.cpp", '#include "dxvk_device.h"\n', '#include "dxvk_device.h"\n#include "dxvk_android_stats.h"\n')
+    replace(root, "src/dxvk/dxvk_queue.cpp",
+            '        m_gpuIdle += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();\n',
+            '        auto idle = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();\n'
+            '        m_gpuIdle += idle;\n'
+            '        android_stats::gpuIdleMicros.fetch_add(uint64_t(idle < 0 ? 0 : idle), std::memory_order_relaxed);\n')
+    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle\n", encoding="ascii")
     print(f"dxvk_extra: applied to {root}")
 
 

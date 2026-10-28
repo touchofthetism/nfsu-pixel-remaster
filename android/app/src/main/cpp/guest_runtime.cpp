@@ -8,6 +8,7 @@
 #include "runtime_log.h"
 #include "frame_pacer.h"
 #include "frame_telemetry.h"
+#include "guest_profiler.h"
 #include "host_perf.h"
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 #include "d3d9_bridge.h"
@@ -35,6 +36,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <cerrno>
 #include <deque>
 #ifdef __ANDROID__
@@ -68,6 +70,10 @@ std::atomic<unsigned> frameLimit{0};
 // Session frame telemetry (Present intervals); read as JSON by GameActivity for the overlay and the
 // session record. See frame_telemetry.h.
 FrameTelemetry frameTelemetry;
+#ifdef __ANDROID__
+// GPU idle microseconds from the prepared DXVK (ci/dxvk_extra.py), the HUD's "GPU load" measure.
+extern "C" uint64_t dxvkAndroidGpuIdleMicros();
+#endif
 // Launcher "CPU placement" (host_perf.h): applied on the render thread at its first Present.
 std::atomic<int> cpuPlacement{int(host_perf::Placement::FastestCores)};
 std::chrono::steady_clock::time_point frameWorkStart{};
@@ -104,6 +110,22 @@ struct State {
 struct Import { std::string name; recomp_func_t function{}; uint64_t calls{}; };
 std::unique_ptr<GuestMemory> memory;
 std::unique_ptr<GuestHeaps> heaps;
+// The thread that presents (the game's busy thread): longer scheduler slices, and the profiler's "render".
+thread_local bool renderThread=false;
+// Sampling profiler (guest_profiler.h): who holds the machine, and whether the render thread is in a host
+// call. Relaxed stores on lock/unlock and around D3D9/sound/input dispatch; a sampler thread reads them.
+// Only the render thread writes renderPlace, so a place left set while another thread holds the machine
+// (an import that waits) is never read for that thread.
+std::atomic<uint8_t> machineHolder{GuestProfile::Nobody};
+std::atomic<uint8_t> renderPlace{GuestProfile::Guest};
+GuestProfile guestProfile;
+constexpr unsigned kProfileIntervalUs=1000;
+struct RenderPlace {
+    bool active;
+    explicit RenderPlace(GuestProfile::Place place):active(renderThread){if(active)renderPlace.store(place,std::memory_order_relaxed);}
+    ~RenderPlace(){if(active)renderPlace.store(GuestProfile::Guest,std::memory_order_relaxed);}
+    RenderPlace(const RenderPlace&)=delete;RenderPlace& operator=(const RenderPlace&)=delete;
+};
 // The guest machine lock: FIFO by ticket and recursive per thread, with the
 // std::recursive_mutex interface the scheduler code already uses.
 //
@@ -127,6 +149,7 @@ public:
         const uint64_t ticket=next_++;
         cv_.wait(l,[&]{return serving_==ticket;});
         owner_=me;depth_=1;acquired=std::chrono::steady_clock::now();
+        machineHolder.store(renderThread?GuestProfile::Render:GuestProfile::Other,std::memory_order_relaxed);
     }
     // When the current owner got the machine; only the owner reads it.
     std::chrono::steady_clock::time_point acquired{};
@@ -135,7 +158,9 @@ public:
         std::lock_guard<std::mutex> l(m_);
         if(owner_==me){++depth_;return true;}
         if(next_!=serving_)return false;
-        ++next_;owner_=me;depth_=1;acquired=std::chrono::steady_clock::now();return true;
+        ++next_;owner_=me;depth_=1;acquired=std::chrono::steady_clock::now();
+        machineHolder.store(renderThread?GuestProfile::Render:GuestProfile::Other,std::memory_order_relaxed);
+        return true;
     }
     bool hasWaiters(){
         std::lock_guard<std::mutex> lock(m_);
@@ -146,6 +171,7 @@ public:
             std::lock_guard<std::mutex> l(m_);
             if(--depth_)return;
             owner_={};++serving_;
+            machineHolder.store(GuestProfile::Nobody,std::memory_order_relaxed);
             if(next_==serving_)return;          // nobody waiting
         }
         cv_.notify_all();
@@ -249,7 +275,6 @@ void yieldGuestMachine(unsigned milliseconds=0,std::chrono::steady_clock::time_p
     else if(milliseconds)std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));else std::this_thread::yield();
     machineLease->lock();saved.load();
 }
-thread_local bool renderThread=false;
 void checkGuestProgress() {
     while(guestPaused.load()&&!stopRequested.load())yieldGuestMachine(20);
     if(stopRequested.load())throw GuestStop("Guest execution cancelled");
@@ -347,6 +372,35 @@ void direct3DCreate(){ret(createGuestD3D9(arg(0)),1);}
 void freeD3DGuest(uint32_t address){heaps->free(GuestHeaps::process,address);}
 void serviceGuestSound();
 void saveChangedOptions();  // after callGuest
+uint64_t steadyNs(){return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+// The profiler's sampler: every kProfileIntervalUs, who holds the guest machine and where (guest_profiler.h).
+// A plain read of g_cur_func from this thread: an aligned 32-bit word, and a stale value only shifts one sample.
+void startGuestProfiler(){
+    static std::once_flag started;
+    std::call_once(started,[]{std::thread([]{
+        setpriority(PRIO_PROCESS,0,10);   // never compete with the game for a core
+        while(!stopRequested.load(std::memory_order_relaxed)){
+            std::this_thread::sleep_for(std::chrono::microseconds(kProfileIntervalUs));
+            if(guestPaused.load(std::memory_order_relaxed))continue;
+            auto holder=GuestProfile::Holder(machineHolder.load(std::memory_order_relaxed));
+            uint32_t func=holder==GuestProfile::Nobody?0u:__atomic_load_n(&g_cur_func,__ATOMIC_RELAXED);
+            auto place=holder==GuestProfile::Render?GuestProfile::Place(renderPlace.load(std::memory_order_relaxed)):GuestProfile::Guest;
+            guestProfile.add(steadyNs(),holder,func,place);
+        }
+    }).detach();});
+}
+// A frame slower than 80 ms that is not a pause: what the profiler saw during it, so a report says which
+// functions (or D3D9 calls, or waiting) filled it. At most one line every 2 s and 300 per session.
+void explainSlowFrame(std::chrono::steady_clock::time_point now){
+    static uint64_t lastPresent=0,lastLog=0;static unsigned logged=0;
+    uint64_t at=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
+    uint64_t previous=lastPresent;lastPresent=at;
+    if(!previous||guestPaused.load(std::memory_order_relaxed))return;
+    uint64_t frame=at-previous;
+    if(frame<80000000ull||frame>2000000000ull||logged>=300||at-lastLog<2000000000ull)return;
+    lastLog=at;++logged;
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Slow frame %.0f ms: %s",frame/1e6,guestProfile.explain(previous,at).c_str());
+}
 void d3dDispatch(){
     // The arguments are read in place on the guest stack (one bounds check)
     // instead of copying 128 bytes for each D3D9 call.
@@ -356,24 +410,28 @@ void d3dDispatch(){
     // two clock reads on each of the ~40k calls in a race frame.
     bool timed=(++bridgeCalls&63u)==0||token==0x7e002110u;
     std::chrono::steady_clock::time_point bridgeStart;if(timed)bridgeStart=std::chrono::steady_clock::now();uint32_t result;
-    try{result=dispatchGuestD3D9(token,args,&count);}catch(...){
-        NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","D3D9 guest caller=%08x stack=%08x token=%08x self=%08x",g_cur_func,g_esp,token,args[0]);throw;}
+    {RenderPlace place(GuestProfile::D3D9);
+     try{result=dispatchGuestD3D9(token,args,&count);}catch(...){
+        NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","D3D9 guest caller=%08x stack=%08x token=%08x self=%08x",g_cur_func,g_esp,token,args[0]);throw;}}
     if(timed){auto done=std::chrono::steady_clock::now();auto spent=done-bridgeStart;bridgeTime+=token==0x7e002110u?spent:spent*64;presentTime+=token==0x7e002110u?spent:std::chrono::nanoseconds{};
+        // Per-method time: Present in full, every other method estimated from the one call in 64 timed.
+        d3d9AddMethodTime(token,uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(token==0x7e002110u?spent:spent*64).count()));
         if(token==0x7e002110u&&result==0){
+            explainSlowFrame(done);
             frameTelemetry.present(done,std::chrono::duration_cast<std::chrono::nanoseconds>(spent),frameLimit.load(std::memory_order_relaxed));
             // The thread that presents is the game's busy thread: place it once, then feed the frame's
             // CPU work (from the end of the previous pacer sleep to now) to the performance hint session.
             host_perf::adoptRenderThread(static_cast<host_perf::Placement>(cpuPlacement.load()),frameLimit.load(std::memory_order_relaxed));
             if(frameWorkStart.time_since_epoch().count())host_perf::reportFrame(std::chrono::duration_cast<std::chrono::nanoseconds>(done-frameWorkStart));
         }}
-    if(token==0x7e002110u){nfs_widescreen_apply_frame_rate();lastPresentMs=steadyMs();startStallWatch();saveChangedOptions();}
+    if(token==0x7e002110u){nfs_widescreen_apply_frame_rate();lastPresentMs=steadyMs();startStallWatch();startGuestProfiler();saveChangedOptions();}
     if(token==0x7e002110u&&result==0){
         static FramePacer pacer;
         auto now=std::chrono::steady_clock::now();
         auto deadline=pacer.deadline(now,frameLimit.load(std::memory_order_relaxed));
         // The renderer has returned; guest audio/streaming workers can use the
         // machine while this thread waits. Late frames incur no extra delay.
-        renderThread=true;
+        if(!renderThread){renderThread=true;machineHolder.store(GuestProfile::Render,std::memory_order_relaxed);}
         if(deadline>now)yieldGuestMachine(0,deadline);
         else if(machine.hasWaiters())yieldGuestMachine();
         frameWorkStart=std::chrono::steady_clock::now();
@@ -397,6 +455,36 @@ inline uint32_t callGuest(uint32_t va,const std::vector<uint32_t>& args,uint32_t
 // (0x2E5 bytes) in 0x41E200; once they change while a profile is loaded
 // (name at 0x736230) and stay unchanged for 2 s, run the game's own profile
 // config save (0x41C7A0: .opt, then .cfg) as its save would.
+// The Display Settings of the profile as the game last wrote them (its .cfg, KEY: value lines). Logged in
+// full when a profile is first seen and as a list of changes after each save, so a session's frame rate can
+// be matched with what was switched in the game's menu.
+void logDisplaySettings(const std::string& profile){
+    static const char* const keys[]={"PERFORMANCE","ENVMAP","WORLDENVMAP","SHADOW","HEADLIGHTS","CARLIGHTING","DAMAGE","CROWD",
+        "ROADREFLECTION","FOG","MOTIONBLUR","LIGHTSTREAKS","LIGHTGLOW","ANIMATEDTEXTURE","PARTICLESYSTEMS","DEPTHOFFIELD","WorldLOD","CarLOD"};
+    static std::map<std::string,std::map<std::string,std::string>> known;
+    std::string path=hostGameRoot+"/"+profile;std::replace(path.begin(),path.end(),'\\','/');
+    std::ifstream file(path);if(!file)return;
+    std::map<std::string,std::string> values;std::string line;
+    auto trim=[](std::string text){size_t a=text.find_first_not_of(" \t\r"),b=text.find_last_not_of(" \t\r");return a==std::string::npos?std::string():text.substr(a,b-a+1);};
+    while(std::getline(file,line)){
+        size_t colon=line.find(':');if(colon==std::string::npos)continue;
+        std::string key=trim(line.substr(0,colon));
+        if(std::find_if(std::begin(keys),std::end(keys),[&](const char* k){return key==k;})!=std::end(keys))values[key]=trim(line.substr(colon+1));
+    }
+    if(values.empty())return;
+    std::string text;
+    auto previous=known.find(profile);
+    for(const char* key:keys){
+        auto value=values.find(key);if(value==values.end())continue;
+        if(previous==known.end())text+=std::string(text.empty()?"":" ")+key+"="+value->second;
+        else{auto before=previous->second.find(key);
+            if(before==previous->second.end()||before->second!=value->second)
+                text+=std::string(text.empty()?"":", ")+key+" "+(before==previous->second.end()?"?":before->second)+" -> "+value->second;}
+    }
+    if(previous==known.end())NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Display settings of %s: %s",profile.c_str(),text.c_str());
+    else if(!text.empty())NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Display settings changed in the game: %s",text.c_str());
+    known[profile]=values;
+}
 void saveChangedOptions(){
     constexpr uint32_t options=0x7588C4u,optionsBytes=0x2E5u,profileName=0x736230u;
     static int64_t nextCheck=0,changedAt=0;static std::string profile;static std::vector<uint8_t> saved,pending;
@@ -405,13 +493,14 @@ void saveChangedOptions(){
     std::string name=guestString(profileName);
     auto current=static_cast<const uint8_t*>(ptr(options,optionsBytes));
     if(name.empty()){profile.clear();saved.clear();return;}
-    if(name!=profile||saved.empty()){profile=name;saved.assign(current,current+optionsBytes);changedAt=0;return;}
+    if(name!=profile||saved.empty()){profile=name;saved.assign(current,current+optionsBytes);changedAt=0;logDisplaySettings(profile);return;}
     if(std::equal(saved.begin(),saved.end(),current)){changedAt=0;return;}
     if(!changedAt||!std::equal(pending.begin(),pending.end(),current)){pending.assign(current,current+optionsBytes);changedAt=now;return;}
     if(now-changedAt<2000)return;
     callGuest(0x41C7A0u,{});
     saved=pending;changedAt=0;
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Options changed in the menu: saved to the %s profile",profile.c_str());
+    logDisplaySettings(profile);
 }
 #include "guest_threads.inc"
 #include "guest_files.inc"
@@ -789,6 +878,11 @@ std::string connectGuestRuntime(const char* executable) {
         loadImage(executable);
         if(!guestWrongWayWarning)applyWrongWayPatch();
         nfs_frontend_cursor_units(1);  // touch hands out the cursor in front-end units
+        // The launcher's internal resolution is the game's back buffer (its own menu modes stop at 1280x1024).
+        nfs_widescreen_set_render_size(renderWidth.load(),renderHeight.load());
+#ifdef __ANDROID__
+        frameTelemetry.gpuIdleSource(dxvkAndroidGpuIdleMicros);   // each second's GPU busy share
+#endif
         if(guestWidescreen){
             nfs_widescreen_init(hostGameRoot.c_str());
             // Landscape surface: the long side over the short one.
@@ -872,18 +966,28 @@ std::string guestTelemetryJson(bool live){
 #ifdef __ANDROID__
     dxvkAndroidPipelineStats(pipelines);
 #endif
-    char tail[512];
+    char tail[640];
     int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0;
+    // The size the game really renders at (its D3D9 back buffer), next to the size the launcher asked for.
+    unsigned backBuffer[2]{};
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+    d3d9BackBufferSize(backBuffer[0],backBuffer[1]);
+#endif
 #ifdef __ANDROID__
     if(soundStream){xruns=AAudioStream_getXRunCount(soundStream);bufferFrames=AAudioStream_getBufferSizeInFrames(soundStream);burst=AAudioStream_getFramesPerBurst(soundStream);rate=soundMixer.rate;}
     else{xruns=lastAudioStats.xruns;bufferFrames=lastAudioStats.bufferFrames;burst=lastAudioStats.burst;rate=lastAudioStats.rate;}
 #endif
     std::snprintf(tail,sizeof tail,",\"pipelines\":{\"graphics\":%llu,\"compute\":%llu,\"totalMs\":%.1f,\"maxMs\":%.1f,\"over10Ms\":%llu},"
-        "\"audio\":{\"xruns\":%d,\"bufferFrames\":%d,\"burstFrames\":%d,\"rate\":%u},\"render\":{\"width\":%u,\"height\":%u,\"display\":[%u,%u]}",
+        "\"audio\":{\"xruns\":%d,\"bufferFrames\":%d,\"burstFrames\":%d,\"rate\":%u},\"render\":{\"width\":%u,\"height\":%u,\"display\":[%u,%u],\"backBuffer\":[%u,%u]}",
         static_cast<unsigned long long>(pipelines[0]),static_cast<unsigned long long>(pipelines[1]),pipelines[2]/1e6,pipelines[3]/1e6,
-        static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load());
+        static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load(),
+        backBuffer[0],backBuffer[1]);
     std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail+",\"host\":"+host_perf::statusJson();
-    if(!live)json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
+    if(!live){
+        json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
+        json+=",\"d3d9Ns\":"+d3d9MethodTimeJson();
+        json+=",\"profile\":"+guestProfile.json(kProfileIntervalUs);
+    }
     return json+"}";
 }
 void setGuestCpuPlacement(int placement){cpuPlacement=placement==0?0:1;}

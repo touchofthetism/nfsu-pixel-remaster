@@ -137,6 +137,7 @@ void directSoundCreate(){
     write32(arg(1),createSoundObject(1));ret(0,3);
 }
 void soundDispatch(){
+    RenderPlace place(GuestProfile::Import);   // profiler: the render thread is in a host import
     uint32_t kind=(soundToken-soundMethodBase)/0x1000,method=((soundToken-soundMethodBase)%0x1000)/16,self=arg(0);
     auto found=soundObjects.find(self);if(found==soundObjects.end()||found->second.kind!=kind)throw GuestStop("Invalid DirectSound object");
     auto& object=found->second;

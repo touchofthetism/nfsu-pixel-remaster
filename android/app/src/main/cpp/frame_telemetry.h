@@ -13,7 +13,9 @@
 // uncontended mutex and a handful of integer operations; the JSON is built only when asked for.
 //
 // Everything is derived from the interval between consecutive Presents (what the player sees) and the
-// time spent inside Present (DXVK + the swapchain: a proxy for GPU-bound or vsync-bound frames).
+// time spent inside Present (DXVK + the swapchain: a proxy for GPU-bound or vsync-bound frames). With a GPU
+// idle counter (gpuIdleSource: microseconds the GPU had nothing in flight, DXVK's "GPU load" measure) each
+// second also records how busy the GPU was, which tells a GPU-bound second from a CPU-bound one.
 class FrameTelemetry {
 public:
     using Clock = std::chrono::steady_clock;
@@ -35,7 +37,16 @@ public:
         uint64_t frames = 0, hitches = 0, stalls = 0, gaps = 0, spikes = 0;
         double activeSeconds = 0, avgFps = 0, p50Ms = 0, p90Ms = 0, p99Ms = 0, p999Ms = 0, maxMs = 0, presentMsAvg = 0;
         unsigned targetFps = 0;
+        // Mean of the measured seconds' GPU busy percentage; -1 without a GPU idle source.
+        double gpuBusyAvg = -1;
     };
+
+    // Microseconds of GPU idle time so far (monotonic); set once, before the first Present.
+    using GpuIdleMicros = uint64_t (*)();
+    void gpuIdleSource(GpuIdleMicros source) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        gpuIdle_ = source;
+    }
 
     // Called with the Present's completion time, the time spent inside Present and the frame cap
     // (0 = uncapped; 120 is then assumed for the hitch threshold).
@@ -50,14 +61,15 @@ public:
         last_ = now;
         if (interval < 0) return;
         uint32_t us = interval > int64_t(0xFFFFFFFFu) ? 0xFFFFFFFFu : uint32_t(interval);
-        if (us >= kGapUs) { ++gaps_; return; }
-        record(us, uint32_t(std::chrono::duration_cast<std::chrono::seconds>(now - start_).count()));
+        if (us >= kGapUs) { ++gaps_; secondOpen_ = false; return; }
+        record(us, uint32_t(std::chrono::duration_cast<std::chrono::seconds>(now - start_).count()), now);
     }
 
     // The app paused: the next Present starts a new interval instead of measuring the pause.
     void pause() {
         std::lock_guard<std::mutex> lock(mutex_);
         last_ = {};
+        secondOpen_ = false;   // the GPU sat idle in the background: that second is not measured
     }
 
     Summary summary() const {
@@ -79,11 +91,12 @@ public:
             out += item;
             first = false;
         }
+        // [second, frames, worst frame ms, GPU busy % (-1: not measured)]
         out += "],\"perSecond\":[";
         for (size_t i = 0; i < seconds_.size(); ++i) {
             char item[64];
-            std::snprintf(item, sizeof item, "%s[%u,%u,%.1f]", i ? "," : "", seconds_[i].second, seconds_[i].frames,
-                seconds_[i].maxUs / 1000.0);
+            std::snprintf(item, sizeof item, "%s[%u,%u,%.1f,%d]", i ? "," : "", seconds_[i].second, seconds_[i].frames,
+                seconds_[i].maxUs / 1000.0, int(seconds_[i].gpuBusy));
             out += item;
         }
         out += "]}";
@@ -112,9 +125,20 @@ public:
     }
 
 private:
-    struct Second { uint32_t second, frames, maxUs; };
+    struct Second { uint32_t second, frames, maxUs; int8_t gpuBusy; };
 
-    void record(uint32_t us, uint32_t second) {
+    // Closes the open second's GPU measure at `now` (a frame of the next second has just been presented).
+    void closeSecondLocked(Clock::time_point now) {
+        if (!secondOpen_ || !gpuIdle_ || seconds_.empty()) return;
+        secondOpen_ = false;
+        int64_t wall = std::chrono::duration_cast<std::chrono::microseconds>(now - secondStart_).count();
+        uint64_t idle = gpuIdle_() - secondStartIdle_;
+        if (wall < 500000) return;   // a partial second (start, after a pause) says little
+        double busy = 100.0 * (1.0 - double(idle) / double(wall));
+        seconds_.back().gpuBusy = int8_t(busy < 0 ? 0 : busy > 100 ? 100 : int(busy + 0.5));
+    }
+
+    void record(uint32_t us, uint32_t second, Clock::time_point now) {
         ++frames_;
         totalUs_ += us;
         maxUs_ = std::max(maxUs_, us);
@@ -132,8 +156,10 @@ private:
         recentNext_ = (recentNext_ + 1) % kRecentFrames;
         ++recentCount_;
         if (seconds_.empty() || seconds_.back().second != second) {
-            if (seconds_.size() < kMaxSeconds) seconds_.push_back({second, 0, 0});
+            closeSecondLocked(now);
+            if (seconds_.size() < kMaxSeconds) seconds_.push_back({second, 0, 0, -1});
             else return;
+            if (gpuIdle_) { secondOpen_ = true; secondStart_ = now; secondStartIdle_ = gpuIdle_(); }
         }
         auto& current = seconds_.back();
         ++current.frames;
@@ -160,6 +186,9 @@ private:
         s.p99Ms = percentileMsLocked(.99); s.p999Ms = percentileMsLocked(.999);
         s.maxMs = maxUs_ / 1000.0;
         s.presentMsAvg = presentCalls_ ? presentNs_ / 1e6 / double(presentCalls_) : 0;
+        uint64_t busySum = 0, measured = 0;
+        for (const auto& second : seconds_) if (second.gpuBusy >= 0) { busySum += uint64_t(second.gpuBusy); ++measured; }
+        if (measured) s.gpuBusyAvg = double(busySum) / double(measured);
         return s;
     }
 
@@ -170,14 +199,19 @@ private:
         std::snprintf(text, sizeof text,
             "{\"frames\":%llu,\"activeSeconds\":%.1f,\"avgFps\":%.1f,\"p50Ms\":%.2f,\"p90Ms\":%.2f,\"p99Ms\":%.2f,"
             "\"p999Ms\":%.2f,\"maxMs\":%.2f,\"onePercentLowFps\":%.1f,\"hitches\":%llu,\"stalls\":%llu,\"gaps\":%llu,\"spikes\":%llu,"
-            "\"presentMsAvg\":%.2f,\"targetFps\":%u",
+            "\"presentMsAvg\":%.2f,\"targetFps\":%u,\"gpuBusyAvg\":%.1f",
             static_cast<unsigned long long>(s.frames), s.activeSeconds, s.avgFps, s.p50Ms, s.p90Ms, s.p99Ms, s.p999Ms,
             s.maxMs, s.p99Ms > 0 ? 1000.0 / s.p99Ms : 0.0, static_cast<unsigned long long>(s.hitches),
-            static_cast<unsigned long long>(s.stalls), static_cast<unsigned long long>(s.gaps), static_cast<unsigned long long>(s.spikes), s.presentMsAvg, s.targetFps);
+            static_cast<unsigned long long>(s.stalls), static_cast<unsigned long long>(s.gaps), static_cast<unsigned long long>(s.spikes), s.presentMsAvg, s.targetFps,
+            s.gpuBusyAvg);
         return text;
     }
 
     mutable std::mutex mutex_;
+    GpuIdleMicros gpuIdle_ = nullptr;
+    bool secondOpen_ = false;
+    Clock::time_point secondStart_{};
+    uint64_t secondStartIdle_ = 0;
     bool started_ = false;
     Clock::time_point start_{}, last_{};
     unsigned targetFps_ = 0;
