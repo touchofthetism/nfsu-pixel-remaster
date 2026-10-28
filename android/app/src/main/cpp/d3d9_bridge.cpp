@@ -3,6 +3,7 @@
 #include "dxt_shadow.h"
 #include "vertex_formats.h"
 #include "graphics_quality.h"
+#include "object_lookup.h"
 #include <d3d9.h>
 #include <algorithm>
 #include <map>
@@ -90,13 +91,18 @@ template<class T>bool kindMatches(Kind kind){
     else if constexpr(std::is_same_v<T,IDirect3DVertexDeclaration9>)return kind==Kind::Declaration;
     else return false;
 }
+// Calls name the device and the same few resources over and over: object_lookup.h answers those without a
+// hash lookup. retireGuestObject forgets an address before erasing it; shutdown forgets them all.
+ObjectLookup<std::unordered_map<uint32_t,Object>> lookups(objects);
+Object* findObject(uint32_t address){return lookups.find(address);}
 template<class T>T* nativeObject(uint32_t address){
-    if(!address)return nullptr;auto found=objects.find(address);if(found==objects.end())throw std::runtime_error("Invalid D3D9 resource handle");
-    if(kindMatches<T>(found->second.kind))return static_cast<T*>(found->second.native);
-    auto native=dynamic_cast<T*>(found->second.native);if(!native)throw std::runtime_error("D3D9 resource interface mismatch");return native;
+    if(!address)return nullptr;Object* entry=findObject(address);if(!entry)throw std::runtime_error("Invalid D3D9 resource handle");
+    if(kindMatches<T>(entry->kind))return static_cast<T*>(entry->native);
+    auto native=dynamic_cast<T*>(entry->native);if(!native)throw std::runtime_error("D3D9 resource interface mismatch");return native;
 }
 uint32_t wrapTexture(IDirect3DBaseTexture9* texture){if(!texture)return 0;switch(texture->GetType()){case D3DRTYPE_TEXTURE:return wrap(texture,Kind::Texture);case D3DRTYPE_CUBETEXTURE:return wrap(texture,Kind::Cube);case D3DRTYPE_VOLUMETEXTURE:return wrap(texture,Kind::VolumeTexture);default:throw std::runtime_error("Unknown D3D9 base texture type");}}
 void retireGuestObject(uint32_t address){
+    lookups.forget(address);
     auto found=objects.find(address);if(found==objects.end())return;
     if(address==cachedDeviceHandle){cachedDeviceHandle=0;cachedDevice=nullptr;forgetStateShadow();}
     uint32_t table;std::memcpy(&table,pointer(address),4);
@@ -117,7 +123,7 @@ void retainInitialDepthDescriptor(uint32_t outputAddress,uint32_t surfaceAddress
 }
 float floatValue(uint32_t bits){float value;std::memcpy(&value,&bits,4);return value;}
 uint32_t floatBits(float value){uint32_t bits;std::memcpy(&bits,&value,4);return bits;}
-CompressedView compressionView(uint32_t address){auto found=objects.find(address);return found==objects.end()?CompressedView{}:found->second.compressed;}
+CompressedView compressionView(uint32_t address){Object* entry=findObject(address);return entry?entry->compressed:CompressedView{};}
 // DXVK lets the CPU run at most BackBufferCount+1 frames ahead of the GPU.
 // Fewer back buffers (the game's request is logged) serialise a CPU-heavy frame
 // with its GPU work (Present waited 7-10 ms with the GPU 67% busy). Two
@@ -199,6 +205,10 @@ std::string d3d9MethodTimeJson(){
     }
     return json+"}";
 }
+// [answered by the object lookup cache, answered by the table]
+std::string d3d9LookupJson(){
+    char json[64];std::snprintf(json,sizeof json,"[%llu,%llu]",static_cast<unsigned long long>(lookups.hits()),static_cast<unsigned long long>(lookups.misses()));return json;
+}
 std::string d3d9CallCountsJson(){
     std::string json="{";bool first=true;
     for(unsigned index=0;index<4096;++index){
@@ -247,7 +257,7 @@ void shutdownD3D9Bridge(){
     }
     surfaceRequested=false;surfaceAvailable=false;
     activeMultisample=0;activeBackBufferWidth=0;activeBackBufferHeight=0;activeAutoDepth=true;deviceResetPending=false;
-    cachedDeviceHandle=0;cachedDevice=nullptr;recordingStateBlock=false;forgetStateShadow();
+    cachedDeviceHandle=0;cachedDevice=nullptr;recordingStateBlock=false;forgetStateShadow();lookups.forgetAll();
     if(statesFiltered||statesForwarded)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 state calls this session: %llu repeated the current value (dropped here), %llu forwarded",
         static_cast<unsigned long long>(statesFiltered),static_cast<unsigned long long>(statesForwarded));
     statesFiltered=statesForwarded=0;
@@ -319,13 +329,13 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
         default:break;
         }
     }
-    auto found=objects.find(args[0]);
-    if(found==objects.end()||static_cast<uint32_t>(found->second.kind)!=kind){
+    Object* entry=findObject(args[0]);
+    if(!entry||static_cast<uint32_t>(entry->kind)!=kind){
         NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","Invalid D3D9 COM call object=%08x token=%08x kind=%u method=%u actualKind=%u",args[0],token,kind,method,
-            found==objects.end()?0:static_cast<uint32_t>(found->second.kind));
+            entry?static_cast<uint32_t>(entry->kind):0);
         throw std::runtime_error("Invalid guest D3D9 COM object");
     }
-    auto object=found->second.native;
+    auto object=entry->native;
     if(kind==2&&args[0]!=cachedDeviceHandle){cachedDeviceHandle=args[0];cachedDevice=static_cast<IDirect3DDevice9*>(object);forgetStateShadow();}
     // State blocks apply state behind the shadow's back: forget it around their methods, and record
     // every setter while one is being built (BeginStateBlock 60 .. EndStateBlock 61).
@@ -349,26 +359,26 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
     // delegate AddRef/Release to their parent texture, so native counts can
     // include ownership through a different guest object. Returning them made
     // the game's release-until-zero loop call an already freed surface wrapper.
-    if(method==1){*argumentCount=1;object->AddRef();return ++found->second.references;}
+    if(method==1){*argumentCount=1;object->AddRef();return ++entry->references;}
     if(method==2){*argumentCount=1;
         // The game's detail rebuild releases the cube parent after every face
         // lookup, although only its first Release owns a parent reference.
         // Keep the callable wrapper until the acquired faces are released.
-        if(!found->second.references){
-            if(found->second.children)return 0;
+        if(!entry->references){
+            if(entry->children)return 0;
             throw std::runtime_error("D3D9 COM Release without owned reference");
         }
-        auto nativeReferences=object->Release();uint32_t references=--found->second.references;
+        auto nativeReferences=object->Release();uint32_t references=--entry->references;
         if(kind==5)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Surface Release object=%08x guestRefs=%u nativeRefs=%u",args[0],references,uint32_t(nativeReferences));
         if(!references){
-            if(found->second.children)return uint32_t(nativeReferences);
-            auto parent=found->second.parent;retireGuestObject(args[0]);
+            if(entry->children)return uint32_t(nativeReferences);
+            auto parent=entry->parent;retireGuestObject(args[0]);   // entry is gone after this
             if(parent){auto owner=objects.find(parent);if(owner!=objects.end()&&!--owner->second.children&&!owner->second.references)retireGuestObject(parent);}
         }
         return references;}
     if(method==0){
         *argumentCount=3;IUnknown* result=nullptr;HRESULT status=object->QueryInterface(*static_cast<const GUID*>(pointer(args[1])),reinterpret_cast<void**>(&result));
-        if(SUCCEEDED(status))write(args[2],wrap(result,found->second.kind));else write(args[2],0);return status;
+        if(SUCCEEDED(status))write(args[2],wrap(result,entry->kind));else write(args[2],0);return status;
     }
     if(kind==1){
         auto d3d=static_cast<IDirect3D9*>(object);

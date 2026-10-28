@@ -218,6 +218,11 @@ final class SessionSummary {
             StringBuilder line = new StringBuilder(String.format(Locale.US, "  D3D9 time per frame: %.2f ms;", totalNs / perFrame));
             for (int i = 0; i < Math.min(10, list.size()); i++)
                 line.append(String.format(Locale.US, " %s %.2f", methodName(list.get(i).getKey()), list.get(i).getValue() / perFrame));
+            // How many object lookups the bridge's cache answered (the rest went to its hash table).
+            JSONArray lookups = nat.optJSONArray("d3d9Lookups");
+            long cached = lookups == null ? 0 : lookups.optLong(0), table = lookups == null ? 0 : lookups.optLong(1);
+            if (cached + table > 0)
+                line.append(String.format(Locale.US, "; object lookups %.1f%% cached", 100.0 * cached / (cached + table)));
             out.append(line).append('\n');
         }
         JSONObject profile = nat == null ? null : nat.optJSONObject("profile");

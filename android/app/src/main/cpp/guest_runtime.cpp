@@ -996,6 +996,7 @@ std::string guestTelemetryJson(bool live){
     if(!live){
         json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
         json+=",\"d3d9Ns\":"+d3d9MethodTimeJson();
+        json+=",\"d3d9Lookups\":"+d3d9LookupJson();
         json+=",\"profile\":"+guestProfile.json(kProfileIntervalUs);
     }
     return json+"}";

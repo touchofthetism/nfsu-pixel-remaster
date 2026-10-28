@@ -18,6 +18,7 @@ std::string d3d9CallCountsJson();
 // Time spent per D3D9 method (bridge and DXVK) as {"kind/method": nanoseconds}; d3dDispatch adds to it.
 void d3d9AddMethodTime(uint32_t token,uint64_t nanos);
 std::string d3d9MethodTimeJson();
+std::string d3d9LookupJson();
 // The back buffer of the game's device as last created or reset (0x0 before the first): the size the game
 // renders at, which the launcher's internal resolution is meant to decide.
 void d3d9BackBufferSize(unsigned& width,unsigned& height);

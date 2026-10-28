@@ -75,12 +75,12 @@ public class SessionSummaryTest {
 
     @Test public void guestProfileAndD3D9Time() throws Exception {
         // 61234 frames; DrawIndexedPrimitive 122.468 s in all = 2.00 ms a frame, SetTexture 0.50 ms.
-        String record = RECORD.replace("\"d3d9Calls\":{", "\"d3d9Ns\":{\"2/82\":122468000000,\"2/65\":30617000000},"
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"d3d9Ns\":{\"2/82\":122468000000,\"2/65\":30617000000},\"d3d9Lookups\":[9750,250],"
                 + "\"profile\":{\"intervalUs\":1000,\"samples\":1000,\"render\":{\"guest\":550,\"d3d9\":300,\"import\":20},\"other\":80,\"idle\":50,"
                 + "\"top\":[[\"004A1B20\",120,0,0],[\"0040B9C0\",10,90,0]],\"otherTop\":[[\"0052D0C0\",60]]},\"d3d9Calls\":{");
         String report = SessionSummary.parse(record).report;
         for (String expected : new String[] {
-                "D3D9 time per frame: 2.50 ms; DrawIndexedPrimitive 2.00 SetTexture 0.50",
+                "D3D9 time per frame: 2.50 ms; DrawIndexedPrimitive 2.00 SetTexture 0.50; object lookups 97.5% cached",
                 "Guest machine (1000 samples): render thread game code 55%, D3D9 30%, imports 2%; other threads 8%; idle 5%. Top: sub_004A1B20 12.0% sub_0040B9C0 10.0% (D3D9)"}) {
             assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
         }
