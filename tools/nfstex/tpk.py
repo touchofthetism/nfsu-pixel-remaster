@@ -395,6 +395,13 @@ class Texture:
     def mips(self) -> int:
         return self.record[0x4E]
 
+    @property
+    def tilable_uv(self) -> int:
+        """TilableUV (+0x4F): bit 0 set when the game wraps the texture across its left and right edges, bit 1
+        across its top and bottom (clamped otherwise): 3 for road and grass, 1 for walls and the sky panorama, 2
+        for road strips and ladders, 0 for signs."""
+        return self.record[0x4F]
+
     def describe(self) -> str:
         return f"{self.name} {self.width}x{self.height} comp {self.compression:#04x} mips {self.mips} {len(self.pixels)} B"
 
@@ -670,9 +677,17 @@ def find_texture_packs(data: bytes) -> List[Tuple[int, Chunk]]:
     return results
 
 
+def _alignment(offset: int) -> int:
+    """The largest power of two up to 4096 that divides ``offset``."""
+    return next(a for a in (4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1) if offset % a == 0)
+
+
 def replace_texture_packs(data: bytes, packs: List[Tuple[int, Chunk]], rebuilt: dict) -> bytes:
     """Rebuilds the file with the given packs (by original file offset) replaced by serialized bytes.
-    Padding chunks after a pack are regenerated so the following chunk keeps its 128-byte alignment."""
+    The chunk after a pack keeps the alignment it had: a padding chunk right after the pack is regenerated
+    to the size that does it, and when the next chunk follows the pack directly (texture animations after the
+    pack in track sections) a padding chunk is put in front of it when the pack's new end does not land it
+    on that alignment."""
     out = bytearray()
     cursor = 0
     for offset, chunk in packs:
@@ -683,18 +698,25 @@ def replace_texture_packs(data: bytes, packs: List[Tuple[int, Chunk]], rebuilt: 
         new_bytes = rebuilt[offset](len(out)) if callable(rebuilt[offset]) else rebuilt[offset]
         out += new_bytes
         cursor = offset + original_size
-        # Absorb an immediately following padding chunk and re-emit it: unchanged when the pack kept its
-        # size, otherwise the smallest padding that keeps the next chunk on the alignment it had.
-        if cursor + 8 <= len(data):
-            pad_id, pad_size = struct.unpack_from("<II", data, cursor)
-            if pad_id == PADDING:
-                next_offset = cursor + 8 + pad_size
-                if len(new_bytes) == original_size or next_offset >= len(data):
-                    new_pad = pad_size          # unchanged size, or the file's trailing pad: keep it as it was
-                else:
-                    alignment = next(a for a in (4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4) if next_offset % a == 0)
-                    new_pad = (-(len(out) + 8)) % alignment
-                out += struct.pack("<II", PADDING, new_pad) + b"\0" * new_pad
-                cursor = next_offset
+        if cursor + 8 > len(data):
+            continue
+        next_id, next_size = struct.unpack_from("<II", data, cursor)
+        if next_id == PADDING:
+            # Absorb the padding chunk and re-emit it: unchanged when the pack kept its size, otherwise the
+            # smallest padding that keeps the next chunk on the alignment it had.
+            next_offset = cursor + 8 + next_size
+            if len(new_bytes) == original_size or next_offset >= len(data):
+                new_pad = next_size          # unchanged size, or the file's trailing pad: keep it as it was
+            else:
+                new_pad = (-(len(out) + 8)) % _alignment(next_offset)
+            out += struct.pack("<II", PADDING, new_pad) + b"\0" * new_pad
+            cursor = next_offset
+        elif len(new_bytes) != original_size:
+            alignment = _alignment(cursor)
+            gap = (-len(out)) % alignment
+            if gap:
+                while gap < 8:                  # a padding chunk is at least its 8-byte header
+                    gap += alignment
+                out += struct.pack("<II", PADDING, gap - 8) + b"\0" * (gap - 8)
     out += data[cursor:]
     return bytes(out)

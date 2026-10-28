@@ -12,12 +12,12 @@ nets smooth into paint; on flat art all four are clean.
 
 Alpha is upscaled as a separate greyscale image (replicated to RGB), through the colour net or a cheaper one,
 which keeps mask edges as crisp as the colour edges. Images are padded to a multiple of 4 and tiled so large textures
-fit in memory. Runs on CPU; torch is the only dependency (plus numpy/Pillow for the image plumbing).
+fit in memory. Textures that tile in the world are upscaled with their own continuation past each edge
+(tiling.wrap_pad) so the results tile without seams. Runs on CPU; torch is the only dependency (plus numpy/Pillow for the image plumbing).
 """
 from __future__ import annotations
 
 import functools
-import math
 import os
 from typing import Tuple
 
@@ -26,6 +26,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
+
+from nfstex.tiling import TILE_OVERLAP, WRAP_MARGIN, colour_fix, resize, tile_spans, tile_weights, unwrap, wrap_pad
 
 
 # ---- RRDBNet -----------------------------------------------------------------------------------------------
@@ -152,34 +154,52 @@ def load_model(name: str, models_dir: str) -> Tuple[nn.Module, int]:
     return model, scale
 
 
+def default_tile(model: nn.Module, scale: int) -> int:
+    """Input pixels per tile: the compact nets and x2plus (whose 23 blocks run at half resolution) take a whole
+    512-pixel texture with its margins in one piece within about 1.5 GB; x4plus takes 128 (160 with margins)."""
+    if isinstance(model, RRDBNet) and scale == 4:
+        return 128
+    return 512
+
+
 @torch.no_grad()
-def upscale_array(rgb: np.ndarray, model: nn.Module, scale: int, tile: int = 128, pad: int = 8) -> np.ndarray:
-    """rgb uint8 HxWx3 -> uint8 (H*scale)x(W*scale)x3, tiled with overlap so any size fits in memory."""
+def upscale_array(rgb: np.ndarray, model: nn.Module, scale: int, tile: int | None = None,
+                  pad: int = TILE_OVERLAP) -> np.ndarray:
+    """rgb uint8 HxWx3 -> uint8 (H*scale)x(W*scale)x3. Inputs larger than a tile are cut into tiles that
+    overlap by ``pad`` pixels on each side, and the tiles' results are cross-faded across each overlap
+    (tiling.tile_weights): the 23-block nets look far enough that a hard cut between tiles shows."""
+    tile = tile or default_tile(model, scale)
     h, w, _ = rgb.shape
     x = torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
     out = torch.zeros((1, 3, h * scale, w * scale))
-    for ty in range(0, h, tile):
-        for tx in range(0, w, tile):
-            y0, y1 = max(0, ty - pad), min(h, ty + tile + pad)
-            x0, x1 = max(0, tx - pad), min(w, tx + tile + pad)
+    total = torch.zeros((1, 1, h * scale, w * scale))
+    for ty, ty1 in tile_spans(h, tile):
+        for tx, tx1 in tile_spans(w, tile):
+            y0, y1 = max(0, ty - pad), min(h, ty1 + pad)
+            x0, x1 = max(0, tx - pad), min(w, tx1 + pad)
             patch = x[:, :, y0:y1, x0:x1]
             # Reflect-pad to a multiple of 4 so pixel-unshuffle variants work on any size.
             ph, pw = (-patch.shape[2]) % 4, (-patch.shape[3]) % 4
             if ph or pw:
                 patch = F.pad(patch, (0, pw, 0, ph), mode="reflect")
             result = model(patch)[:, :, :(y1 - y0) * scale, :(x1 - x0) * scale]
-            cy0, cx0 = (ty - y0) * scale, (tx - x0) * scale
-            cy1, cx1 = cy0 + (min(h, ty + tile) - ty) * scale, cx0 + (min(w, tx + tile) - tx) * scale
-            out[:, :, ty * scale:min(h, ty + tile) * scale, tx * scale:min(w, tx + tile) * scale] = result[:, :, cy0:cy1, cx0:cx1]
+            weights = torch.from_numpy(np.outer(tile_weights(y0, y1, ty, ty1, scale), tile_weights(x0, x1, tx, tx1, scale)))
+            out[:, :, y0 * scale:y1 * scale, x0 * scale:x1 * scale] += result * weights
+            total[:, :, y0 * scale:y1 * scale, x0 * scale:x1 * scale] += weights
+    out /= total
     return (out.squeeze(0).permute(1, 2, 0).clamp(0, 1).numpy() * 255.0 + 0.5).astype(np.uint8)
 
 
 def upscale_image(image: Image.Image, model_name: str, models_dir: str, factor: int,
-                  alpha_model: str | None = None) -> Image.Image:
+                  alpha_model: str | None = None, wrap: str | None = None, wrap_margin: int = WRAP_MARGIN,
+                  fix_colour: bool = False) -> Image.Image:
     """Upscales an RGBA image by ``factor`` (2 or 4) with the named model. Alpha goes through ``alpha_model``
     when given (a mask needs clean edges, not recovered detail: the compact net does it at a fraction of the
     cost), else through the same net as the colour. Each result is resized to the factor when its model's
-    scale differs (x4 models for a 2x target)."""
+    scale differs (x4 models for a 2x target). ``wrap``: None leaves the edges to the nets (the interface and
+    car packs); a string pads every edge, with the texture's own continuation along the axes it names ("x",
+    "y", "xy") and a mirror image along the others, and makes the result tile along those axes (tiling.py).
+    ``fix_colour``: the nets' colour and brightness drift is taken back out (tiling.colour_fix)."""
     model, scale = load_model(model_name, models_dir)
     target = (image.width * factor, image.height * factor)
     rgba = np.array(image.convert("RGBA"))
@@ -187,16 +207,23 @@ def upscale_image(image: Image.Image, model_name: str, models_dir: str, factor: 
     # Transparent pixels carry garbage colour in many game textures; bleed the visible colour outward first
     # so the network does not sharpen the junk into visible fringes at the alpha edge.
     rgb = bleed_colour(rgb, alpha)
-    up_rgb = Image.fromarray(upscale_array(rgb, model, scale), "RGB")
+
+    def run(channels: np.ndarray, net: nn.Module, net_scale: int) -> np.ndarray:
+        padded, my, mx = wrap_pad(channels, wrap, wrap_margin)
+        return unwrap(upscale_array(padded, net, net_scale), my, mx, channels.shape[0], channels.shape[1], net_scale, wrap)
+
+    up_rgb = Image.fromarray(np.ascontiguousarray(run(rgb, model, scale)), "RGB")
     if up_rgb.size != target:
-        up_rgb = up_rgb.resize(target, Image.LANCZOS)
+        up_rgb = resize(up_rgb, target, wrap)
+    if fix_colour:
+        up_rgb = Image.fromarray(colour_fix(np.asarray(up_rgb), rgb, factor, wrap), "RGB")
     if alpha.min() == 255:
         up_alpha = Image.new("L", target, 255)
     else:
         a_model, a_scale = (model, scale) if alpha_model is None else load_model(alpha_model, models_dir)
-        up_alpha = Image.fromarray(upscale_array(np.repeat(alpha[:, :, None], 3, axis=2), a_model, a_scale)[:, :, 0], "L")
+        up_alpha = Image.fromarray(np.ascontiguousarray(run(np.repeat(alpha[:, :, None], 3, axis=2), a_model, a_scale)[:, :, 0]), "L")
         if up_alpha.size != target:
-            up_alpha = up_alpha.resize(target, Image.LANCZOS)
+            up_alpha = resize(up_alpha, target, wrap)
     result = up_rgb.convert("RGBA")
     result.putalpha(up_alpha)
     return result

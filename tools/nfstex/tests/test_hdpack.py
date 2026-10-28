@@ -11,7 +11,7 @@ from unittest import mock
 from nfstex import tpk
 from nfstex.tests.test_tpk import synthetic_pack
 
-HAVE_PIL = importlib.util.find_spec("PIL") is not None
+HAVE_PIL = importlib.util.find_spec("PIL") is not None and importlib.util.find_spec("numpy") is not None
 
 
 def streaming_file(file_offset: int = 0, legacy: bool = False) -> bytes:
@@ -30,7 +30,7 @@ def streaming_file(file_offset: int = 0, legacy: bool = False) -> bytes:
         return b"\0" * file_offset + pack.serialize(file_offset)
 
 
-@unittest.skipUnless(HAVE_PIL, "hdpack imports Pillow")
+@unittest.skipUnless(HAVE_PIL, "hdpack imports Pillow and numpy")
 class HdpackTests(unittest.TestCase):
     def setUp(self):
         from nfstex import hdpack
@@ -75,7 +75,7 @@ class HdpackTests(unittest.TestCase):
             self.assertTrue(any("2 JDLZ blobs pass" in line for line in log))
 
 
-@unittest.skipUnless(HAVE_PIL, "hdpack imports Pillow")
+@unittest.skipUnless(HAVE_PIL, "hdpack imports Pillow and numpy")
 class ShardTests(unittest.TestCase):
     """Planned, sharded and cached upscaling: what the matrix workflow runs (no torch: results are faked)."""
 
@@ -149,6 +149,144 @@ class ShardTests(unittest.TestCase):
         # Without the cache and without models the build stops instead of shipping stock textures.
         with self.assertRaises(SystemExit):
             self.hdpack.process_bundle(game, "Global/HUDTEX.BIN", "hud", None, log.append, cache=self.hdpack.Cache(None))
+
+
+@unittest.skipUnless(HAVE_PIL, "hdpack imports Pillow and numpy")
+class PolicyTests(unittest.TestCase):
+    def setUp(self):
+        from nfstex import hdpack
+        self.hdpack = hdpack
+
+    def test_factors(self):
+        factor = self.hdpack.factor_for
+        track, car, ui = (self.hdpack.POLICIES[name] for name in ("track", "car", "ui"))
+        cases = {(64, 64): 4, (128, 128): 4, (16, 128): 4, (256, 256): 2, (512, 256): 2, (512, 512): 2,
+                 (1024, 1024): 1, (1024, 512): 1,
+                 # Road strips grow along their length up to 2048, within a megapixel.
+                 (128, 1024): 2, (1024, 128): 2, (256, 1024): 2, (512, 2048): 1}
+        for (width, height), expected in cases.items():
+            self.assertEqual(expected, factor(track, width, height), (width, height))
+        self.assertEqual((1, 2, 4), (factor(car, 512, 512), factor(car, 256, 64), factor(car, 32, 32)))
+        self.assertEqual((1, 2), (factor(ui, 128, 1024), factor(ui, 512, 128)))      # no strip rule outside tracks
+
+    def test_what_each_policy_touches(self):
+        hdpack, pack = self.hdpack, synthetic_pack()
+        square, paletted = pack.textures
+        track, sky, hud = (hdpack.POLICIES[name] for name in ("track", "sky", "hud"))
+        self.assertEqual("", hdpack.should_skip(square, track))
+        self.assertNotEqual("", hdpack.should_skip(paletted, track))          # paletted world textures stay
+        self.assertEqual("", hdpack.should_skip(paletted, hud))
+        for name, upscaled in (("SKY_OVERCASTA", True), ("SKY_OVERCASTA_CAP", True), ("SKY_MOON_A", True),
+                               ("SKY_OVERCASTA_ENVMAP", False), ("TRACK1001_MAP", False)):
+            square.record[12:36] = name.encode().ljust(24, b"\0")
+            self.assertEqual(upscaled, hdpack.should_skip(square, sky) == "", name)
+        for flag, axes in ((0, ""), (1, "x"), (2, "y"), (3, "xy")):
+            square.record[0x4F] = flag
+            self.assertEqual(axes, hdpack.wrap_axes(square, track))
+            self.assertIsNone(hdpack.wrap_axes(square, hud))
+
+    def test_keys_cover_edges_and_kept_formats_and_keep_old_keys(self):
+        import hashlib
+        hdpack, texture = self.hdpack, synthetic_pack().textures[0]
+        keys = {hdpack.job_key(texture, 4, "x4plus", "animevideo", wrap) for wrap in (None, "", "x", "xy")}
+        keys.add(hdpack.job_key(texture, 4, "x4plus", "animevideo", None, keep_uncompressed=True))
+        keys.add(hdpack.job_key(texture, 4, "x4plus", "animevideo", None, fix_colour=True))
+        self.assertEqual(6, len(keys))
+        legacy = hashlib.sha1(f"nfstex-hd {hdpack.UPSCALE_VERSION} 16x16 {tpk.COMP_DXT1} x4 x4plus animevideo".encode())
+        legacy.update(texture.pixels)
+        legacy.update(texture.palette)
+        self.assertEqual(legacy.hexdigest(), hdpack.job_key(texture, 4, "x4plus", "animevideo"))
+
+    def test_wrapped_mips_tile(self):
+        import numpy as np
+        from PIL import Image
+        hdpack = self.hdpack
+        rng = np.random.default_rng(5)
+        image = Image.fromarray(rng.integers(0, 256, size=(32, 64, 4)).astype(np.uint8), "RGBA")
+        level = np.asarray(hdpack.downsample(image, (16, 8), "xy")).astype(np.float32)
+        endless = np.asarray(hdpack.downsample(Image.fromarray(np.tile(np.asarray(image), (3, 3, 1)), "RGBA"), (48, 24), None))
+        np.testing.assert_array_equal(endless[8:16, 16:32], level)
+        plain = np.asarray(hdpack.downsample(image, (16, 8), None))
+        np.testing.assert_array_equal(np.asarray(image.resize((16, 8), Image.LANCZOS)), plain)
+        dds = hdpack.mip_chain_dds(image, tpk.COMP_DXT1, "xy")
+        width, height, mips, compression, _ = tpk.parse_dds(dds)
+        self.assertEqual((64, 32, 3, tpk.COMP_DXT1), (width, height, mips, compression))
+
+
+@unittest.skipUnless(HAVE_PIL, "hdpack imports Pillow and numpy")
+class TracksProfileTests(unittest.TestCase):
+    """The tracks profile end to end on the synthetic game of test_tracks (results faked, no torch)."""
+
+    def setUp(self):
+        from nfstex import hdpack
+        from nfstex.tests.test_tracks import SyntheticGame
+        self.hdpack = hdpack
+        self.folder = tempfile.TemporaryDirectory()
+        self.game = SyntheticGame(self.folder.name)
+        root = self.game.root
+        sky = synthetic_pack()
+        sky.header[4:9] = b"TRACK"
+        square, paletted = sky.textures
+        square.record[12:36] = b"SKY_TEST".ljust(24, b"\0")
+        square.record[0x4F] = 1
+        paletted.record[12:36] = b"TRACK1234_MAP".ljust(24, b"\0")
+        (root / "Tracks/TEX1234TRACK.BIN").write_bytes(sky.serialize(0))
+        hdpack._stream_layout.cache_clear()
+
+    def tearDown(self):
+        self.folder.cleanup()
+        self.hdpack._stream_layout.cache_clear()
+
+    def fake_dds(self, job, models_dir):
+        import numpy as np
+        from PIL import Image
+        size = (job.texture.width * job.factor, job.texture.height * job.factor)
+        image = Image.fromarray(np.full((size[1], size[0], 4), (90, 120, 30, 255), np.uint8), "RGBA")
+        keep = job.texture.compression in (tpk.COMP_A8R8G8B8, tpk.COMP_P8) and job.keep_uncompressed
+        return self.hdpack.mip_chain_dds(image, tpk.COMP_A8R8G8B8 if keep else tpk.COMP_DXT1, job.wrap)
+
+    def test_plan_shards_and_pack(self):
+        hdpack, root = self.hdpack, self.game.root
+        jobs = hdpack.plan(root, "tracks")
+        by_name = {}
+        for job in jobs:
+            by_name.setdefault(job.texture.name, []).append(job)
+        # Stream SQUAREs (Y0 32 px, A1 64 px, Z0 16 px) and the sky; PALETTED (P8) and the map stay stock.
+        self.assertEqual({"SQUARE", "SKY_TEST"}, set(by_name))
+        self.assertEqual({(32, 4, "xy"), (64, 4, "x"), (16, 4, "y")},
+                         {(j.texture.width, j.factor, j.wrap) for j in by_name["SQUARE"]})
+        self.assertEqual([(4, "x", True)], [(j.factor, j.wrap, j.keep_uncompressed) for j in by_name["SKY_TEST"]])
+        cache = hdpack.Cache(os.path.join(self.folder.name, "cache"))
+        with mock.patch.object(hdpack, "build_dds", side_effect=self.fake_dds):
+            self.assertEqual(len(jobs), sum(hdpack.run_shard(jobs, k, 3, cache, "models", lambda m: None) for k in range(3)))
+        log = []
+        files = hdpack.build_pack(root, "tracks", None, cache, log.append)
+        self.assertEqual({"Tracks/STREAMT1.BUN", "Tracks/STREAMT1_1234.BUN", "Tracks/TRACKB1234.lzc", "Tracks/TRACKB1235.lzc",
+                          "Tracks/TEX1234TRACK.BIN"}, set(files))
+        region = files["Tracks/STREAMT1.BUN"]
+        sizes = sorted((t.name, t.width, t.compression) for o, c in tpk.find_texture_packs(region)
+                       for t in tpk.TexturePack.parse(c, region, o).textures)
+        self.assertEqual([("PALETTED", 16, tpk.COMP_P8), ("PALETTED", 16, tpk.COMP_P8),
+                          ("SQUARE", 128, tpk.COMP_DXT1), ("SQUARE", 256, tpk.COMP_DXT1)], sizes)
+        sky = files["Tracks/TEX1234TRACK.BIN"]
+        textures = {t.name: t for o, c in tpk.find_texture_packs(sky) for t in tpk.TexturePack.parse(c, sky, o).textures}
+        self.assertEqual((64, 64, tpk.COMP_DXT1), (textures["SKY_TEST"].width, textures["SKY_TEST"].height, textures["SKY_TEST"].compression))
+        self.assertEqual((16, tpk.COMP_P8), (textures["TRACK1234_MAP"].width, textures["TRACK1234_MAP"].compression))
+        self.assertTrue(any("streaming pool" in line for line in log))
+        # Without the cache the pack step refuses rather than shipping stock textures in a stream.
+        with self.assertRaises(SystemExit):
+            hdpack.build_pack(root, "tracks", None, hdpack.Cache(None), lambda m: None)
+
+    def test_only_one_stream(self):
+        hdpack, root = self.hdpack, self.game.root
+        cache = hdpack.Cache(os.path.join(self.folder.name, "cache"))
+        jobs = hdpack.plan(root, "tracks", only="Tracks/STREAMT1_1234.BUN")
+        self.assertEqual({(16, "y")}, {(j.texture.width, j.wrap) for j in jobs})
+        with mock.patch.object(hdpack, "build_dds", side_effect=self.fake_dds):
+            hdpack.run_shard(jobs, 0, 1, cache, "models", lambda m: None)
+        files = hdpack.build_pack(root, "tracks", None, cache, lambda m: None, only="Tracks/STREAMT1_1234.BUN")
+        # Its race's table moves; the region stream and the other race's table stay stock.
+        self.assertEqual({"Tracks/STREAMT1_1234.BUN", "Tracks/TRACKB1234.lzc"}, set(files))
 
 
 if __name__ == "__main__":
