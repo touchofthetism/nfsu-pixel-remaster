@@ -2,6 +2,8 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 // Where the game's one busy thread runs. The Pixel 10 Pro XL session of build 2 (telemetry) showed the
 // guest render thread on a mid core at ~2.7 GHz while the big core idled at 0.5-1.6 GHz: the scheduler
@@ -35,4 +37,6 @@ namespace host_perf {
     void release();
     // One line for the telemetry JSON.
     std::string statusJson();
+    // The render thread and DXVK's threads as found at adoption ("render", "dxvk-cs", ...), for snapshots.
+    std::vector<std::pair<std::string, int32_t>> trackedThreads();
 }

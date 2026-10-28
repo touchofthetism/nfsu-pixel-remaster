@@ -21,12 +21,15 @@ final class SessionSummary {
     /** IDirect3DDevice9 vtable slots worth naming in a call profile (kind 2). */
     private static final Map<Integer, String> DEVICE_METHODS = new HashMap<>();
     static {
-        int[] slots = {17, 23, 26, 27, 29, 34, 37, 39, 41, 42, 43, 44, 47, 57, 65, 67, 69, 75, 81, 82, 83, 84, 87, 89, 92, 94, 100, 104, 107, 109};
+        int[] slots = {17, 23, 26, 27, 29, 34, 37, 39, 41, 42, 43, 44, 47, 57, 65, 67, 69, 75, 81, 82, 83, 84, 87, 89, 92, 94, 100, 104, 107, 109,
+                3, 16, 18, 25, 28, 30, 31, 32, 35};
         String[] names = {"Present", "CreateTexture", "CreateVertexBuffer", "CreateIndexBuffer", "CreateDepthStencilSurface", "StretchRect",
                 "SetRenderTarget", "SetDepthStencilSurface", "BeginScene", "EndScene", "Clear", "SetTransform", "SetViewport", "SetRenderState",
                 "SetTexture", "SetTextureStageState", "SetSamplerState", "SetScissorRect", "DrawPrimitive", "DrawIndexedPrimitive",
                 "DrawPrimitiveUP", "DrawIndexedPrimitiveUP", "SetVertexDeclaration", "SetFVF", "SetVertexShader", "SetVertexShaderConstantF",
-                "SetStreamSource", "SetIndices", "SetPixelShader", "SetPixelShaderConstantF"};
+                "SetStreamSource", "SetIndices", "SetPixelShader", "SetPixelShaderConstantF",
+                "TestCooperativeLevel", "Reset", "GetBackBuffer", "CreateCubeTexture", "CreateRenderTarget", "UpdateSurface", "UpdateTexture",
+                "GetRenderTargetData", "ColorFill"};
         for (int i = 0; i < slots.length; i++) DEVICE_METHODS.put(slots[i], names[i]);
     }
 
@@ -171,6 +174,7 @@ final class SessionSummary {
             long[] clockSum = new long[16]; int[] clockMax = new int[16], clockSamples = new int[16]; int clockCpus = 0;
             Map<String, Integer> refresh = new HashMap<>();
             Integer levelStart = null, levelEnd = null; boolean charging = false;
+            int powerSave = 0, powerSaveKnown = 0;
             for (int i = 0; i < samples.length(); i++) {
                 JSONObject s = samples.optJSONObject(i);
                 if (s == null) continue;
@@ -179,6 +183,7 @@ final class SessionSummary {
                 if (s.has("battTemp")) { double v = s.optDouble("battTemp"); battMin = Double.isNaN(battMin) ? v : Math.min(battMin, v); battMax = Double.isNaN(battMax) ? v : Math.max(battMax, v); }
                 if (s.has("battLevel")) { if (levelStart == null) levelStart = s.optInt("battLevel"); levelEnd = s.optInt("battLevel"); }
                 charging |= s.optBoolean("charging");
+                if (s.has("powerSave")) { powerSaveKnown++; if (s.optBoolean("powerSave")) powerSave++; }
                 pssMax = Math.max(pssMax, s.optInt("pssMb"));
                 if (s.has("availMb")) availMin = Math.min(availMin, s.optInt("availMb"));
                 if (s.optBoolean("lowMemory")) lowMemory++;
@@ -204,6 +209,7 @@ final class SessionSummary {
             if (!refresh.isEmpty()) {
                 StringBuilder line = new StringBuilder("  Panel refresh (samples):");
                 for (Map.Entry<String, Integer> e : refresh.entrySet()) line.append(' ').append(e.getKey()).append(" Hz×").append(e.getValue());
+                if (powerSave > 0) line.append(String.format(Locale.US, "; Battery Saver on in %d of %d samples (it holds the panel at 60 Hz)", powerSave, powerSaveKnown));
                 out.append(line).append('\n');
             }
         }
@@ -242,6 +248,30 @@ final class SessionSummary {
             if (cached + table > 0)
                 line.append(String.format(Locale.US, "; object lookups %.1f%% cached", 100.0 * cached / (cached + table)));
             out.append(line).append('\n');
+        }
+        JSONObject longCalls = nat == null ? null : nat.optJSONObject("longCalls");
+        if (longCalls != null && longCalls.length() > 0) {
+            // D3D9 calls the sampler saw last 20 ms or more (call_watch.h): count, average and longest per method.
+            List<Map.Entry<String, JSONArray>> list = new ArrayList<>();
+            for (java.util.Iterator<String> it = longCalls.keys(); it.hasNext();) {
+                String key = it.next(); JSONArray v = longCalls.optJSONArray(key);
+                if (v != null && v.length() >= 3) list.add(new java.util.AbstractMap.SimpleEntry<>(key, v));
+            }
+            list.sort((a, b) -> Double.compare(b.getValue().optDouble(1), a.getValue().optDouble(1)));
+            StringBuilder line = new StringBuilder("  Long D3D9 calls (20 ms or more):");
+            for (int i = 0; i < Math.min(6, list.size()); i++) {
+                JSONArray v = list.get(i).getValue();
+                long count = v.optLong(0);
+                line.append(String.format(Locale.US, "%s %s %d (avg %.0f ms, longest %.0f)", i == 0 ? "" : ";", methodName(list.get(i).getKey()), count,
+                        count > 0 ? v.optDouble(1) / count : 0, v.optDouble(2)));
+            }
+            out.append(line).append('\n');
+        }
+        JSONArray vkPresent = nat == null ? null : nat.optJSONArray("vkPresent");
+        if (vkPresent != null && vkPresent.length() >= 4 && vkPresent.optLong(0) > 0) {
+            // DXVK's presentImage (vkQueuePresentKHR on the submit thread): how long Android took to take each frame.
+            out.append(String.format(Locale.US, "  vkQueuePresentKHR: %d presents, avg %.2f ms, longest %.1f ms, %d over 16 ms\n",
+                    vkPresent.optLong(0), vkPresent.optDouble(1) / vkPresent.optLong(0), vkPresent.optDouble(2), vkPresent.optLong(3)));
         }
         JSONObject profile = nat == null ? null : nat.optJSONObject("profile");
         if (profile != null && profile.optLong("samples") > 0) {

@@ -106,6 +106,20 @@ public class SessionSummaryTest {
                 "Threads: render thread on cpu 7, nice -10; performance hints: session with 1 threads, target 16.67 ms (5 reports, 0 failed)"));
     }
 
+    @Test public void longCallsPresentTimingAndBatterySaver() throws Exception {
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"longCalls\":{\"2/17\":[18,1580.4,112.0],\"2/42\":[2,61.0,33.0]},"
+                        + "\"vkPresent\":[42787,17114.8,95.0,12],\"d3d9Calls\":{")
+                .replace("\"refresh\":60.0,", "\"refresh\":60.0,\"powerSave\":true,").replace("\"refresh\":120.0,", "\"refresh\":120.0,\"powerSave\":false,");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "Long D3D9 calls (20 ms or more): Present 18 (avg 88 ms, longest 112); EndScene 2 (avg 31 ms, longest 33)",
+                "vkQueuePresentKHR: 42787 presents, avg 0.40 ms, longest 95.0 ms, 12 over 16 ms",
+                "Battery Saver on in 1 of 2 samples (it holds the panel at 60 Hz)"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+        assertEquals("TestCooperativeLevel", SessionSummary.methodName("2/3"));
+    }
+
     @Test public void incompleteAndEmptyRecordsAreReadable() throws Exception {
         SessionSummary crashed = SessionSummary.parse("{\"session\":\"x\",\"app\":\"1\",\"durationS\":42,\"complete\":false}");
         assertEquals("42 s · no frames recorded · ended abruptly", crashed.shortLine());

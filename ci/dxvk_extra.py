@@ -13,6 +13,10 @@ Telemetry only; rendering is untouched:
   * DXVK's threads get their names (dxvk-cs, dxvk-submit, dxvk-queue, dxvk-shader, ...): the native port's
     setThreadName is an empty stub on Linux, so the game runtime's performance-hint session and CPU
     placement (host_perf.cpp), which look the threads up by name, never found them.
+  * The submission queue's state, for the runtime's long-call reports (call_watch.h): how many command
+    lists wait to be submitted and how many are on the GPU, whether the submit thread is inside
+    vkQueuePresentKHR, the queue thread waiting on a GPU fence, the command stream blocked on a full queue;
+    and every present timed (count, total, longest, over 16 ms).
 
 Usage: dxvk_extra.py <prepared dxvk-source>. Each edit must apply exactly once; otherwise the pinned
 recipe changed and this script needs a look (the build fails loudly instead of silently losing data).
@@ -30,6 +34,19 @@ namespace dxvk::android_stats {
   extern std::atomic<uint64_t> graphicsCompiles, computeCompiles, compileNanos, compileMaxNanos, slowCompiles;
   // Microseconds the submission queue waited with nothing in flight (DxvkSubmissionQueue::finishCmdLists).
   extern std::atomic<uint64_t> gpuIdleMicros;
+  // DxvkSubmissionQueue state: entries waiting for the submit thread, command lists on the GPU, the submit
+  // thread inside presentImage (vkQueuePresentKHR), the queue thread waiting on a fence, the command stream
+  // waiting for room in the queue; presentImage timing.
+  extern std::atomic<uint32_t> submitQueued, finishQueued, inPresent, gpuFenceWait, csQueueWait;
+  extern std::atomic<uint64_t> presentCalls, presentNanos, presentMaxNanos, presentSlow;
+  inline void recordPresent(std::chrono::nanoseconds spent) {
+    uint64_t nanos = uint64_t(spent.count() < 0 ? 0 : spent.count());
+    presentCalls.fetch_add(1, std::memory_order_relaxed);
+    presentNanos.fetch_add(nanos, std::memory_order_relaxed);
+    if (nanos > 16000000) presentSlow.fetch_add(1, std::memory_order_relaxed);
+    uint64_t seen = presentMaxNanos.load(std::memory_order_relaxed);
+    while (nanos > seen && !presentMaxNanos.compare_exchange_weak(seen, nanos, std::memory_order_relaxed)) { }
+  }
   inline void recordCompile(bool graphics, std::chrono::nanoseconds spent) {
     uint64_t nanos = uint64_t(spent.count() < 0 ? 0 : spent.count());
     (graphics ? graphicsCompiles : computeCompiles).fetch_add(1, std::memory_order_relaxed);
@@ -46,6 +63,25 @@ STATS_SOURCE = '''#include "dxvk_android_stats.h"
 namespace dxvk::android_stats {
   std::atomic<uint64_t> graphicsCompiles{0}, computeCompiles{0}, compileNanos{0}, compileMaxNanos{0}, slowCompiles{0};
   std::atomic<uint64_t> gpuIdleMicros{0};
+  std::atomic<uint32_t> submitQueued{0}, finishQueued{0}, inPresent{0}, gpuFenceWait{0}, csQueueWait{0};
+  std::atomic<uint64_t> presentCalls{0}, presentNanos{0}, presentMaxNanos{0}, presentSlow{0};
+}
+
+// The submission queue now (for a snapshot during a long call) and the present totals:
+// out[0] waiting to submit, [1] on the GPU, [2] in vkQueuePresentKHR, [3] waiting on a GPU fence,
+// [4] command stream waiting for queue room, [5] presents, [6] their nanoseconds, [7] the longest,
+// [8] presents over 16 ms.
+extern "C" void dxvkAndroidQueueState(uint64_t out[9]) {
+  using namespace dxvk::android_stats;
+  out[0] = submitQueued.load(std::memory_order_relaxed);
+  out[1] = finishQueued.load(std::memory_order_relaxed);
+  out[2] = inPresent.load(std::memory_order_relaxed);
+  out[3] = gpuFenceWait.load(std::memory_order_relaxed);
+  out[4] = csQueueWait.load(std::memory_order_relaxed);
+  out[5] = presentCalls.load(std::memory_order_relaxed);
+  out[6] = presentNanos.load(std::memory_order_relaxed);
+  out[7] = presentMaxNanos.load(std::memory_order_relaxed);
+  out[8] = presentSlow.load(std::memory_order_relaxed);
 }
 
 // GPU idle microseconds since the process started (all devices; the game has one). Busy share over an
@@ -139,7 +175,64 @@ def main() -> None:
             '    std::strncpy(posixName, name.c_str(), sizeof(posixName) - 1);\n'
             '    ::pthread_setname_np(::pthread_self(), posixName);\n'
             '  }\n')
-    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle thread-names\n", encoding="ascii")
+    # 5. Submission queue state and present timing.
+    queue = "src/dxvk/dxvk_queue.cpp"
+    relaxed = "std::memory_order_relaxed"
+    replace(root, queue,
+            '    m_finishCond.wait(lock, [this] {\n'
+            '      return m_submitQueue.size() + m_finishQueue.size() <= MaxNumQueuedCommandBuffers;\n'
+            '    });\n',
+            f'    android_stats::csQueueWait.store(1, {relaxed});\n'
+            '    m_finishCond.wait(lock, [this] {\n'
+            '      return m_submitQueue.size() + m_finishQueue.size() <= MaxNumQueuedCommandBuffers;\n'
+            '    });\n'
+            f'    android_stats::csQueueWait.store(0, {relaxed});\n')
+    replace(root, queue,
+            '    m_pending += 1;\n'
+            '    m_submitQueue.push(std::move(entry));\n',
+            '    m_pending += 1;\n'
+            '    m_submitQueue.push(std::move(entry));\n'
+            f'    android_stats::submitQueued.store(uint32_t(m_submitQueue.size()), {relaxed});\n')
+    replace(root, queue,
+            '    entry.present = std::move(presentInfo);\n'
+            '\n'
+            '    m_submitQueue.push(std::move(entry));\n',
+            '    entry.present = std::move(presentInfo);\n'
+            '\n'
+            '    m_submitQueue.push(std::move(entry));\n'
+            f'    android_stats::submitQueued.store(uint32_t(m_submitQueue.size()), {relaxed});\n')
+    replace(root, queue,
+            '          status = entry.present.presenter->presentImage();\n',
+            f'          android_stats::inPresent.store(1, {relaxed});\n'
+            '          auto presentStart = dxvk::high_resolution_clock::now();\n'
+            '          status = entry.present.presenter->presentImage();\n'
+            '          android_stats::recordPresent(std::chrono::duration_cast<std::chrono::nanoseconds>(dxvk::high_resolution_clock::now() - presentStart));\n'
+            f'          android_stats::inPresent.store(0, {relaxed});\n')
+    replace(root, queue,
+            '        if (entry.submit.cmdList != nullptr)\n'
+            '          m_finishQueue.push(std::move(entry));\n',
+            '        if (entry.submit.cmdList != nullptr) {\n'
+            '          m_finishQueue.push(std::move(entry));\n'
+            f'          android_stats::finishQueued.store(uint32_t(m_finishQueue.size()), {relaxed});\n'
+            '        }\n')
+    replace(root, queue,
+            '      m_submitQueue.pop();\n'
+            '      m_submitCond.notify_all();\n',
+            '      m_submitQueue.pop();\n'
+            f'      android_stats::submitQueued.store(uint32_t(m_submitQueue.size()), {relaxed});\n'
+            '      m_submitCond.notify_all();\n')
+    replace(root, queue,
+            '        status = entry.submit.cmdList->synchronize();\n',
+            f'      {{ android_stats::gpuFenceWait.store(1, {relaxed});\n'
+            '        status = entry.submit.cmdList->synchronize();\n'
+            f'        android_stats::gpuFenceWait.store(0, {relaxed}); }}\n')
+    replace(root, queue,
+            '      m_finishQueue.pop();\n'
+            '      m_finishCond.notify_all();\n',
+            '      m_finishQueue.pop();\n'
+            f'      android_stats::finishQueued.store(uint32_t(m_finishQueue.size()), {relaxed});\n'
+            '      m_finishCond.notify_all();\n')
+    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle thread-names queue-state\n", encoding="ascii")
     print(f"dxvk_extra: applied to {root}")
 
 

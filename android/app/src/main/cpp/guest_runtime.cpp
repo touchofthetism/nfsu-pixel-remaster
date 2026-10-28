@@ -9,6 +9,7 @@
 #include "frame_pacer.h"
 #include "frame_telemetry.h"
 #include "guest_profiler.h"
+#include "call_watch.h"
 #include "host_perf.h"
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 #include "d3d9_bridge.h"
@@ -74,6 +75,9 @@ FrameTelemetry frameTelemetry;
 #ifdef __ANDROID__
 // GPU idle microseconds from the prepared DXVK (ci/dxvk_extra.py), the HUD's "GPU load" measure.
 extern "C" uint64_t dxvkAndroidGpuIdleMicros();
+// DXVK's submission queue now and its present totals (ci/dxvk_extra.py): waiting to submit, on the GPU, in
+// vkQueuePresentKHR, waiting on a GPU fence, command stream waiting for room; presents, ns, longest ns, slow.
+extern "C" void dxvkAndroidQueueState(uint64_t out[9]);
 #endif
 // Launcher "CPU placement" (host_perf.h): applied on the render thread at its first Present.
 std::atomic<int> cpuPlacement{int(host_perf::Placement::FastestCores)};
@@ -121,6 +125,9 @@ std::atomic<uint8_t> machineHolder{GuestProfile::Nobody};
 std::atomic<uint8_t> renderPlace{GuestProfile::Guest};
 GuestProfile guestProfile;
 constexpr unsigned kProfileIntervalUs=1000;
+// Long D3D9 calls (call_watch.h): d3dDispatch publishes the call it is in, the profiler's sampler times
+// the ones that stay 20 ms or more and records what DXVK and its threads were doing meanwhile.
+CallWatch callWatch;
 struct RenderPlace {
     bool active;
     explicit RenderPlace(GuestProfile::Place place):active(renderThread){if(active)renderPlace.store(place,std::memory_order_relaxed);}
@@ -376,19 +383,79 @@ void freeD3DGuest(uint32_t address){heaps->free(GuestHeaps::process,address);}
 void serviceGuestSound();
 void saveChangedOptions();  // after callGuest
 uint64_t steadyNs(){return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+// The system call a thread is blocked in (arm64 numbers), for the common waits.
+const char* syscallName(long number){
+    switch(number){
+        case 98:return "futex";case 29:return "ioctl";case 73:return "ppoll";case 22:return "epoll_pwait";case 63:return "read";
+        case 64:return "write";case 101:return "nanosleep";case 115:return "clock_nanosleep";case 124:return "sched_yield";
+        case 72:return "pselect6";case 67:return "pread64";case 56:return "openat";case 57:return "close";case 222:return "mmap";
+        default:return nullptr;
+    }
+}
+// What a thread is doing right now, from /proc (readable for threads of this process): its state (R
+// running, S sleeping, D uninterruptible), the cpu it last ran on with that cpu's clock, and when it is
+// blocked the system call and the kernel function it sleeps in (futex: a lock or condition variable in
+// user space; ioctl: a driver, the GPU's or the display's; ...).
+std::string threadState(int32_t tid){
+    char path[64];std::snprintf(path,sizeof path,"/proc/self/task/%d/stat",int(tid));
+    std::ifstream file(path);std::string line;if(!std::getline(file,line))return "gone";
+    size_t close=line.rfind(')');if(close==std::string::npos||close+2>=line.size())return "?";
+    std::istringstream fields(line.substr(close+2));std::string state,field;fields>>state;
+    int cpu=-1;for(int index=4;index<=39&&fields>>field;++index)if(index==39)cpu=std::atoi(field.c_str());
+    std::string out=state;
+    if(cpu>=0){
+        std::snprintf(path,sizeof path,"/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq",cpu);
+        unsigned khz=0;{std::ifstream freq(path);freq>>khz;}
+        char text[40];std::snprintf(text,sizeof text," cpu%d %u MHz",cpu,khz/1000);out+=text;
+    }
+    if(state!="R"){
+        std::snprintf(path,sizeof path,"/proc/self/task/%d/syscall",int(tid));
+        std::ifstream sys(path);long number=-1;if(sys>>number&&number>=0){
+            const char* name=syscallName(number);char text[32];
+            if(name)std::snprintf(text,sizeof text," in %s",name);else std::snprintf(text,sizeof text," in syscall %ld",number);out+=text;}
+        std::snprintf(path,sizeof path,"/proc/self/task/%d/wchan",int(tid));
+        std::ifstream wchan(path);std::string where;if(std::getline(wchan,where)&&!where.empty()&&where!="0")out+=" ("+where+")";
+    }
+    return out;
+}
+// Taken by the sampler once a D3D9 call has lasted 20 ms: DXVK's submission queue and the threads that
+// could be holding the call up.
+std::string longCallSnapshot(){
+    std::string out;
+#ifdef __ANDROID__
+    uint64_t queue[9]{};dxvkAndroidQueueState(queue);
+    char text[200];std::snprintf(text,sizeof text,"queue %llu to submit, %llu on the GPU%s%s%s",static_cast<unsigned long long>(queue[0]),
+        static_cast<unsigned long long>(queue[1]),queue[2]?", in vkQueuePresentKHR":"",queue[3]?", waiting on a GPU fence":"",
+        queue[4]?", command stream waiting for queue room":"");
+    out=text;
+#endif
+    for(const auto& thread:host_perf::trackedThreads())out+="; "+thread.first+" "+threadState(thread.second);
+    return out;
+}
+void reportLongCall(const CallWatch::Call& call){
+    static unsigned logged=0;
+    if(++logged>200)return;
+    const char* name=d3d9MethodName(call.token);
+    char method[16];if(!name){uint32_t index=((call.token-0x7e000000u)/16)&4095;std::snprintf(method,sizeof method,"%u/%u",index/256,index%256);name=method;}
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Long D3D9 call: %s %.0f ms from sub_%08X (%s)",name,call.ns/1e6,call.func,call.detail.c_str());
+}
 // The profiler's sampler: every kProfileIntervalUs, who holds the guest machine and where (guest_profiler.h).
 // A plain read of g_cur_func from this thread: an aligned 32-bit word, and a stale value only shifts one sample.
 void startGuestProfiler(){
     static std::once_flag started;
     std::call_once(started,[]{std::thread([]{
         setpriority(PRIO_PROCESS,0,10);   // never compete with the game for a core
+        callWatch.setSnapshot(longCallSnapshot);
         while(!stopRequested.load(std::memory_order_relaxed)){
             std::this_thread::sleep_for(std::chrono::microseconds(kProfileIntervalUs));
-            if(guestPaused.load(std::memory_order_relaxed))continue;
+            if(guestPaused.load(std::memory_order_relaxed)){callWatch.reset();continue;}
             auto holder=GuestProfile::Holder(machineHolder.load(std::memory_order_relaxed));
             uint32_t func=holder==GuestProfile::Nobody?0u:__atomic_load_n(&g_cur_func,__ATOMIC_RELAXED);
             auto place=holder==GuestProfile::Render?GuestProfile::Place(renderPlace.load(std::memory_order_relaxed)):GuestProfile::Guest;
-            guestProfile.add(steadyNs(),holder,func,place);
+            uint64_t now=steadyNs();
+            guestProfile.add(now,holder,func,place);
+            CallWatch::Call done;
+            if(callWatch.sample(now,func,&done))reportLongCall(done);
         }
     }).detach();});
 }
@@ -414,8 +481,11 @@ void d3dDispatch(){
     bool timed=(++bridgeCalls&63u)==0||token==0x7e002110u;
     std::chrono::steady_clock::time_point bridgeStart;if(timed)bridgeStart=std::chrono::steady_clock::now();uint32_t result;
     {RenderPlace place(GuestProfile::D3D9);
+     callWatch.begin(token);
      try{result=dispatchGuestD3D9(token,args,&count);}catch(...){
-        NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","D3D9 guest caller=%08x stack=%08x token=%08x self=%08x",g_cur_func,g_esp,token,args[0]);throw;}}
+        callWatch.end();
+        NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU1","D3D9 guest caller=%08x stack=%08x token=%08x self=%08x",g_cur_func,g_esp,token,args[0]);throw;}
+     callWatch.end();}
     if(timed){auto done=std::chrono::steady_clock::now();auto spent=done-bridgeStart;bridgeTime+=token==0x7e002110u?spent:spent*64;presentTime+=token==0x7e002110u?spent:std::chrono::nanoseconds{};
         // Per-method time: Present in full, every other method estimated from the one call in 64 timed.
         d3d9AddMethodTime(token,uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(token==0x7e002110u?spent:spent*64).count()));
@@ -997,6 +1067,12 @@ std::string guestTelemetryJson(bool live){
         json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
         json+=",\"d3d9Ns\":"+d3d9MethodTimeJson();
         json+=",\"d3d9Lookups\":"+d3d9LookupJson();
+        json+=",\"longCalls\":"+callWatch.json(0x7e000000u);
+#ifdef __ANDROID__
+        {uint64_t queue[9]{};dxvkAndroidQueueState(queue);char text[96];
+         std::snprintf(text,sizeof text,",\"vkPresent\":[%llu,%.1f,%.1f,%llu]",static_cast<unsigned long long>(queue[5]),queue[6]/1e6,queue[7]/1e6,static_cast<unsigned long long>(queue[8]));
+         json+=text;}
+#endif
         json+=",\"profile\":"+guestProfile.json(kProfileIntervalUs);
     }
     return json+"}";

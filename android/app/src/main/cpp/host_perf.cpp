@@ -32,6 +32,7 @@ std::atomic<bool> adopted{false};
 unsigned currentTargetFps=120;
 std::string affinityResult="not applied",priorityResult="not applied",adpfResult="not applied",dxvkResult="not applied";
 uint64_t reports=0,reportFailures=0;
+std::vector<std::pair<std::string,int32_t>> tracked;
 
 unsigned readKhz(const std::string& path){
     std::ifstream file(path);unsigned value=0;if(!(file>>value))return 0;return value;
@@ -79,7 +80,13 @@ void adoptRenderThread(Placement placement,unsigned targetFps){
     // stream, which does the Vulkan half of every draw on its own thread, then submission and the queue.
     // They exist once the device does, before the first Present. Command stream first.
     std::vector<int32_t> commandStream=threadsNamed({"dxvk-cs"}),dxvk=commandStream;
-    for(int32_t thread:threadsNamed({"dxvk-submit","dxvk-queue"}))dxvk.push_back(thread);
+    std::vector<int32_t> submit=threadsNamed({"dxvk-submit"}),queue=threadsNamed({"dxvk-queue"});
+    for(int32_t thread:submit)dxvk.push_back(thread);
+    for(int32_t thread:queue)dxvk.push_back(thread);
+    tracked.clear();tracked.emplace_back("render",int32_t(tid));
+    for(int32_t thread:commandStream)tracked.emplace_back("dxvk-cs",thread);
+    for(int32_t thread:submit)tracked.emplace_back("dxvk-submit",thread);
+    for(int32_t thread:queue)tracked.emplace_back("dxvk-queue",thread);
     if(placement==Placement::FastestCores&&!topology.fastest.empty()){
         cpu_set_t set;CPU_ZERO(&set);
         for(unsigned cpu=0;cpu<topology.cpus&&cpu<CPU_SETSIZE;++cpu){
@@ -150,7 +157,12 @@ void reportFrame(std::chrono::nanoseconds work){
 void release(){
     std::lock_guard<std::mutex> lock(mutex);
     if(session&&closeSession)closeSession(session);
-    session=nullptr;adopted=false;
+    session=nullptr;adopted=false;tracked.clear();
+}
+
+std::vector<std::pair<std::string,int32_t>> trackedThreads(){
+    std::lock_guard<std::mutex> lock(mutex);
+    return tracked;
 }
 
 std::string statusJson(){

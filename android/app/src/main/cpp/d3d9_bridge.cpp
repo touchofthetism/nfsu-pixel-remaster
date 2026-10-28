@@ -205,6 +205,25 @@ std::string d3d9MethodTimeJson(){
     }
     return json+"}";
 }
+const char* d3d9MethodName(uint32_t token){
+    uint32_t kind=(token-methodBase)/4096,method=((token-methodBase)%4096)/16;
+    if(kind==2)switch(method){
+        case 3:return "TestCooperativeLevel";case 16:return "Reset";case 17:return "Present";case 18:return "GetBackBuffer";
+        case 23:return "CreateTexture";case 25:return "CreateCubeTexture";case 26:return "CreateVertexBuffer";case 27:return "CreateIndexBuffer";
+        case 28:return "CreateRenderTarget";case 29:return "CreateDepthStencilSurface";case 30:return "UpdateSurface";case 31:return "UpdateTexture";
+        case 32:return "GetRenderTargetData";case 34:return "StretchRect";case 35:return "ColorFill";case 37:return "SetRenderTarget";
+        case 39:return "SetDepthStencilSurface";case 41:return "BeginScene";case 42:return "EndScene";case 43:return "Clear";
+        case 81:return "DrawPrimitive";case 82:return "DrawIndexedPrimitive";case 83:return "DrawPrimitiveUP";case 84:return "DrawIndexedPrimitiveUP";
+        default:return nullptr;
+    }
+    if(kind==13&&method==3)return "SwapChain Present";
+    if((kind==6||kind==7)&&method==11)return kind==6?"VertexBuffer Lock":"IndexBuffer Lock";
+    if((kind==6||kind==7)&&method==12)return kind==6?"VertexBuffer Unlock":"IndexBuffer Unlock";
+    if(kind==3&&method==19)return "Texture LockRect";
+    if(kind==3&&method==20)return "Texture UnlockRect";
+    if(kind==5&&method==13)return "Surface LockRect";
+    return nullptr;
+}
 // [answered by the object lookup cache, answered by the table]
 std::string d3d9LookupJson(){
     char json[64];std::snprintf(json,sizeof json,"[%llu,%llu]",static_cast<unsigned long long>(lookups.hits()),static_cast<unsigned long long>(lookups.misses()));return json;
@@ -311,7 +330,9 @@ std::vector<D3DDISPLAYMODE> adapterModes(IDirect3D9* d3d,UINT adapter,D3DFORMAT 
 bool deviceResetPending=false;
 uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumentCount){
     uint32_t kind=(token-methodBase)/4096,method=((token-methodBase)%4096)/16;
-    methodTotals[((token-methodBase)/16)&4095].fetch_add(1,std::memory_order_relaxed);
+    // Calls are serialised by the guest machine lock: a plain increment, no read-modify-write instruction
+    // on each of ~50 thousand calls a frame (the diagnostics thread only loads the counts).
+    {auto& total=methodTotals[((token-methodBase)/16)&4095];total.store(total.load(std::memory_order_relaxed)+1,std::memory_order_relaxed);}
     // Device state setters: the hot path. Resolved without the map and filtered against the shadow.
     if(kind==2&&args[0]==cachedDeviceHandle&&cachedDevice&&!recordingStateBlock){
         switch(method){
