@@ -105,4 +105,25 @@ public class ModPacksTest {
         assertEquals("exe", read(new File(root, "Speed.exe")));
         assertTrue(ModPacks.installed(root).isEmpty());
     }
+
+    @Test public void packsThatNeedANewerAppAreRefusedUntouched() throws Exception {
+        // Pack v12's HD fonts need build 14's font fix: on build 13 nothing may change.
+        File root = gameRoot();
+        byte[] pack = zip("nfsu-modpack.json", "{\"name\":\"HD interface pack\",\"version\":\"12\",\"minVersionCode\":1014}",
+                "Global/GlobalB.lzc", "hd-lzc");
+        try {
+            ModPacks.install(new ByteArrayInputStream(pack), root, "v12.zip", null, 1013);
+            throw new AssertionError("installed on an older app");
+        } catch (java.io.IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains("needs build 14 of the app or newer (this is build 13)"));
+        }
+        assertEquals("stock-lzc", read(new File(root, "Global/GlobalB.lzc")));
+        assertTrue(ModPacks.installed(root).isEmpty());
+        // On build 14 and later it installs; a pack without the field installs anywhere.
+        ModPacks.Pack installed = ModPacks.install(new ByteArrayInputStream(pack), root, "v12.zip", null, 1014);
+        assertEquals("12", installed.version);
+        assertEquals("hd-lzc", read(new File(root, "Global/GlobalB.lzc")));
+        ModPacks.install(new ByteArrayInputStream(zip("Global/HUDTEX.BIN", "hd-hud")), root, "plain.zip", null, 1001);
+        assertEquals("hd-hud", read(new File(root, "Global/HUDTEX.BIN")));
+    }
 }

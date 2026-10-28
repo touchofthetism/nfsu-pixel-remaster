@@ -22,9 +22,11 @@
  *     magazine covers' background was cleared to black by the 3D pass whenever
  *     Light Trails or Motion Blur was on, which the launcher's "Game graphics:
  *     Maximum" turns on for every new profile.
- * From AeroWidescreen's NFSUHDContentSupport (NFSU part): HD Cursor Support,
- * ported (nfs_misc_hook). Its HD Font Support is not needed: the fonts live in
- * Languages/LanguageTextures.bin, which no HD pack rewrites.
+ * From AeroWidescreen's NFSUHDContentSupport (NFSU part, GPL-3.0): HD Cursor
+ * Support (build 9) and HD Font Support (build 14, for the HD fonts of Plajer's
+ * HD User Interface in pack v12), ported (nfs_misc_hook). Its Global Neon and
+ * Global Shadow options are off by default and need textures no pack adds: not
+ * ported.
  *
  * Shared by the Windows host and the Android runtime.
  */
@@ -43,6 +45,25 @@ int nfs_misc_hook(uint32_t va) {
         uint32_t size = MEM32(g_edi + 0x44);
         uint32_t wanted = nfs_misc_cursor_size(MEM32(g_edi + 0x24), size);
         if (wanted != size) MEM32(g_edi + 0x44) = wanted;
+        return 1;
+    }
+    case NFS_MISC_HOOK_FONT_SIZE_TEXT: {
+        /* ecx: the font's texture record; its size was just loaded into edx, [esp+0Ch] and eax. */
+        uint32_t width, height;
+        if (nfs_misc_font_stock_size(MEM32(g_ecx + 0x24), &width, &height)) {
+            g_edx = width;
+            MEM32(g_esp + 0x0C) = width;
+            g_eax = height;
+        }
+        return 1;
+    }
+    case NFS_MISC_HOOK_FONT_SIZE_GLYPH: {
+        /* [edi+8]: the font's texture record; its size was just loaded into [esp+4] and edx. */
+        uint32_t width, height;
+        if (nfs_misc_font_stock_size(MEM32(MEM32(g_edi + 8) + 0x24), &width, &height)) {
+            MEM32(g_esp + 4) = width;
+            g_edx = height;
+        }
         return 1;
     }
     case NFS_MISC_HOOK_WORLD_VIEWPORT: {

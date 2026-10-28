@@ -46,6 +46,30 @@ blobs are recompressed.
   `UPSCALE_VERSION`: `--shard K/N --cache DIR` upscales one of N cost-balanced shares into finished DDS files,
   and a build with `--cache DIR` and no models packs from them (the private workflow runs the shares as a
   matrix of jobs).
+- `endscript.py` and `hdpack.py --overlay` — texture mods made for Binarius (nfsmods' "User mode" mods: a
+  `[VERSN1]` launcher file and a `[VERSN2]` endscript) laid over installed HD packs instead of upscaling:
+
+  ```
+  python3 tools/nfstex/hdpack.py --overlay "HD User Interface 1.8/HD_User_Interface.end" --game GAME \
+      --base nfsu-hdpack-v10.zip --base nfsu-hdpack-v11.zip --out nfsu-hdpack-v12.zip --version 12 \
+      --name "HD User Interface (Plajer)" --credit "Plajer's HD User Interface 1.8"
+  ```
+
+  The endscript is read, not run: its *Install* branch only, and only what a texture swap needs —
+  `bind_textures synchronize|override <file> TPKBlocks <collection> "<folder>"` (every DDS replaces the texture
+  whose name hash, h = h·33 + c from 0xFFFFFFFF over the whole name, is its file stem's; a collection is the stem
+  of its pack's header path, `Global\FrontEndTexturesPC.tpk` → FRONTENDTEXTURESPC), `combobox` sections,
+  `if collection_exists … do / else / end` with `update_collection` inside, and `move_file` of the PC plugins the
+  mod copies. Binarius' own housekeeping (`version`, `unlock_memory`, `delete`, `create_folder`, `speedreflect`,
+  `watermark`) is skipped; any other command stops the build, so a mod that does more than replace textures is
+  never half applied. Each game file comes from the last `--base` pack that has it, else the stock folder; the
+  result is checked as every pack is (texture list, rendering fields, each JDLZ blob through the game's decoder)
+  and read back to confirm every DDS landed. A DDS whose name matches no texture stops the build too (Binarius
+  would add it as a texture nothing looks up), except the drift gauge's two textures that Plajer's HD User
+  Interface names after their cut-off record names, which `OVERLAY_ALIASES` sends where they belong. A mod that
+  needs a PC plugin gets the app build whose runtime has its fixes as the manifest's `minVersionCode`
+  (`PLUGIN_BUILDS`: NFSUHDContentSupport.asi → build 14), and the launcher refuses the pack on older builds.
+  `GlobalB.lzc` and `InGameB.lzc` are written under their `.BUN` names too: the stock files are the same bytes.
 - `tests/` — synthetic-data tests run by `.github/workflows/check.yml`.
 
 Format notes (Underground 1):

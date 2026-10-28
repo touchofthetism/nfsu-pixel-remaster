@@ -39,6 +39,42 @@ static inline uint32_t nfs_misc_cursor_size(uint32_t texture_hash, uint32_t size
     return texture_hash == NFS_MISC_PC_CURSOR_HASH ? NFS_MISC_CURSOR_DRAW_SIZE : size;
 }
 
+/* HD Font Support (AeroWidescreen's NFSUHDContentSupport, GPL-3.0). Text is drawn from glyph tables in the
+ * stock font textures' pixels: the text and glyph functions read the font texture's width and height from its
+ * record (+0x44, +0x46) to turn those pixels into texture coordinates, 0x40BF40 at 0x40C0E8-0x40C0F3 (record
+ * in ecx; width to edx and [esp+0Ch], height to eax) and 0x4F4790 at 0x4F479B-0x4F47A9 (record at [edi+8];
+ * width to [esp+4], height to edx). An HD font (Plajer's HD User Interface: 2x the stock size) would then be
+ * sampled at the wrong places. The mod jumps over those loads with the stock size for nine font textures;
+ * here a hook right after them (0x40C0F4 fild [esp+0Ch], 0x4F47AA fild [esp+4]: neither a branch target in
+ * the catalog) puts the stock size where the loads left the real one. The sizes are the stock 1.4 data's
+ * (checked against Languages/LanguageTextures.bin and Global/GLOBALA.BUN): the mod has
+ * CONDUITMDITC_TT21I_KOREAN as 512 wide and 1024 high, which is the wrong way round for the stock 1024x512
+ * texture and would garble Korean text even with the stock font; it is 1024x512 here. Any other texture,
+ * and a stock font (its stock size is its size), is left as loaded. */
+#define NFS_MISC_HOOK_FONT_SIZE_TEXT   0x0040C0F4u   /* record ecx: edx, [esp+0Ch] width; eax height */
+#define NFS_MISC_HOOK_FONT_SIZE_GLYPH  0x004F47AAu   /* record [edi+8]: [esp+4] width; edx height */
+
+/* 1 and the stock size for the nine font textures (record +0x24 hash), 0 for any other texture. */
+static inline int nfs_misc_font_stock_size(uint32_t texture_hash, uint32_t* width, uint32_t* height) {
+    switch (texture_hash) {
+    case 0x5B9D88B9u:   /* CONDUITMDITC_TT21I (Global/GLOBALA.BUN) */
+    case 0x5B9D84DBu:   /* CONDUITMDITC_TT14I */
+    case 0xA87927BEu:   /* FONT_ARIAL */
+    case 0xAB6215C1u:   /* FONT_ARIAL12 */
+        *width = 256; *height = 256; return 1;
+    case 0xDCA5485Au:   /* CONDUITMDITC_TT14I_KOREAN */
+    case 0x9583AA1Au:   /* FONT_CONDUITMDITCTT38BI */
+    case 0x0920075Cu:   /* FONT_IMPACT36 */
+        *width = 512; *height = 512; return 1;
+    case 0x833A8678u:   /* CONDUITMDITC_TT21I_KOREAN */
+        *width = 1024; *height = 512; return 1;
+    case 0xBBBA71C2u:   /* LCD_LET48 */
+        *width = 128; *height = 128; return 1;
+    default:
+        return 0;
+    }
+}
+
 /* Magazine covers: ThirteenAG's BlackMagazineFix (NFSUnderground.WidescreenFix,
  * BlackMagazineFix.ixx). With Light Trails or Motion Blur on, the world is drawn
  * through the effect target and [0x73645C] is 1, so the 3D view's setup

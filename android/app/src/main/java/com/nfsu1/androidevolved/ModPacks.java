@@ -103,6 +103,15 @@ final class ModPacks {
      * in the game folder unless every file could be staged first.
      */
     static Pack install(InputStream zipStream, File root, String sourceName, Progress progress) throws IOException {
+        return install(zipStream, root, sourceName, progress, BuildConfig.VERSION_CODE);
+    }
+
+    /**
+     * As above, for an app of the given versionCode: a pack whose manifest asks for a newer app
+     * ({@code "minVersionCode"}, e.g. pack v12's HD fonts need build 14's font fix) is refused before
+     * anything in the game folder changes.
+     */
+    static Pack install(InputStream zipStream, File root, String sourceName, Progress progress, int appVersionCode) throws IOException {
         if (!root.isDirectory()) throw new IOException("game folder not found");
         File store = store(root);
         if (!store.isDirectory() && !store.mkdirs()) throw new IOException("could not create " + STORE);
@@ -141,6 +150,10 @@ final class ModPacks {
                 }
             }
             if (stagedNames.isEmpty()) throw new IOException("no game files in this ZIP (expected Global/, Tracks/, FrontEnd/, Cars/ ... paths)");
+            int needed = manifest != null ? manifest.optInt("minVersionCode", 0) : 0;
+            if (needed > appVersionCode)
+                throw new IOException(String.format(java.util.Locale.US, "this pack needs build %d of the app or newer (this is build %d): install the newer APK first",
+                        needed - 1000, appVersionCode - 1000));
             // 2. Identity and registry.
             List<Pack> packs = installed(root);
             String name = manifest != null ? manifest.optString("name", "") : "";

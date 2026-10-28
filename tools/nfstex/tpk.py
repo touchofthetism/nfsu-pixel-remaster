@@ -360,6 +360,14 @@ def mip_sizes(width: int, height: int, mips: int, compression: int) -> List[int]
     return sizes
 
 
+def bin_hash(name: str) -> int:
+    """The engine's name hash (texture record +0x24, texture pack +0x60): h = h * 33 + c from 0xFFFFFFFF."""
+    value = 0xFFFFFFFF
+    for byte in name.encode("latin1"):
+        value = (value * 33 + byte) & 0xFFFFFFFF
+    return value
+
+
 @dataclasses.dataclass
 class Texture:
     record: bytearray          # the 124-byte engine record (flags preserved on replacement)

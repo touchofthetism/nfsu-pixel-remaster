@@ -2,14 +2,16 @@
 import importlib.util
 import json
 import os
+import pathlib
 import struct
+import sys
 import tempfile
 import unittest
 import zipfile
 from unittest import mock
 
-from nfstex import tpk
-from nfstex.tests.test_tpk import synthetic_pack
+from nfstex import endscript, tpk
+from nfstex.tests.test_tpk import make_format, make_record, synthetic_pack
 
 HAVE_PIL = importlib.util.find_spec("PIL") is not None and importlib.util.find_spec("numpy") is not None
 
@@ -340,6 +342,217 @@ class TracksProfileTests(unittest.TestCase):
         files = hdpack.build_pack(root, "tracks", None, cache, lambda m: None, only="Tracks/STREAMT1_1234.BUN")
         # Its race's table moves; the region stream and the other race's table stay stock.
         self.assertEqual({"Tracks/STREAMT1_1234.BUN", "Tracks/TRACKB1234.lzc"}, set(files))
+
+
+def named_pack(path: str, names, size: int = 16, compressed: bool = False) -> tpk.TexturePack:
+    """A pack whose header path gives its collection name (``Global\\FrontEndTexturesPC.tpk``) and whose textures
+    carry the game's name hashes, so a mod's DDS stems find them: DXT1, 2 mips, each with bytes of its own. Record
+    names are cut at 24 bytes as the game's are (the hash is of the whole name)."""
+    pack = synthetic_pack()
+    pack.header[32:96] = path.encode("latin1").ljust(64, b"\0")
+    pack.compressed_source = compressed
+    chain = sum(tpk.mip_sizes(size, size, 2, tpk.COMP_DXT1))
+    pack.textures = [tpk.Texture(make_record(name[:24], size, size, tpk.COMP_DXT1, 2, chain, chain * 4 // 5, tpk.bin_hash(name)),
+                                 make_format(b"DXT1"), bytes((index * 31 + i) % 251 for i in range(chain)), b"")
+                     for index, name in enumerate(names)]
+    return pack
+
+
+def dxt1_dds(width: int, height: int, seed: int) -> bytes:
+    """A one-mip DXT1 DDS of the given size, with bytes of its own."""
+    size = sum(tpk.mip_sizes(width, height, 1, tpk.COMP_DXT1))
+    record = make_record("DDS", width, height, tpk.COMP_DXT1, 1, size, size, 0)
+    return tpk.Texture(record, make_format(b"DXT1"), bytes((seed + i * 13) % 256 for i in range(size)), b"").to_dds()
+
+
+def textures_of(data: bytes) -> dict:
+    """{collection: {name hash: texture}} of a bundle."""
+    return {endscript.collection_name(pack.path): {t.hash: t for t in pack.textures}
+            for pack in (tpk.TexturePack.parse(chunk, data, offset) for offset, chunk in tpk.find_texture_packs(data))}
+
+
+MOD_SCRIPT = r'''[VERSN2]
+if collection_exists GLOBAL\DYNTEX.BIN TPKBlocks DEFAULT
+do
+update_collection GLOBAL\DYNTEX.BIN TPKBlocks DYNAMICTEXTURES CompressionType CompressedFullData
+else
+end
+combobox "Install" "Uninstall" "Do you want to install or uninstall this mod?"
+"Install"
+bind_textures synchronize GLOBAL\DYNTEX.BIN TPKBlocks DYNAMICTEXTURES "Textures\DYNTEX\DYNAMICTEXTURES"
+bind_textures synchronize GLOBAL\GLOBALB.LZC TPKBlocks GLOBALTEXTURES "Textures\GlobalB\GLOBALTEXTURES"
+"Uninstall"
+import override GLOBAL\DYNTEX.BIN TPKBlocks TPKBlocks\DYNAMICTEXTURES.BIN
+end
+move_file override relative absolute Main\scripts\NFSUHDContentSupport.asi scripts\NFSUHDContentSupport.asi
+watermark "Remastered UI by Tester"
+'''
+
+
+@unittest.skipUnless(HAVE_PIL, "hdpack imports Pillow and numpy")
+class OverlayTests(unittest.TestCase):
+    """--overlay: a Binarius texture mod laid over installed HD packs or the stock files."""
+
+    def setUp(self):
+        from nfstex import hdpack
+        self.hdpack = hdpack
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = pathlib.Path(temporary.name)
+
+    def folder(self, name: str, files: dict) -> pathlib.Path:
+        folder = self.root / name
+        folder.mkdir(parents=True)
+        for stem, data in files.items():
+            (folder / f"{stem}.dds").write_bytes(data)
+        return folder
+
+    def test_textures_are_replaced_by_name_and_the_rest_kept(self):
+        for compressed in (False, True):            # raw bundles, and packs that keep JDLZ blobs (the track sky files)
+            with self.subTest(compressed=compressed):
+                pack = named_pack("Global\\FrontEndTexturesPC.tpk", ["BUTTON", "LOGO", "3RDPERSON_DRIFTANGLE_ANGLE_DEGREES"],
+                                  compressed=compressed)
+                data = b"\0" * 64 + pack.serialize(64)
+                folder = self.folder(f"FRONTENDTEXTURESPC-{compressed}", {
+                    "BUTTON": dxt1_dds(64, 32, 1),
+                    "3RDPERSON_DRIFTANGLE_ANGLE_DEGREE": dxt1_dds(32, 32, 2)})     # named after the cut record name
+                binding = endscript.Binding("FRONTEND/FRONTB.LZC", "FRONTENDTEXTURESPC", folder, "synchronize")
+                out, report = self.hdpack.overlay_file("FrontEnd/FrontB.lzc", data, [binding], [], lambda line: None)
+                after = textures_of(out)["FRONTENDTEXTURESPC"]
+                self.assertEqual(3, len(after))                                        # replaced, never added
+                button = after[tpk.bin_hash("BUTTON")]
+                self.assertEqual((64, 32, 1, tpk.COMP_DXT1), (button.width, button.height, button.mips, button.compression))
+                self.assertEqual(tpk.parse_dds(dxt1_dds(64, 32, 1))[4], button.pixels)
+                gauge = after[tpk.bin_hash("3RDPERSON_DRIFTANGLE_ANGLE_DEGREES")]      # the misnamed file found its texture
+                self.assertEqual(tpk.parse_dds(dxt1_dds(32, 32, 2))[4], gauge.pixels)
+                self.assertEqual(["3RDPERSON_DRIFTANGLE_ANGLE_DEGREE -> 3RDPERSON_DRIFTANGLE_ANGLE_DEGREES"], report["aliased"])
+                logo = after[tpk.bin_hash("LOGO")]                                     # not in the mod: exactly as it was
+                self.assertEqual((pack.textures[1].pixels, 16, 2), (logo.pixels, logo.width, logo.mips))
+                self.assertEqual(bytes(pack.textures[1].record[:0x30]), bytes(logo.record[:0x30]))
+                self.assertEqual(2, report["replaced"])
+                self.assertEqual(3 if compressed else 0, report["blobs"])              # one per texture, each passing the game's decoder
+
+    def test_what_an_overlay_refuses(self):
+        data = named_pack("Global\\FrontEndTexturesPC.tpk", ["BUTTON"]).serialize(0)
+        quiet = lambda line: None
+
+        def bind(name: str, files: dict, collection: str = "FRONTENDTEXTURESPC"):
+            return endscript.Binding("FRONTEND/FRONTB.LZC", collection, self.folder(name, files), "synchronize")
+
+        cases = (
+            (bind("unknown", {"BUTTON": dxt1_dds(32, 32, 0), "NOT_IN_THE_GAME": dxt1_dds(16, 16, 0)}),
+             "1 textures the pack does not have: NOT_IN_THE_GAME"),             # Binarius would add it; nothing uses it
+            (bind("elsewhere", {"BUTTON": dxt1_dds(32, 32, 0)}, "FRONTENDTEXTURES"), "no texture pack FRONTENDTEXTURES"),
+            (bind("odd", {"BUTTON": dxt1_dds(24, 16, 0)}), "powers of two"),
+        )
+        for binding, reason in cases:
+            with self.subTest(reason=reason), self.assertRaisesRegex(SystemExit, reason):
+                self.hdpack.overlay_file("FrontEnd/FrontB.lzc", data, [binding], [], quiet)
+        # The TexEd repair waits on a pack named DEFAULT: none in the stock files, so it changes nothing ...
+        repair = endscript.Conditional("FRONTEND/FRONTB.LZC", "DEFAULT", [endscript.UpdateCollection(
+            "FRONTEND/FRONTB.LZC", "FRONTENDTEXTURESPC", "CompressionType", "RawDecompressed")], [])
+        good = bind("good", {"BUTTON": dxt1_dds(32, 32, 0)})
+        self.assertEqual(1, self.hdpack.overlay_file("FrontEnd/FrontB.lzc", data, [good], [repair], quiet)[1]["replaced"])
+        # ... and a file that has one is refused rather than half repaired.
+        damaged = data + named_pack("Global\\Default.tpk", ["X"]).serialize(len(data))
+        with self.assertRaisesRegex(SystemExit, "named DEFAULT"):
+            self.hdpack.overlay_file("FrontEnd/FrontB.lzc", damaged, [good], [repair], quiet)
+        # The last check reads the rebuilt file back: a texture that never took its DDS stops the build.
+        with mock.patch.object(tpk.Texture, "replace_with_dds", lambda texture, dds: None), \
+                self.assertRaisesRegex(SystemExit, "BUTTON.dds did not land in FRONTENDTEXTURESPC"):
+            self.hdpack.overlay_file("FrontEnd/FrontB.lzc", data, [good], [], quiet)
+
+    def mod(self, script: str = MOD_SCRIPT, game: str = "Underground1", extra: dict = None) -> pathlib.Path:
+        """A Binarius mod folder laid out as Plajer's (launcher, Assets/main.end, Assets/Textures/...); returns
+        its launcher file. ``extra``: more texture folders, {path under Assets/Textures: {stem: DDS}}."""
+        mod = pathlib.Path(tempfile.mkdtemp(dir=self.root))
+        textures = mod.relative_to(self.root) / "Assets/Textures"
+        self.folder(str(textures / "DYNTEX/DYNAMICTEXTURES"), {"CARD": dxt1_dds(128, 128, 3)})
+        self.folder(str(textures / "GlobalB/GLOBALTEXTURES"), {"SPEEDO": dxt1_dds(128, 64, 4)})
+        for folder, files in (extra or {}).items():
+            self.folder(str(textures / folder), files)
+        (mod / "Assets/main.end").write_text(script, encoding="utf-8")
+        launcher = mod / "Mod.end"
+        launcher.write_text('[VERSN1]\n{\n  "Usage": "User",\n  "Game": "%s",\n  "Directory": "",\n'
+                            '  "Endscript": "Assets\\main.end"\n}\n' % game, encoding="utf-8")
+        return launcher
+
+    def game_and_bases(self):
+        """Stock Global/DYNTEX.BIN (raw) and Global/GlobalB.lzc (JDLZ, as shipped), and two installed HD packs that
+        both replace DYNTEX.BIN: v10 with a 32 px BADGE, v11 with a 64 px one."""
+        game = self.root / "game"
+        (game / "Global").mkdir(parents=True)
+        (game / "Global/DYNTEX.BIN").write_bytes(named_pack("Global\\DynamicTextures.tpk", ["CARD", "BADGE"]).serialize(0))
+        (game / "Global/GlobalB.lzc").write_bytes(tpk.jdlz_compress(
+            named_pack("Global\\GlobalTextures.tpk", ["SPEEDO", "NEEDLE"]).serialize(0)))
+        bases = []
+        for version, badge in (("10", 32), ("11", 64)):
+            base = self.root / f"nfsu-hdpack-v{version}.zip"
+            with zipfile.ZipFile(base, "w") as zf:
+                zf.writestr("Global/DYNTEX.BIN", named_pack("Global\\DynamicTextures.tpk", ["CARD", "BADGE"], size=badge).serialize(0))
+            bases.append(str(base))
+        return game, bases
+
+    def test_a_mod_goes_on_top_of_the_installed_packs(self):
+        game, bases = self.game_and_bases()
+        log = []
+        files, min_version, script = self.hdpack.overlay_pack(game, str(self.mod()), bases, log.append)
+        # DYNTEX from the last base that has it; GlobalB from the stock file, decompressed and under both names.
+        self.assertEqual({"Global/DYNTEX.BIN", "Global/GlobalB.lzc", "Global/GLOBALB.BUN"}, set(files))
+        self.assertEqual(files["Global/GlobalB.lzc"], files["Global/GLOBALB.BUN"])
+        self.assertFalse(tpk.is_jdlz(files["Global/GlobalB.lzc"]))
+        dyntex = textures_of(files["Global/DYNTEX.BIN"])["DYNAMICTEXTURES"]
+        self.assertEqual(128, dyntex[tpk.bin_hash("CARD")].width)                   # the mod's
+        self.assertEqual(64, dyntex[tpk.bin_hash("BADGE")].width)                   # v11's, kept (not v10's 32, not stock 16)
+        globalb = textures_of(files["Global/GlobalB.lzc"])["GLOBALTEXTURES"]
+        self.assertEqual((128, 64), (globalb[tpk.bin_hash("SPEEDO")].width, globalb[tpk.bin_hash("SPEEDO")].height))
+        self.assertEqual(16, globalb[tpk.bin_hash("NEEDLE")].width)
+        # The plugin the mod copies is in build 14's runtime; the repair block found no DEFAULT pack.
+        self.assertEqual(1014, min_version)
+        self.assertEqual("Remastered UI by Tester", script.watermark)
+        self.assertTrue(any("Global/DYNTEX.BIN (from nfsu-hdpack-v11.zip)" in line for line in log), log)
+        self.assertTrue(any("Global/GlobalB.lzc (from stock)" in line and "also as Global/GLOBALB.BUN" in line for line in log), log)
+
+    def test_both_names_of_a_bundle_are_one_bundle(self):
+        # GLOBALB.BUN and GlobalB.lzc hold the same bundle: bindings to either land in it, written under both names.
+        game, bases = self.game_and_bases()
+        (game / "Global/GLOBALB.BUN").write_bytes(tpk.jdlz_decompress((game / "Global/GlobalB.lzc").read_bytes()))
+        script = MOD_SCRIPT.replace('"Uninstall"\n',
+                                    'bind_textures synchronize GLOBAL\\GLOBALB.BUN TPKBlocks GLOBALTEXTURES "Textures\\BUN\\GLOBALTEXTURES"\n'
+                                    '"Uninstall"\n', 1)
+        launcher = self.mod(script, extra={"BUN/GLOBALTEXTURES": {"NEEDLE": dxt1_dds(64, 64, 5)}})
+        files, _, _ = self.hdpack.overlay_pack(game, str(launcher), bases, lambda line: None)
+        self.assertEqual({"Global/DYNTEX.BIN", "Global/GlobalB.lzc", "Global/GLOBALB.BUN"}, set(files))
+        self.assertEqual(files["Global/GlobalB.lzc"], files["Global/GLOBALB.BUN"])
+        globalb = textures_of(files["Global/GLOBALB.BUN"])["GLOBALTEXTURES"]
+        self.assertEqual((128, 64), (globalb[tpk.bin_hash("SPEEDO")].width, globalb[tpk.bin_hash("NEEDLE")].width))
+
+    def test_mods_this_port_cannot_take_are_refused(self):
+        game, bases = self.game_and_bases()
+        quiet = lambda line: None
+        with self.assertRaisesRegex(SystemExit, "made for Underground2"):
+            self.hdpack.overlay_pack(game, str(self.mod(game="Underground2")), bases, quiet)
+        with self.assertRaisesRegex(SystemExit, "PC plugin d3d9.asi"):
+            self.hdpack.overlay_pack(game, str(self.mod(MOD_SCRIPT.replace("NFSUHDContentSupport.asi", "d3d9.asi"))), bases, quiet)
+        with self.assertRaisesRegex(SystemExit, "not in the base packs and not in the game folder"):
+            self.hdpack.overlay_pack(self.root / "nowhere", str(self.mod()), [], quiet)
+
+    def test_the_pack_names_the_app_build_it_needs(self):
+        game, bases = self.game_and_bases()
+        out = self.root / "nfsu-hdpack-v12.zip"
+        argv = ["hdpack.py", "--overlay", str(self.mod()), "--game", str(game), "--base", bases[0], "--base", bases[1],
+                "--out", str(out), "--version", "12", "--credit", "Tester's HD User Interface 1.0"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("builtins.print"):
+            self.hdpack.main()
+        with zipfile.ZipFile(out) as zf:
+            manifest = json.loads(zf.read("nfsu-modpack.json"))
+            names = set(zf.namelist())
+        self.assertEqual(1014, manifest["minVersionCode"])
+        self.assertEqual("12", manifest["version"])
+        self.assertIn("Tester's HD User Interface 1.0: textures laid over nfsu-hdpack-v10.zip, nfsu-hdpack-v11.zip", manifest["notes"])
+        self.assertIn("Needs app build 14 or newer (NFSUHDContentSupport.asi is in its runtime)", manifest["notes"])
+        self.assertEqual({f["path"] for f in manifest["files"]} | {"nfsu-modpack.json"}, names)
+        self.assertEqual([], manifest["remove"])
 
 
 if __name__ == "__main__":

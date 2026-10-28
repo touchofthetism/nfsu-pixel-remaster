@@ -1,10 +1,33 @@
-// The decisions of src/runtime/misc_fixes.c (nfs_misc_fixes.h): HD Cursor Support from
+// The decisions of src/runtime/misc_fixes.c (nfs_misc_fixes.h): HD Cursor and HD Font Support from
 // AeroWidescreen's NFSUHDContentSupport, ThirteenAG's BlackMagazineFix and the constants of his 44.1 kHz fix.
 #include "../src/runtime/nfs_misc_fixes.h"
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 static void require(bool ok, const char* message) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); } }
+// The game's name hash (texture record +0x24).
+static uint32_t binHash(const std::string& name) {
+    uint32_t h = 0xFFFFFFFFu;
+    for (unsigned char c : name) h = h * 33u + c;
+    return h;
+}
 int main() {
+    // HD Font Support: the stock size of every font texture, by the hash of its name; anything else untouched.
+    struct Font { const char* name; uint32_t width, height; };
+    const Font fonts[] = {{"CONDUITMDITC_TT21I", 256, 256}, {"CONDUITMDITC_TT14I", 256, 256}, {"CONDUITMDITC_TT14I_KOREAN", 512, 512},
+                          {"CONDUITMDITC_TT21I_KOREAN", 1024, 512}, {"FONT_ARIAL", 256, 256}, {"FONT_ARIAL12", 256, 256},
+                          {"FONT_CONDUITMDITCTT38BI", 512, 512}, {"FONT_IMPACT36", 512, 512}, {"LCD_LET48", 128, 128}};
+    for (const Font& font : fonts) {
+        uint32_t width = 0, height = 0;
+        require(nfs_misc_font_stock_size(binHash(font.name), &width, &height) == 1, font.name);
+        require(width == font.width && height == font.height, font.name);
+    }
+    require(binHash("PC_CURSOR") == NFS_MISC_PC_CURSOR_HASH, "the hash is the game's (PC_CURSOR)");
+    uint32_t width = 7, height = 9;
+    require(nfs_misc_font_stock_size(binHash("TRACK1001_MAP"), &width, &height) == 0 && width == 7 && height == 9,
+            "any other texture keeps the size it was loaded with");
+    require(NFS_MISC_HOOK_FONT_SIZE_TEXT == 0x0040C0F4u && NFS_MISC_HOOK_FONT_SIZE_GLYPH == 0x004F47AAu,
+            "the hooks sit right after the size loads (fild [esp+0Ch] in 0x40BF40, fild [esp+4] in 0x4F4790)");
     // Record +0x44 holds width (low 16 bits) and height (high 16 bits).
     const uint32_t hd = 64u | (64u << 16), stock = 16u | (16u << 16);
     require(nfs_misc_cursor_size(0x6B6A294Fu, hd) == stock, "an HD PC_CURSOR is drawn at the stock 16x16");

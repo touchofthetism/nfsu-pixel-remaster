@@ -49,7 +49,7 @@ from typing import Callable, Optional
 from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from nfstex import tiling, tpk, tracks  # noqa: E402
+from nfstex import endscript, tiling, tpk, tracks  # noqa: E402
 from nfstex.tiling import WRAP_BAND, WRAP_MARGIN  # noqa: E402
 
 # Bundles by profile: (game-relative path, output name, default upscale policy name).
@@ -531,6 +531,152 @@ def verify_rebuilt(relative: str, source: bytes, out: bytes) -> int:
     return blobs
 
 
+# ---- Overlays: texture mods made for Binarius (endscript.py) ---------------------------------------------
+
+# The PC plugins such mods copy into scripts/, and the app build (versionCode) of this port whose runtime has
+# their fixes: AeroWidescreen's NFSUHDContentSupport is HD Cursor Support (build 9) and HD Font Support (build 14).
+PLUGIN_BUILDS = {"nfsuhdcontentsupport.asi": 1014}
+# DDS names that miss the texture they were made for. Plajer's HD User Interface 1.8 names the drift-angle
+# gauge's two textures after their records' truncated names; Binarius then adds them as new textures the game
+# never looks up, and the gauge stays stock on the PC. Matched by content here (mean difference 0.5 and 2 levels
+# against the stock 64x64 textures downscaled), so they go where they were meant to.
+OVERLAY_ALIASES = {"3RDPERSON_DRIFTANGLE_ANGLE_DEGREE": "3RDPERSON_DRIFTANGLE_ANGLE_DEGREES",
+                   "3RDPERSON_DRIFTANGLE_FILLE": "3RDPERSON_DRIFTANGLE_FILLER"}
+# Bundles the game ships under two names with the same contents (the decompressed .lzc is the .BUN byte for
+# byte): an overlaid one is written under both, as the ui profile does for INGAMEB, and a mod's bindings to
+# either name go into the one bundle (the engine loads the .lzc when both are there).
+TWIN_NAMES = {"global/globalb.lzc": "Global/GLOBALB.BUN", "global/ingameb.lzc": "Global/INGAMEB.BUN"}
+_TWIN_OF = {bun.lower(): lzc for lzc, bun in TWIN_NAMES.items()}
+
+
+def _bundle_key(game_file: str) -> str:
+    """The bundle a game path names, lower case, a .BUN twin as its .lzc."""
+    key = game_file.lower()
+    return _TWIN_OF.get(key, key)
+
+
+def _find_in_game(game: pathlib.Path, relative: str) -> Optional[pathlib.Path]:
+    current = game
+    for part in relative.split("/"):
+        matches = [child for child in current.iterdir() if child.name.lower() == part.lower()] if current.is_dir() else []
+        if not matches:
+            return None
+        current = matches[0]
+    return current
+
+
+def overlay_base(game: pathlib.Path, relative: str, bases: list) -> tuple:
+    """(path to write, bytes, where from) for a game file: the copy in the last base pack that has it (the
+    installed HD packs this one goes on top of), else the stock file."""
+    for base in reversed(bases):
+        with zipfile.ZipFile(base) as zf:
+            for name in zf.namelist():
+                if name.lower() == relative.lower():
+                    return name, zf.read(name), pathlib.Path(base).name
+    path = _find_in_game(game, relative)
+    if path is None:
+        raise SystemExit(f"{relative}: not in the base packs and not in the game folder")
+    return path.relative_to(game).as_posix(), path.read_bytes(), "stock"
+
+
+def overlay_target(stem: str, hashes) -> str:
+    """The texture name a DDS file is for: its own stem when the pack has that texture, else its alias."""
+    if tpk.bin_hash(stem) in hashes:
+        return stem
+    return OVERLAY_ALIASES.get(stem.upper(), stem)
+
+
+def overlay_file(label: str, data: bytes, bindings: list, conditionals: list, log) -> tuple:
+    """``data`` (a decompressed bundle) with every binding's textures replaced; (bytes, report)."""
+    chunks = tpk.find_texture_packs(data)
+    packs = [tpk.TexturePack.parse(chunk, data, offset) for offset, chunk in chunks]
+    by_collection = {}
+    for pack in packs:
+        by_collection.setdefault(endscript.collection_name(pack.path), pack)
+    for condition in conditionals:
+        if condition.collection in by_collection and condition.then:
+            # The HD User Interface's repairs of a TexEd-damaged pack named DEFAULT: never true for the stock
+            # files or this toolkit's packs, and nothing here would know how to do them.
+            raise SystemExit(f"{label}: has a texture pack named {condition.collection}, which the mod repairs first; not supported")
+    report = {"replaced": 0, "aliased": [], "bytes_in": 0, "bytes_out": 0}
+    for binding in bindings:
+        pack = by_collection.get(binding.collection)
+        if pack is None:
+            raise SystemExit(f"{label}: no texture pack {binding.collection} (packs: {', '.join(sorted(by_collection))})")
+        by_hash = {texture.hash: texture for texture in pack.textures}
+        unknown = []
+        for dds_path in sorted(p for p in binding.folder.iterdir() if p.suffix.lower() == ".dds"):
+            name = overlay_target(dds_path.stem, by_hash)
+            texture = by_hash.get(tpk.bin_hash(name))
+            if texture is None:
+                unknown.append(dds_path.stem)
+                continue
+            if name != dds_path.stem:
+                report["aliased"].append(f"{dds_path.stem} -> {name}")
+            before = len(texture.pixels)
+            try:
+                texture.replace_with_dds(dds_path.read_bytes())
+            except ValueError as error:
+                raise SystemExit(f"{label} {binding.collection} {dds_path.name}: {error}")
+            report["replaced"] += 1
+            report["bytes_in"] += before
+            report["bytes_out"] += len(texture.pixels)
+        if unknown:
+            # Binarius would add them as new textures; the game only looks up the ones it knows.
+            raise SystemExit(f"{label} {binding.collection}: {len(unknown)} textures the pack does not have: {', '.join(unknown[:8])}")
+    rebuilt = {offset: (lambda base, p=pack: p.serialize(base)) for (offset, _), pack in zip(chunks, packs)}
+    out = tpk.replace_texture_packs(data, chunks, rebuilt)
+    report["blobs"] = verify_rebuilt(label, data, out)
+    # Every bound texture holds its DDS now.
+    check = {endscript.collection_name(pack.path): {t.hash: t for t in pack.textures}
+             for pack in (tpk.TexturePack.parse(c, out, o) for o, c in tpk.find_texture_packs(out))}
+    for binding in bindings:
+        for dds_path in (p for p in binding.folder.iterdir() if p.suffix.lower() == ".dds"):
+            texture = check[binding.collection][tpk.bin_hash(overlay_target(dds_path.stem, check[binding.collection]))]
+            width, height, mips, compression, pixels = tpk.parse_dds(dds_path.read_bytes())
+            if (texture.width, texture.height, texture.mips, texture.compression) != (width, height, mips, compression) \
+                    or texture.pixels != pixels[:len(texture.pixels)]:
+                raise SystemExit(f"{label}: {dds_path.name} did not land in {binding.collection}")
+    return out, report
+
+
+def overlay_pack(game: pathlib.Path, script_path: str, bases: list, log) -> tuple:
+    """({game path: bytes}, minimum versionCode, the parsed script) for a Binarius texture mod laid over the base
+    packs (or the stock files where they have no copy). Bundles are written uncompressed, as every HD pack."""
+    script = endscript.parse(pathlib.Path(script_path))
+    if script.game and script.game != "Underground1":
+        raise SystemExit(f"{script_path}: made for {script.game}, not Underground 1")
+    min_version = 0
+    for plugin in script.plugins:
+        if plugin.lower() not in PLUGIN_BUILDS:
+            raise SystemExit(f"{script_path}: needs the PC plugin {plugin}, whose fixes this port does not have")
+        min_version = max(min_version, PLUGIN_BUILDS[plugin.lower()])
+    groups = {}
+    for binding in script.bindings:
+        groups.setdefault(_bundle_key(binding.game_file), []).append(binding)
+    files = {}
+    total = {"replaced": 0, "files": 0}
+    for key, bindings in groups.items():
+        relative = key if key in TWIN_NAMES else bindings[0].game_file      # found without case either way
+        path, data, source = overlay_base(game, relative, bases)
+        if tpk.is_jdlz(data):
+            data = tpk.jdlz_decompress(data)
+        conditionals = [c for c in script.conditionals if _bundle_key(c.game_file) == key]
+        out, report = overlay_file(path, data, bindings, conditionals, log)
+        files[path] = out
+        twin = TWIN_NAMES.get(path.lower())
+        if twin:
+            files[twin] = out
+        total["replaced"] += report["replaced"]
+        total["files"] += 1
+        log(f"{path} (from {source}): {report['replaced']} textures replaced"
+            + (f" ({'; '.join(report['aliased'])})" if report["aliased"] else "")
+            + f", texture bytes {report['bytes_in'] >> 10} KB -> {report['bytes_out'] >> 10} KB, file {len(out) >> 10} KB"
+            + (f", also as {twin}" if twin else "") + f", {report['blobs']} JDLZ blobs pass the game's decoder")
+    log(f"overlay {script.path.name}: {total['replaced']} textures in {total['files']} bundles; needs app versionCode {min_version or 'any'}")
+    return files, min_version, script
+
+
 def repack_file(relative: str, data: bytes, log) -> bytes:
     """A pack file from an earlier HD pack, written again by the current serializer (no upscaling): the way
     to re-ship a pack after a fix in the container or compression code."""
@@ -691,7 +837,31 @@ def main() -> None:
     parser.add_argument("--fast", action="store_true", help="the compact animevideo net for colour too (packs v1-v9), for quick checks")
     parser.add_argument("--repack", metavar="PACK.zip", help="rewrite an existing HD pack with the current code instead of upscaling (no game folder or models needed)")
     parser.add_argument("--split-mb", type=int, default=0, help="also write the pack as installable parts of at most this many MB when it is larger (a chat upload limit)")
+    parser.add_argument("--overlay", metavar="SCRIPT.end", help="lay a Binarius texture mod (its launcher .end or endscript) over the --base packs or the stock files instead of upscaling")
+    parser.add_argument("--base", metavar="PACK.zip", action="append", default=[], help="an installed HD pack the overlay goes on top of (repeatable, later ones win)")
+    parser.add_argument("--credit", default="", help="overlay: who made the textures, for the manifest notes")
     args = parser.parse_args()
+    if args.overlay:
+        if not args.game or not args.out:
+            parser.error("--overlay needs --game (the stock files) and --out")
+        files, min_version, script = overlay_pack(pathlib.Path(args.game), args.overlay, args.base, print)
+        bases = ", ".join(pathlib.Path(b).name for b in args.base) or "the stock files"
+        notes = (f"{args.credit or script.watermark or script.path.name}: textures laid over {bases} with this port's toolkit "
+                 f"(the Binarius endscript's Install branch); bundles rewritten uncompressed.")
+        if min_version:
+            notes += f" Needs app build {min_version - 1000} or newer ({', '.join(script.plugins)} is in its runtime)."
+        manifest = {"format": 1, "name": args.name or "HD interface pack", "version": args.version, "game": "nfsu1",
+                    "notes": notes, "files": [{"path": p, "bytes": len(b)} for p, b in files.items()], "remove": []}
+        if min_version:
+            manifest["minVersionCode"] = min_version
+        with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p, b in files.items():
+                zf.writestr(p, b)
+            zf.writestr("nfsu-modpack.json", json.dumps(manifest, indent=2))
+        print(f"wrote {args.out}: {len(files)} files, {sum(len(b) for b in files.values()) >> 20} MB uncompressed")
+        if args.split_mb:
+            split_pack(args.out, args.split_mb << 20, print)
+        return
     if args.repack:
         if not args.out:
             parser.error("--out is required")
