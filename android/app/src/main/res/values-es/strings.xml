@@ -285,4 +285,7 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
     <string name="opt_cpu">Ubicación en la CPU</string>
     <string name="cpu_fast">Núcleo más rápido + sugerencias de rendimiento</string>
     <string name="cpu_system">Planificador del sistema</string>
+    <string name="opt_cleanup">Limpieza de la GPU</string>
+    <string name="cleanup_thread">Hilo propio · el trabajo terminado no retiene los fotogramas (versión 11)</string>
+    <string name="cleanup_queue">En la cola de DXVK, como las versiones 1–10</string>
 </resources>

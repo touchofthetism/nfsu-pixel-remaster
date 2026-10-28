@@ -236,7 +236,7 @@ public final class LauncherActivity extends Activity {
             SessionSummary summary = null;
             List<File> sessions = GameTelemetry.sessionFiles(this);
             if (!sessions.isEmpty()) {
-                try { summary = SessionSummary.parse(Diagnostics.readText(sessions.get(0), 4 * 1024 * 1024)); }
+                try { summary = SessionSummary.parse(Diagnostics.readText(sessions.get(0), 4 * 1024 * 1024), Diagnostics.exitRecords(this), 0); }
                 catch (Exception ignored) { }
             }
             SessionSummary found = summary;
@@ -801,6 +801,7 @@ public final class LauncherActivity extends Activity {
                 .putExtra("hdReflections", GameOptions.get(this, GameOptions.REFLECTIONS).equals("sharp"))
                 .putExtra("cpuPlacement", GameOptions.get(this, GameOptions.CPU))
                 .putExtra("reads", GameOptions.get(this, GameOptions.READS))
+                .putExtra("cleanupThread", GameOptions.get(this, GameOptions.CLEANUP).equals("thread"))
                 .putExtra("minimapTop", GameOptions.get(this, GameOptions.MINIMAP).equals("top"))
                 .putExtra("backBuffers", GameOptions.intValue(this, GameOptions.LATENCY))
                 .putExtra("cpuTextures", GameOptions.get(this, GameOptions.TEXTURES).equals("cpu"))

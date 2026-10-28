@@ -39,7 +39,7 @@ public class SessionSummaryTest {
                 "Options: antialias=0 frameCap=120 renderHeight=1344 renderWidth=2992",
                 "Display: 2992x1344@120.0",
                 "Frames 61234 over 512 s active: avg 119.6 FPS, 1% low 84 FPS (p99 11.9 ms)",
-                "Spikes 4 (>2.5x the frames around them), hitches 7 (>2.5 cap periods), stalls 2 (>100 ms), gaps 1 (>2 s); Present avg 2.10 ms; frame cap 120",
+                "Spikes 4 (>2.5x the frames around them), hitches 7 (frames over 25 ms), stalls 2 (>100 ms), gaps 1 (>2 s); Present avg 2.10 ms; frame cap 120",
                 "Frame-time histogram (≤ms: frames): 8.5:50000 9.0:11000 250.0:2",
                 "Seconds below 80% of the cap: 1 of 3. Worst seconds (t, fps, max ms): [120: 61 fps, 182 ms]",
                 "Pipelines compiled: 212 graphics + 3 compute, 1830 ms total, worst 96 ms, 41 over 10 ms",
@@ -123,10 +123,59 @@ public class SessionSummaryTest {
     @Test public void incompleteAndEmptyRecordsAreReadable() throws Exception {
         SessionSummary crashed = SessionSummary.parse("{\"session\":\"x\",\"app\":\"1\",\"durationS\":42,\"complete\":false}");
         assertEquals("42 s · no frames recorded · ended abruptly", crashed.shortLine());
-        assertTrue(crashed.report.contains("NOT complete"));
+        assertTrue(crashed.report, crashed.report.contains("(not closed: no exit record says why)"));
         assertTrue(crashed.report.contains("No frame telemetry"));
         assertEquals("DrawIndexedPrimitive", SessionSummary.methodName("2/82"));
         assertEquals("Release(3)", SessionSummary.methodName("3/2"));
-        assertEquals("13/3", SessionSummary.methodName("13/3"));
+        assertEquals("SwapChain Present", SessionSummary.methodName("13/3"));
+        assertEquals("Texture LockRect", SessionSummary.methodName("3/19"));
+        assertEquals("IndexBuffer Unlock", SessionSummary.methodName("7/12"));
+        assertEquals("9/9", SessionSummary.methodName("9/9"));
+    }
+
+    @Test public void whatEndedAnUnclosedSession() throws Exception {
+        // Build 10's 00:55 session: last written at a pause, then swiped away from recent apps a second later.
+        String record = "{\"session\":\"20261028-005529\",\"app\":\"1.0.0-build.10\",\"start\":1000000,\"end\":2706000,\"durationS\":1706,\"complete\":false}";
+        java.util.List<SessionSummary.Exit> exits = java.util.Arrays.asList(
+                new SessionSummary.Exit(2707000, "com.nfsu1.remastered", 10, 0, "[REMOVE TASK] remove task"),          // the launcher process
+                new SessionSummary.Exit(2707100, "com.nfsu1.remastered:game", 10, 0, "[REMOVE TASK] remove task"),
+                new SessionSummary.Exit(900000, "com.nfsu1.remastered:game", 5, 11, ""),                                 // before this session
+                new SessionSummary.Exit(9000000, "com.nfsu1.remastered:game", 5, 11, ""));                               // after the next began
+        SessionSummary swiped = SessionSummary.parse(record, exits, 5000000);
+        assertEquals("swiped away from recent apps", swiped.endReason);
+        assertTrue(swiped.report, swiped.report.startsWith("Session 20261028-005529 — 1.0.0-build.10 — 28 min 26 s (ended: swiped away from recent apps)"));
+        assertTrue(swiped.shortLine(), swiped.shortLine().endsWith("no frames recorded · swiped away from recent apps"));
+        // The same record crashing instead.
+        SessionSummary crashed = SessionSummary.parse(record, java.util.Collections.singletonList(
+                new SessionSummary.Exit(2710000, "com.nfsu1.remastered:game", 5, 11, "")), 0);
+        assertTrue(crashed.report, crashed.report.contains("(ended: crashed (native, signal 11))"));
+        // A complete session is complete whatever exit followed (the launcher ends the game process itself).
+        SessionSummary complete = SessionSummary.parse(record.replace("\"complete\":false", "\"complete\":true"), exits, 0);
+        assertTrue(complete.report.contains("(complete)") && complete.endReason == null);
+        assertEquals("Android closed it to free memory", SessionSummary.describeExit(3, 0, ""));
+        assertEquals("stopped by the player", SessionSummary.describeExit(10, 0, "user request"));
+        assertEquals("ended by Android (exit reason 13)", SessionSummary.describeExit(13, 0, ""));
+    }
+
+    @Test public void dxvkQueueAndPlacement() throws Exception {
+        // Build 11: DXVK's command list processing, and a placement Android replaced twice.
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"dxvkQueue\":{\"cleanupThread\":true,\"submits\":[183702,36740.4,31.0],"
+                        + "\"resets\":[183702,165331.8,12.40,340,2],\"resetStepsMs\":[[110221.2,9.80],[36740.4,6.10],[9185.1,1.20],[9185.1,0.90]],"
+                        + "\"fenceWaits\":[183702,385774.2],\"commandLists\":[41,9],\"descriptorPools\":[12,0]},"
+                        + "\"host\":{\"affinity\":\"render thread on cpu 7\",\"priority\":\"nice -10\",\"dxvk\":\"4 of 4 DXVK threads off cpu 7\","
+                        + "\"adpf\":\"session with 5 threads, target 8.33 ms\",\"targetFps\":0,\"reports\":9,\"reportFailures\":0,"
+                        + "\"placementRestored\":2,\"placementFailed\":1},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "DXVK queue: cleanup on its own thread; vkQueueSubmit 183702 (3 per frame, avg 0.20 ms, longest 31.0 ms); "
+                        + "list resets 183702 (avg 0.90 ms, longest 12.4 ms, 340 over 4 ms, 2 on the queue thread), "
+                        + "avg/longest ms: command pools 0.60/9.8, resources 0.20/6.1, descriptor pools 0.05/1.2, buffers and queries 0.05/0.9; "
+                        + "fence waits avg 2.10 ms; command lists created 41, freed 9; descriptor pools created 12, freed 0",
+                "(9 reports, 0 failed); placement replaced and put back 2 times (1 checks could not)"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+        String held = RECORD.replace("\"d3d9Calls\":{", "\"host\":{\"affinity\":\"render thread on cpu 7\",\"priority\":\"nice -10\","
+                + "\"adpf\":\"x\",\"reports\":1,\"reportFailures\":0,\"placementRestored\":0,\"placementFailed\":0},\"d3d9Calls\":{");
+        assertTrue(SessionSummary.parse(held).report.contains("(1 reports, 0 failed); placement held all session"));
     }
 }

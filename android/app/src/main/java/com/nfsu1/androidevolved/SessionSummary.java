@@ -33,7 +33,23 @@ final class SessionSummary {
         for (int i = 0; i < slots.length; i++) DEVICE_METHODS.put(slots[i], names[i]);
     }
 
+    /**
+     * How one of the app's processes ended (ApplicationExitInfo, Android 11+), to say what ended a session whose
+     * record was never closed: a swipe from recent apps, a crash, Android reclaiming memory.
+     */
+    static final class Exit {
+        final long timestamp;
+        final String process, description;
+        final int reason, status;
+        Exit(long timestamp, String process, int reason, int status, String description) {
+            this.timestamp = timestamp; this.process = process; this.reason = reason; this.status = status;
+            this.description = description == null ? "" : description;
+        }
+    }
+
     final String session, app;
+    final long start, end;
+    final String endReason;   // what ended an unclosed session, or null when complete or unknown
     final long durationS, frames, hitches, stalls, gaps, spikes;
     final double avgFps, onePercentLowFps, p50Ms, p99Ms, maxMs, presentMsAvg;
     final long pipelineCompiles, pipelineOver10Ms;
@@ -43,11 +59,14 @@ final class SessionSummary {
     final boolean complete;
     final String report;
 
-    private SessionSummary(JSONObject record) {
+    private SessionSummary(JSONObject record, List<Exit> exits, long nextStart) {
         session = record.optString("session", "?");
         app = record.optString("app", "?");
         durationS = record.optLong("durationS");
         complete = record.optBoolean("complete");
+        start = record.optLong("start");
+        end = record.optLong("end");
+        endReason = complete ? null : endReason(end, nextStart, exits);
         JSONObject nat = record.optJSONObject("native");
         JSONObject frames = nat == null ? null : nat.optJSONObject("frames");
         JSONObject pipelines = nat == null ? null : nat.optJSONObject("pipelines");
@@ -81,13 +100,52 @@ final class SessionSummary {
         report = buildReport(record, nat, frames, pipelines, samples);
     }
 
-    static SessionSummary parse(String json) throws JSONException { return new SessionSummary(new JSONObject(json)); }
+    static SessionSummary parse(String json) throws JSONException { return parse(json, Collections.emptyList(), 0); }
+
+    /** With the app's exit records and the start of the session after this one (0 if none), for the end reason. */
+    static SessionSummary parse(String json, List<Exit> exits, long nextStart) throws JSONException {
+        return new SessionSummary(new JSONObject(json), exits == null ? Collections.emptyList() : exits, nextStart);
+    }
+
+    /**
+     * The game process's first exit after the record's last write and before the next session began. The record
+     * is written every few seconds and at every pause, so the exit that left it unclosed follows its "end".
+     */
+    static String endReason(long recordEnd, long nextStart, List<Exit> exits) {
+        Exit first = null;
+        for (Exit exit : exits) {
+            if (exit.process == null || !exit.process.endsWith(":game")) continue;
+            if (exit.timestamp < recordEnd - 2000 || (nextStart > 0 && exit.timestamp >= nextStart)) continue;
+            if (first == null || exit.timestamp < first.timestamp) first = exit;
+        }
+        return first == null ? null : describeExit(first.reason, first.status, first.description);
+    }
+
+    /** ApplicationExitInfo reasons in words (the constants' values, so this stays testable off-device). */
+    static String describeExit(int reason, int status, String description) {
+        switch (reason) {
+            case 1: return "the game process exited (status " + status + ")";                     // REASON_EXIT_SELF
+            case 2: return "the game process was killed (signal " + status + ")";                 // REASON_SIGNALED
+            case 3: return "Android closed it to free memory";                                    // REASON_LOW_MEMORY
+            case 4: return "crashed (Java exception)";                                            // REASON_CRASH
+            case 5: return "crashed (native, signal " + status + ")";                            // REASON_CRASH_NATIVE
+            case 6: return "stopped responding (ANR)";                                            // REASON_ANR
+            case 9: return "Android stopped it for excessive resource use";                       // REASON_EXCESSIVE_RESOURCE_USAGE
+            case 10: return description != null && description.contains("REMOVE TASK")             // REASON_USER_REQUESTED
+                    ? "swiped away from recent apps" : "stopped by the player";
+            case 11: return "force-stopped";                                                      // REASON_USER_STOPPED
+            case 14: return "frozen by Android";                                                  // REASON_FREEZER
+            case 15: case 16: return "the app was updated";                                       // PACKAGE_STATE_CHANGE, PACKAGE_UPDATED
+            default: return "ended by Android (exit reason " + reason + ")";
+        }
+    }
 
     /** One line for the launcher card. */
     String shortLine() {
-        if (frames == 0) return String.format(Locale.US, "%s · no frames recorded%s", duration(), complete ? "" : " · ended abruptly");
+        String ending = complete ? "" : endReason != null ? " · " + endReason : " · ended abruptly";
+        if (frames == 0) return String.format(Locale.US, "%s · no frames recorded%s", duration(), ending);
         return String.format(Locale.US, "%s · %.0f FPS avg · 1%% low %.0f · %d spikes · %s%s", duration(), avgFps, onePercentLowFps, spikes,
-                THERMAL[Math.min(THERMAL.length - 1, Math.max(0, thermalMax))], complete ? "" : " · ended abruptly");
+                THERMAL[Math.min(THERMAL.length - 1, Math.max(0, thermalMax))], ending);
     }
 
     String duration() {
@@ -97,7 +155,9 @@ final class SessionSummary {
 
     private String buildReport(JSONObject record, JSONObject nat, JSONObject frames, JSONObject pipelines, JSONArray samples) {
         StringBuilder out = new StringBuilder();
-        out.append(String.format(Locale.US, "Session %s — %s — %s%s\n", session, app, duration(), complete ? " (complete)" : " (NOT complete: crash or kill)"));
+        // An unclosed record: what ended it, from the exit records; without one, nothing says it was a crash.
+        String ending = complete ? " (complete)" : endReason != null ? " (ended: " + endReason + ")" : " (not closed: no exit record says why)";
+        out.append(String.format(Locale.US, "Session %s — %s — %s%s\n", session, app, duration(), ending));
         JSONObject options = record.optJSONObject("options");
         if (options != null) {
             List<String> keys = new ArrayList<>();
@@ -115,8 +175,10 @@ final class SessionSummary {
             out.append(String.format(Locale.US, "  Frames %d over %.0f s active: avg %.1f FPS, 1%% low %.0f FPS (p99 %.1f ms), p50 %.1f ms, p90 %.1f ms, p99.9 %.1f ms, max %.0f ms\n",
                     frames.optLong("frames"), frames.optDouble("activeSeconds"), avgFps, onePercentLowFps, p99Ms, p50Ms, frames.optDouble("p90Ms"),
                     frames.optDouble("p999Ms"), maxMs));
-            out.append(String.format(Locale.US, "  Spikes %d (>2.5x the frames around them), hitches %d (>2.5 cap periods), stalls %d (>100 ms), gaps %d (>2 s); Present avg %.2f ms; frame cap %d\n",
-                    frames.optLong("spikes"), hitches, stalls, gaps, presentMsAvg, frames.optInt("targetFps")));
+            // The hitch threshold as frame_telemetry.h sets it: 2.5 frames of the cap (120 FPS when uncapped), at least 25 ms.
+            int target = frames.optInt("targetFps") > 0 ? frames.optInt("targetFps") : 120;
+            out.append(String.format(Locale.US, "  Spikes %d (>2.5x the frames around them), hitches %d (frames over %.0f ms), stalls %d (>100 ms), gaps %d (>2 s); Present avg %.2f ms; frame cap %d\n",
+                    frames.optLong("spikes"), hitches, Math.max(25.0, 2500.0 / target), stalls, gaps, presentMsAvg, frames.optInt("targetFps")));
             JSONArray histogram = frames.optJSONArray("histogramUs");
             if (histogram != null && histogram.length() > 0) {
                 StringBuilder line = new StringBuilder("  Frame-time histogram (≤ms: frames):");
@@ -217,9 +279,13 @@ final class SessionSummary {
         if (host != null) {
             // Where the render thread and DXVK's threads ran, and whether the performance-hint session took them.
             String dxvk = host.optString("dxvk", "");
-            out.append(String.format(Locale.US, "  Threads: %s, %s%s; performance hints: %s (%d reports, %d failed)\n",
+            // Placements Android replaced and the sampler put back (placement_keeper.h, build 11).
+            long restored = host.optLong("placementRestored"), refused = host.optLong("placementFailed");
+            String kept = restored + refused == 0 ? (host.has("placementRestored") ? "; placement held all session" : "")
+                    : String.format(Locale.US, "; placement replaced and put back %d times%s", restored, refused > 0 ? String.format(Locale.US, " (%d checks could not)", refused) : "");
+            out.append(String.format(Locale.US, "  Threads: %s, %s%s; performance hints: %s (%d reports, %d failed)%s\n",
                     host.optString("affinity", "?"), host.optString("priority", "?"), dxvk.isEmpty() ? "" : "; " + dxvk,
-                    host.optString("adpf", "?"), host.optLong("reports"), host.optLong("reportFailures")));
+                    host.optString("adpf", "?"), host.optLong("reports"), host.optLong("reportFailures"), kept));
         }
         JSONObject calls = nat == null ? null : nat.optJSONObject("d3d9Calls");
         if (calls != null && frames != null && frames.optLong("frames") > 0) {
@@ -273,6 +339,38 @@ final class SessionSummary {
             out.append(String.format(Locale.US, "  vkQueuePresentKHR: %d presents, avg %.2f ms, longest %.1f ms, %d over 16 ms\n",
                     vkPresent.optLong(0), vkPresent.optDouble(1) / vkPresent.optLong(0), vkPresent.optDouble(2), vkPresent.optLong(3)));
         }
+        JSONObject queue = nat == null ? null : nat.optJSONObject("dxvkQueue");
+        if (queue != null && queue.has("resets")) {
+            // DXVK's command list processing (ci/dxvk_extra.py, build 11): submissions, the resets of finished lists
+            // (and which step of them took the time), fence waits, lists and descriptor pools created and freed.
+            JSONArray submits = queue.optJSONArray("submits"), resets = queue.optJSONArray("resets"), steps = queue.optJSONArray("resetStepsMs"),
+                    fences = queue.optJSONArray("fenceWaits"), lists = queue.optJSONArray("commandLists"), pools = queue.optJSONArray("descriptorPools");
+            long submitCount = submits == null ? 0 : submits.optLong(0), resetCount = resets == null ? 0 : resets.optLong(0);
+            long frameCount = frames == null ? 0 : frames.optLong("frames");
+            StringBuilder line = new StringBuilder(String.format(Locale.US, "  DXVK queue: cleanup %s; vkQueueSubmit %d",
+                    queue.optBoolean("cleanupThread") ? "on its own thread" : "on the queue thread", submitCount));
+            if (submitCount > 0) line.append(String.format(Locale.US, " (%s per frame, avg %.2f ms, longest %.1f ms)",
+                    frameCount > 0 ? fmt((double) submitCount / frameCount) : "?", submits.optDouble(1) / submitCount, submits.optDouble(2)));
+            line.append(String.format(Locale.US, "; list resets %d", resetCount));
+            if (resetCount > 0) {
+                line.append(String.format(Locale.US, " (avg %.2f ms, longest %.1f ms, %d over 4 ms, %d on the queue thread)",
+                        resets.optDouble(1) / resetCount, resets.optDouble(2), resets.optLong(3), resets.optLong(4)));
+                String[] names = {"command pools", "resources", "descriptor pools", "buffers and queries"};
+                if (steps != null && steps.length() == names.length) {
+                    line.append(", avg/longest ms:");
+                    for (int i = 0; i < names.length; i++) {
+                        JSONArray step = steps.optJSONArray(i);
+                        if (step == null) continue;
+                        line.append(String.format(Locale.US, "%s %s %.2f/%.1f", i == 0 ? "" : ",", names[i], step.optDouble(0) / resetCount, step.optDouble(1)));
+                    }
+                }
+            }
+            if (fences != null && fences.optLong(0) > 0)
+                line.append(String.format(Locale.US, "; fence waits avg %.2f ms", fences.optDouble(1) / fences.optLong(0)));
+            if (lists != null) line.append(String.format(Locale.US, "; command lists created %d, freed %d", lists.optLong(0), lists.optLong(1)));
+            if (pools != null) line.append(String.format(Locale.US, "; descriptor pools created %d, freed %d", pools.optLong(0), pools.optLong(1)));
+            out.append(line).append('\n');
+        }
         JSONObject profile = nat == null ? null : nat.optJSONObject("profile");
         if (profile != null && profile.optLong("samples") > 0) {
             // Where the guest machine's time went (1 ms samples): the render thread in lifted game code, in D3D9
@@ -316,6 +414,12 @@ final class SessionSummary {
         try {
             int kind = Integer.parseInt(key.substring(0, slash)), method = Integer.parseInt(key.substring(slash + 1));
             if (kind == 2 && DEVICE_METHODS.containsKey(method)) return DEVICE_METHODS.get(method);
+            // Resource methods d3d9MethodName names (d3d9_bridge.cpp).
+            if (kind == 13 && method == 3) return "SwapChain Present";
+            if ((kind == 6 || kind == 7) && (method == 11 || method == 12))
+                return (kind == 6 ? "VertexBuffer " : "IndexBuffer ") + (method == 11 ? "Lock" : "Unlock");
+            if (kind == 3 && (method == 19 || method == 20)) return method == 19 ? "Texture LockRect" : "Texture UnlockRect";
+            if (kind == 5 && method == 13) return "Surface LockRect";
             if (method == 0) return "QueryInterface(" + kind + ")";
             if (method == 1) return "AddRef(" + kind + ")";
             if (method == 2) return "Release(" + kind + ")";

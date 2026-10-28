@@ -168,6 +168,8 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeHdReflections(boolean enabled);
     private static native void nativeCpuPlacement(int placement);
     private static native void nativeReadHandover(boolean overlapped);
+    /** Launcher "GPU cleanup": DXVK resets finished command lists on a thread of its own; before Direct3D starts. */
+    private static native void nativeCleanupThread(boolean ownThread);
     /** Instrumented (PGO) builds write their profile; false in ordinary builds. */
     private static native boolean nativeWriteProfile();
     private static native void nativeOnlineServer(String host);
@@ -252,6 +254,7 @@ public final class GameActivity extends NativeActivity {
                 : (GameOptions.get(this, GameOptions.CPU).equals("system") ? 0 : 1));
         nativeReadHandover(launch.getStringExtra("reads") != null ? !"atomic".equals(launch.getStringExtra("reads"))
                 : !GameOptions.get(this, GameOptions.READS).equals("atomic"));
+        nativeCleanupThread(launch.getBooleanExtra("cleanupThread", GameOptions.get(this, GameOptions.CLEANUP).equals("thread")));
         nativeGraphicsQuality(launch.getIntExtra("anisotropy", GameOptions.intValue(this, GameOptions.ANISOTROPY)),
                 launch.getIntExtra("antialias", GameOptions.intValue(this, GameOptions.ANTIALIAS)), getFilesDir().getAbsolutePath());
         nativeWidescreen(launch.getBooleanExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on")));

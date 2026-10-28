@@ -23,9 +23,12 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -117,9 +120,12 @@ final class Diagnostics {
             info.append("\nGame folder (Internal storage/nfsu1):\n").append(gameFolderListing(LauncherActivity.gameRoot()));
             List<File> sessions = GameTelemetry.sessionFiles(context), logs = GameTelemetry.logFiles(context);
             info.append("\nSessions recorded: ").append(sessions.size()).append(", logs: ").append(logs.size()).append('\n');
+            byte[] log = logcat(0);
+            info.append('\n').append(crashLogSection(context, new String(log, StandardCharsets.UTF_8), sessions));
+            List<SessionSummary.Exit> exits = exitRecords(context);
             add(zip, "report.txt", info.toString().getBytes(StandardCharsets.UTF_8));
-            add(zip, "session-summary.txt", sessionSummaries(sessions).getBytes(StandardCharsets.UTF_8));
-            add(zip, "logcat-now.txt", logcat(0));
+            add(zip, "session-summary.txt", sessionSummaries(sessions, exits).getBytes(StandardCharsets.UTF_8));
+            add(zip, "logcat-now.txt", log);
             ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
             if (Build.VERSION.SDK_INT >= 30 && manager != null) addExitInfo(zip, manager, context);
             for (int i = 0; i < Math.min(LOGS_IN_REPORT, logs.size()); i++) addFile(zip, "logs/" + logs.get(i).getName(), logs.get(i), LOG_LIMIT);
@@ -186,15 +192,55 @@ final class Diagnostics {
         return text.toString();
     }
 
-    /** session-summary.txt: every recorded session, newest first, in readable lines. */
-    static String sessionSummaries(List<File> sessions) {
+    /**
+     * session-summary.txt: every recorded session, newest first, in readable lines. The exit records say what
+     * ended a session whose record was never closed (a swipe from recent apps is not a crash).
+     */
+    static String sessionSummaries(List<File> sessions, List<SessionSummary.Exit> exits) {
         StringBuilder text = new StringBuilder("NFS Underground Remastered — session summaries (newest first)\n\n");
         if (sessions.isEmpty()) text.append("No session recorded yet: start the game once with this build.\n");
+        long nextStart = 0;   // the start of the session after this one (sessions come newest first)
         for (File file : sessions) {
-            try { text.append(SessionSummary.parse(readText(file, LIMIT)).report).append('\n'); }
-            catch (Exception error) { text.append("Session ").append(file.getName()).append(": unreadable (").append(error).append(")\n\n"); }
+            try {
+                SessionSummary summary = SessionSummary.parse(readText(file, LIMIT), exits, nextStart);
+                text.append(summary.report).append('\n');
+                if (summary.start > 0) nextStart = summary.start;
+            } catch (Exception error) { text.append("Session ").append(file.getName()).append(": unreadable (").append(error).append(")\n\n"); }
         }
         return text.toString();
+    }
+
+    /** How this app's processes ended recently (Android 11+; empty before). */
+    static List<SessionSummary.Exit> exitRecords(Context context) {
+        if (Build.VERSION.SDK_INT < 30) return Collections.emptyList();
+        List<SessionSummary.Exit> exits = new ArrayList<>();
+        try {
+            ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            if (manager == null) return exits;
+            for (ApplicationExitInfo exit : manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 16))
+                exits.add(new SessionSummary.Exit(exit.getTimestamp(), exit.getProcessName(), exit.getReason(), exit.getStatus(), exit.getDescription()));
+        } catch (RuntimeException ignored) { }
+        return exits;
+    }
+
+    /**
+     * The crash log section of report.txt: each crash Android still keeps, labelled with its build (CrashLog). The
+     * native build ID of this build comes from its own session records (written by the game process).
+     */
+    private static String crashLogSection(Context context, String log, List<File> sessions) {
+        long installedAt = 0;
+        try { installedAt = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).lastUpdateTime; }
+        catch (Exception ignored) { }
+        String buildId = "";
+        for (File file : sessions) {
+            try {
+                org.json.JSONObject record = new org.json.JSONObject(readText(file, LIMIT));
+                if (record.optInt("versionCode") != BuildConfig.VERSION_CODE) continue;
+                org.json.JSONObject nat = record.optJSONObject("native");
+                if (nat != null && !nat.optString("buildId").isEmpty()) { buildId = nat.optString("buildId"); break; }
+            } catch (Exception ignored) { }
+        }
+        return CrashLog.summary(CrashLog.parse(log, Calendar.getInstance()), installedAt, buildId, TimeZone.getDefault());
     }
 
     static String readText(File file, long limit) throws IOException {

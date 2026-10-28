@@ -44,7 +44,7 @@ final class GameOptions {
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
             ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu",
-            GAMEGFX = "gamegfx", READS = "reads", REFLECTIONS = "reflections";
+            GAMEGFX = "gamegfx", READS = "reads", REFLECTIONS = "reflections", CLEANUP = "cleanup";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -90,6 +90,12 @@ final class GameOptions {
             new Option(READS, R.string.opt_reads,
                     new String[] {"overlapped", "atomic"},
                     new int[] {R.string.reads_overlapped, R.string.reads_atomic}),
+            // DXVK resets each command list the GPU has finished. Done by its queue thread, that work held back
+            // the signal the next frame waits for: 85 % of build 10's 20-224 ms freezes. "thread" moves it to a
+            // thread of its own (ci/dxvk_extra.py); "queue" keeps DXVK's order, for comparison.
+            new Option(CLEANUP, R.string.opt_cleanup,
+                    new String[] {"thread", "queue"},
+                    new int[] {R.string.cleanup_thread, R.string.cleanup_queue}),
             new Option(LATENCY, R.string.opt_latency,
                     new String[] {"2", "1"},
                     new int[] {R.string.latency_performance, R.string.latency_low}),
@@ -169,6 +175,7 @@ final class GameOptions {
             case READS: return "overlapped";
             case REFLECTIONS: return "sharp";
             case CPU: return "fast";
+            case CLEANUP: return "thread";
             case GFXLOG: return "info";
             default: throw new IllegalArgumentException(key);
         }

@@ -297,4 +297,7 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
     <string name="opt_cpu">CPU placement</string>
     <string name="cpu_fast">Fastest core + performance hints</string>
     <string name="cpu_system">System scheduler</string>
+    <string name="opt_cleanup">GPU cleanup</string>
+    <string name="cleanup_thread">Own thread · frames are not held up by finished work (build 11)</string>
+    <string name="cleanup_queue">In DXVK\'s queue, as builds 1–10 did</string>
 </resources>
