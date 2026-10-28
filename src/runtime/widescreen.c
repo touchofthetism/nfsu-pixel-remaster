@@ -37,6 +37,7 @@
 #endif
 
 static float s_display_aspect;          /* 0: off, the game keeps 4:3 */
+static unsigned s_render_w, s_render_h;  /* host internal resolution, 0: the game's menu mode */
 static float s_aspect = 4.0f / 3.0f;    /* the render target's, once widened */
 /* FOV constants of the three reads after 0x40DDD2, chosen per view id. */
 static double s_fov_scale[3] = {1.0, 0.5, 1.0};
@@ -122,6 +123,43 @@ void nfs_widescreen_set_display_aspect(float aspect) {
 void nfs_widescreen_set_resolution(unsigned width, unsigned height) {
     if (width && height) s_aspect = (float)width / (float)height;
 }
+void nfs_widescreen_set_render_size(unsigned width, unsigned height) {
+    s_render_w = width;
+    s_render_h = height;
+}
+
+/* End of the resolution setter (0x4086B0, width pushed, height in esi): it
+ * filled D3DPRESENT_PARAMETERS (0x71A96C/0x71A970) and the screen size globals
+ * (0x701034/0x701038) that the render targets, viewports and view setup read.
+ * Every mode change (front end 800x600, the racing mode, a menu change) passes
+ * here, so the device keeps the host's size throughout, as ThirteenAG's
+ * Resolution.ixx makes every menu mode the desktop's. */
+static void resolution_setter_end(void) {
+    uint32_t game_w = MEM32(0x0071A96Cu), game_h = MEM32(0x0071A970u), w, h;
+    static uint32_t logged_w, logged_h, logged_game_w, logged_game_h;
+    nfs_ws_back_buffer(game_w, game_h, s_render_w, s_render_h, s_display_aspect, &w, &h);
+    if (!w || !h) return;
+    if (w != game_w || h != game_h) {
+        MEM32(0x0071A96Cu) = w; MEM32(0x00701034u) = w;
+        MEM32(0x0071A970u) = h; MEM32(0x00701038u) = h;
+    }
+    s_aspect = (float)w / (float)h;
+    if (w != logged_w || h != logged_h || game_w != logged_game_w || game_h != logged_game_h) {
+        logged_w = w; logged_h = h; logged_game_w = game_w; logged_game_h = game_h;
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_INFO, "NFSU1", "Game render size %ux%u (%s; the game's own mode %ux%u)", w, h,
+                            s_render_w ? "the launcher's internal resolution" : "the game's mode, widened", game_w, game_h);
+#endif
+    }
+    /* FixHUD: fHudScaleX = 2/W * (H/480) (fmul at 0x40BF07), fHudPosX. */
+    if (s_display_aspect > 0.0f) {
+        float fw = (float)w, fh = (float)h;
+        float scale = (1.0f / fw * (fh / 480.0f)) * 2.0f;
+        s_hud_pos_x = 640.0f / (640.0f * scale);
+        wrf(0x006CC914u, scale);
+        wrf(0x006CC910u, s_hud_pos_x);   /* fcomp at 0x41E58F; the minimap is put back below */
+    }
+}
 int nfs_widescreen_hud_entries(void) { return 0; }
 void nfs_widescreen_set_minimap_offset(float dy) { (void)dy; }
 /* Frame pacing (nfs_widescreen_set_frame_rate / apply) and its hooks live in
@@ -146,6 +184,8 @@ void recomp_hook(uint32_t va) {
         MEM32(g_esp + 0xC) = 480;
         return;
     }
+    /* The video mode follows the host's internal resolution with or without the fix. */
+    if (va == 0x0040875Au) { resolution_setter_end(); return; }
     if (s_display_aspect <= 0.0f) return;
     for (unsigned i = 0; i < sizeof k_hit / sizeof k_hit[0]; i++) {
         if (k_hit[i].va != va) continue;
@@ -154,27 +194,6 @@ void recomp_hook(uint32_t va) {
         return;
     }
     switch (va) {
-    /* End of the resolution setter (0x4086B0, width pushed, height in esi):
-     * it filled D3DPRESENT_PARAMETERS (0x71A96C) and the screen size globals
-     * (0x701034/0x701038). Keep the chosen height, widen to the display. */
-    case 0x0040875Au: {
-        uint32_t height = MEM32(0x0071A970u);
-        uint32_t width = (uint32_t)lroundf((float)height * s_display_aspect) & ~1u;
-        if (height && width > MEM32(0x0071A96Cu)) {
-            MEM32(0x0071A96Cu) = width;
-            MEM32(0x00701034u) = width;
-            s_aspect = (float)width / (float)height;
-        }
-        /* FixHUD: fHudScaleX = 2/W * (H/480) (fmul at 0x40BF07), fHudPosX. */
-        if (height) {
-            float w = (float)MEM32(0x0071A96Cu), h = (float)height;
-            float scale = (1.0f / w * (h / 480.0f)) * 2.0f;
-            s_hud_pos_x = 640.0f / (640.0f * scale);
-            wrf(0x006CC914u, scale);
-            wrf(0x006CC910u, s_hud_pos_x);   /* fcomp at 0x41E58F; the minimap is put back below */
-        }
-        break;
-    }
     /* HUD anchors: `mov [esp+N], 320.0` -> fHudPosX. */
     case 0x004F20A7u: wrf(g_esp + 0x80, s_hud_pos_x); break;
     case 0x004F2333u: wrf(g_esp + 0x90, s_hud_pos_x); break;

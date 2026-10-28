@@ -37,7 +37,7 @@
     <string name="res_native">Nativa · máxima calidad</string>
     <string name="res_75">75% · equilibrada</string>
     <string name="res_50">50% · máximo rendimiento</string>
-    <string name="res_720">1280×720 · 16:9</string>
+    <string name="res_720">720 líneas · lo más ligero</string>
     <string name="opt_fps">Límite de FPS</string>
     <string name="fps_30">30 FPS · ahorra batería</string>
     <string name="fps_60">60 FPS</string>

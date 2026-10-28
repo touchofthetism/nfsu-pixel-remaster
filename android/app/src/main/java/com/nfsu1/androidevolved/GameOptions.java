@@ -233,8 +233,12 @@ final class GameOptions {
         return renderSize(get(context, RESOLUTION), width, height);
     }
 
+    /**
+     * The size the game renders at (its back buffer; the native runtime hands it to the game's video mode, which
+     * on its own stops at 1280x1024): a share of the panel, or 720 lines at the panel's shape.
+     */
     static int[] renderSize(String value, int width, int height) {
-        if (value.equals("720")) return new int[] {1280, 720};
+        if (value.equals("720")) return new int[] {Math.round(720f * width / height / 2f) * 2, 720};
         float scale = Integer.parseInt(value) / 100f;
         return new int[] {Math.round(width * scale / 2f) * 2, Math.round(height * scale / 2f) * 2};
     }

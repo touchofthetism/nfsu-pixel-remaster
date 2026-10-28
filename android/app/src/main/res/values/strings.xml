@@ -39,7 +39,7 @@
     <string name="res_native">Native · maximum quality</string>
     <string name="res_75">75% · balanced</string>
     <string name="res_50">50% · maximum performance</string>
-    <string name="res_720">1280×720 · 16:9</string>
+    <string name="res_720">720 lines · lightest</string>
     <string name="opt_fps">FPS limit</string>
     <string name="fps_30">30 FPS · saves battery</string>
     <string name="fps_60">60 FPS</string>

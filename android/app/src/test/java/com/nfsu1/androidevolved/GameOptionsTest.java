@@ -42,7 +42,9 @@ public class GameOptionsTest {
         assertArrayEquals(new int[] {2992, 1344}, GameOptions.renderSize("100", 2992, 1344));
         assertArrayEquals(new int[] {2244, 1008}, GameOptions.renderSize("75", 2992, 1344));
         assertArrayEquals(new int[] {1496, 672}, GameOptions.renderSize("50", 2992, 1344));
-        assertArrayEquals(new int[] {1280, 720}, GameOptions.renderSize("720", 2992, 1344));
+        // 720 lines at the panel's 20:9, as the native side widens it (1344 * 2992/1344 -> 720 * 2.226 = 1602.9 -> 1602).
+        assertArrayEquals(new int[] {1602, 720}, GameOptions.renderSize("720", 2992, 1344));
+        assertArrayEquals(new int[] {1280, 720}, GameOptions.renderSize("720", 1920, 1080));
         int[] odd = GameOptions.renderSize("75", 2001, 1001);
         assertEquals(0, odd[0] % 2);
         assertEquals(0, odd[1] % 2);

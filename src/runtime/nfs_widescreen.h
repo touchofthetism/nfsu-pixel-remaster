@@ -5,6 +5,30 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+#include <math.h>
+
+/* The game's back buffer at the end of its resolution setter (0x4086B0). The
+ * game only knows its five 4:3 menu modes (640x480 .. 1280x1024: at most 1024
+ * lines). A host render size (render_w x render_h, the launcher's internal
+ * resolution; 0 = none) replaces the mode: with the widescreen fix (display
+ * aspect > 0) at its height with the display's shape, else at its height with a
+ * 4:3 width that the swap chain stretches like the original. Without one the
+ * mode's height stays and only the width follows the display. Sizes are even. */
+static inline void nfs_ws_back_buffer(uint32_t game_w, uint32_t game_h, uint32_t render_w, uint32_t render_h,
+                                      float display_aspect, uint32_t *out_w, uint32_t *out_h) {
+    uint32_t w = game_w, h = game_h;
+    if (render_w >= 320u && render_h >= 240u) {
+        h = render_h & ~1u;
+        w = (uint32_t)lroundf((float)h * (display_aspect > 0.0f ? display_aspect : 4.0f / 3.0f)) & ~1u;
+    } else if (display_aspect > 0.0f && h) {
+        uint32_t wide = (uint32_t)lroundf((float)h * display_aspect) & ~1u;
+        if (wide > w) w = wide;
+    }
+    *out_w = w;
+    *out_h = h;
+}
+
 /* Kept for the shared host interface (no data file needed for NFSU1 yet). */
 void nfs_widescreen_init(const char* game_root);
 /* Display width/height (> 4:3 turns the fix on: render size widened, 3D FOV
@@ -12,6 +36,10 @@ void nfs_widescreen_init(const char* game_root);
 void nfs_widescreen_set_display_aspect(float aspect);
 /* The game's render size; call before its HUD draws and on every change. */
 void nfs_widescreen_set_resolution(unsigned width, unsigned height);
+/* The host's internal resolution (Android launcher), before the game sets its
+ * video mode: the game's back buffer follows it (nfs_ws_back_buffer). 0 keeps
+ * the game's own menu mode. Applies with and without the widescreen fix. */
+void nfs_widescreen_set_render_size(unsigned width, unsigned height);
 /* Touch hosts (Android): the mouse cursor is handed out in front-end units,
  * so its clamp spans the wide HUD space (see nfs_widescreen_hud_pos_x). */
 void nfs_frontend_cursor_units(int on);
