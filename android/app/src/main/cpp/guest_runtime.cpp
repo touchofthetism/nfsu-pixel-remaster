@@ -40,7 +40,10 @@
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <cerrno>
+#include <cstring>
 #include <deque>
+#include <dlfcn.h>
+#include <link.h>
 #ifdef __ANDROID__
 #include <aaudio/AAudio.h>
 #endif
@@ -78,6 +81,9 @@ extern "C" uint64_t dxvkAndroidGpuIdleMicros();
 // DXVK's submission queue now and its present totals (ci/dxvk_extra.py): waiting to submit, on the GPU, in
 // vkQueuePresentKHR, waiting on a GPU fence, command stream waiting for room; presents, ns, longest ns, slow.
 extern "C" void dxvkAndroidQueueState(uint64_t out[9]);
+// Command list processing (ci/dxvk_extra.py, build 11): resets, fence waits, vkQueueSubmit, lists and descriptor
+// pools created and destroyed, the cleanup thread's backlog, each step of a reset. Returns how many it has.
+extern "C" size_t dxvkAndroidQueueTimings(uint64_t* out, size_t count);
 #endif
 // Launcher "CPU placement" (host_perf.h): applied on the render thread at its first Present.
 std::atomic<int> cpuPlacement{int(host_perf::Placement::FastestCores)};
@@ -418,18 +424,50 @@ std::string threadState(int32_t tid){
     }
     return out;
 }
+// /proc/self/task/<tid>/schedstat: nanoseconds on a cpu, then nanoseconds runnable but waiting for one.
+bool readSchedstat(int32_t tid,uint64_t& run,uint64_t& wait){
+    char path[64];std::snprintf(path,sizeof path,"/proc/self/task/%d/schedstat",int(tid));
+    std::ifstream file(path);unsigned long long onCpu=0,waiting=0;if(!(file>>onCpu>>waiting))return false;
+    run=onCpu;wait=waiting;return true;
+}
+// The tracked threads' schedstat when a long call crossed the threshold (sampler thread only): the report
+// then says how long each of them ran, and waited for a cpu, until the call ended. A thread that ran the
+// whole time was the bottleneck; one that waited was starved of a core.
+struct SchedMark{std::string name;int32_t tid;uint64_t run,wait;};
+std::vector<SchedMark> schedMarks;
+uint64_t schedMarkNs=0;
 // Taken by the sampler once a D3D9 call has lasted 20 ms: DXVK's submission queue and the threads that
 // could be holding the call up.
 std::string longCallSnapshot(){
     std::string out;
 #ifdef __ANDROID__
     uint64_t queue[9]{};dxvkAndroidQueueState(queue);
-    char text[200];std::snprintf(text,sizeof text,"queue %llu to submit, %llu on the GPU%s%s%s",static_cast<unsigned long long>(queue[0]),
+    uint64_t timings[13]{};dxvkAndroidQueueTimings(timings,13);
+    char text[240];std::snprintf(text,sizeof text,"queue %llu to submit, %llu on the GPU%s%s%s",static_cast<unsigned long long>(queue[0]),
         static_cast<unsigned long long>(queue[1]),queue[2]?", in vkQueuePresentKHR":"",queue[3]?", waiting on a GPU fence":"",
         queue[4]?", command stream waiting for queue room":"");
     out=text;
+    if(timings[12]){std::snprintf(text,sizeof text,", %llu waiting for the cleanup thread",static_cast<unsigned long long>(timings[12]));out+=text;}
 #endif
-    for(const auto& thread:host_perf::trackedThreads())out+="; "+thread.first+" "+threadState(thread.second);
+    schedMarks.clear();schedMarkNs=steadyNs();
+    for(const auto& thread:host_perf::trackedThreads()){
+        out+="; "+thread.first+" "+threadState(thread.second);
+        uint64_t run=0,wait=0;if(readSchedstat(thread.second,run,wait))schedMarks.push_back({thread.first,thread.second,run,wait});
+    }
+    return out;
+}
+// "; over the next 64 ms, ms on a cpu (waiting for one): render 1, dxvk-cs 0, ..., dxvk-queue 61 (2)"
+std::string longCallRunTimes(){
+    if(schedMarks.empty())return "";
+    char text[96];std::snprintf(text,sizeof text,"; over the next %.0f ms, ms on a cpu (waiting for one):",(steadyNs()-schedMarkNs)/1e6);
+    std::string out=text;bool first=true;
+    for(const auto& mark:schedMarks){
+        uint64_t run=0,wait=0;if(!readSchedstat(mark.tid,run,wait))continue;
+        double ran=run>=mark.run?(run-mark.run)/1e6:0,waited=wait>=mark.wait?(wait-mark.wait)/1e6:0;
+        if(waited>=0.5)std::snprintf(text,sizeof text,"%s %s %.0f (%.0f)",first?"":",",mark.name.c_str(),ran,waited);
+        else std::snprintf(text,sizeof text,"%s %s %.0f",first?"":",",mark.name.c_str(),ran);
+        out+=text;first=false;
+    }
     return out;
 }
 void reportLongCall(const CallWatch::Call& call){
@@ -437,7 +475,7 @@ void reportLongCall(const CallWatch::Call& call){
     if(++logged>200)return;
     const char* name=d3d9MethodName(call.token);
     char method[16];if(!name){uint32_t index=((call.token-0x7e000000u)/16)&4095;std::snprintf(method,sizeof method,"%u/%u",index/256,index%256);name=method;}
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Long D3D9 call: %s %.0f ms from sub_%08X (%s)",name,call.ns/1e6,call.func,call.detail.c_str());
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Long D3D9 call: %s %.0f ms from sub_%08X (%s%s)",name,call.ns/1e6,call.func,call.detail.c_str(),longCallRunTimes().c_str());
 }
 // The profiler's sampler: every kProfileIntervalUs, who holds the guest machine and where (guest_profiler.h).
 // A plain read of g_cur_func from this thread: an aligned 32-bit word, and a stale value only shifts one sample.
@@ -446,6 +484,7 @@ void startGuestProfiler(){
     std::call_once(started,[]{std::thread([]{
         setpriority(PRIO_PROCESS,0,10);   // never compete with the game for a core
         callWatch.setSnapshot(longCallSnapshot);
+        uint64_t placementChecked=0;
         while(!stopRequested.load(std::memory_order_relaxed)){
             std::this_thread::sleep_for(std::chrono::microseconds(kProfileIntervalUs));
             if(guestPaused.load(std::memory_order_relaxed)){callWatch.reset();continue;}
@@ -456,6 +495,9 @@ void startGuestProfiler(){
             guestProfile.add(now,holder,func,place);
             CallWatch::Call done;
             if(callWatch.sample(now,func,&done))reportLongCall(done);
+            // Once a second while playing (not while paused: Android then holds the app to other cores on
+            // purpose), put back any thread placement that was replaced (host_perf.h).
+            if(now-placementChecked>=1000000000ull){placementChecked=now;host_perf::maintainPlacement();}
         }
     }).detach();});
 }
@@ -1041,6 +1083,60 @@ void setGuestResolution(unsigned width,unsigned height){
 }
 // Pipeline-compile counters from the prepared DXVK (ci/dxvk_extra.py): graphics, compute, total ns, max ns, >10 ms.
 extern "C" void dxvkAndroidPipelineStats(uint64_t out[5]);
+// This library's GNU build ID (the hex string crash reports print as "BuildId:"), so a report can tell this
+// build's crashes from the older ones Android keeps in its crash log.
+std::string nativeBuildId(){
+    static const std::string id=[]{
+        static const char anchor=0;
+        Dl_info info{};
+        if(!dladdr(&anchor,&info)||!info.dli_fbase)return std::string();
+        struct Search{const void* base;std::string id;} search{info.dli_fbase,{}};
+        dl_iterate_phdr([](dl_phdr_info* module,size_t,void* data)->int{
+            auto* found=static_cast<Search*>(data);
+            bool ours=false;
+            for(int i=0;i<module->dlpi_phnum;++i){const auto& header=module->dlpi_phdr[i];
+                if(header.p_type==PT_LOAD&&header.p_offset==0&&reinterpret_cast<const void*>(module->dlpi_addr+header.p_vaddr)==found->base)ours=true;}
+            if(!ours)return 0;
+            for(int i=0;i<module->dlpi_phnum;++i){const auto& header=module->dlpi_phdr[i];
+                if(header.p_type!=PT_NOTE)continue;
+                const auto* at=reinterpret_cast<const uint8_t*>(module->dlpi_addr+header.p_vaddr);const auto* end=at+header.p_memsz;
+                while(at+12<=end){
+                    uint32_t nameSize,descSize,type;std::memcpy(&nameSize,at,4);std::memcpy(&descSize,at+4,4);std::memcpy(&type,at+8,4);
+                    const uint8_t* name=at+12;const uint8_t* desc=name+((nameSize+3u)&~3u);
+                    if(desc+descSize>end)break;
+                    if(type==NT_GNU_BUILD_ID&&nameSize==4&&std::memcmp(name,"GNU",4)==0){
+                        static const char hex[]="0123456789abcdef";
+                        for(uint32_t k=0;k<descSize;++k){found->id+=hex[desc[k]>>4];found->id+=hex[desc[k]&15];}
+                        return 1;
+                    }
+                    at=desc+((descSize+3u)&~3u);
+                }
+            }
+            return 1;
+        },&search);
+        return search.id;
+    }();
+    return id;
+}
+#ifdef __ANDROID__
+// DXVK's command list processing for the session record (ci/dxvk_extra.py, build 11).
+std::string dxvkQueueJson(){
+    uint64_t t[23]{};
+    size_t count=dxvkAndroidQueueTimings(t,23);
+    if(count<23)return "{}";
+    char text[900];
+    std::snprintf(text,sizeof text,"{\"cleanupThread\":%s,\"submits\":[%llu,%.1f,%.2f],\"resets\":[%llu,%.1f,%.2f,%llu,%llu],"
+        "\"resetStepsMs\":[[%.1f,%.2f],[%.1f,%.2f],[%.1f,%.2f],[%.1f,%.2f]],\"fenceWaits\":[%llu,%.1f],"
+        "\"commandLists\":[%llu,%llu],\"descriptorPools\":[%llu,%llu]}",
+        d3d9CleanupThread()?"true":"false",
+        static_cast<unsigned long long>(t[7]),t[8]/1e6,t[9]/1e6,
+        static_cast<unsigned long long>(t[0]),t[1]/1e6,t[2]/1e6,static_cast<unsigned long long>(t[3]),static_cast<unsigned long long>(t[4]),
+        t[15]/1e6,t[19]/1e6,t[16]/1e6,t[20]/1e6,t[17]/1e6,t[21]/1e6,t[18]/1e6,t[22]/1e6,
+        static_cast<unsigned long long>(t[5]),t[6]/1e6,
+        static_cast<unsigned long long>(t[10]),static_cast<unsigned long long>(t[11]),static_cast<unsigned long long>(t[13]),static_cast<unsigned long long>(t[14]));
+    return text;
+}
+#endif
 std::string guestTelemetryJson(bool live){
     uint64_t pipelines[5]{};
 #ifdef __ANDROID__
@@ -1063,6 +1159,7 @@ std::string guestTelemetryJson(bool live){
         static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load(),
         backBuffer[0],backBuffer[1]);
     std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail+",\"host\":"+host_perf::statusJson();
+    if(!live)json+=",\"buildId\":\""+nativeBuildId()+"\"";
     if(!live){
         json+=",\"d3d9Calls\":"+d3d9CallCountsJson();
         json+=",\"d3d9Ns\":"+d3d9MethodTimeJson();
@@ -1072,6 +1169,7 @@ std::string guestTelemetryJson(bool live){
         {uint64_t queue[9]{};dxvkAndroidQueueState(queue);char text[96];
          std::snprintf(text,sizeof text,",\"vkPresent\":[%llu,%.1f,%.1f,%llu]",static_cast<unsigned long long>(queue[5]),queue[6]/1e6,queue[7]/1e6,static_cast<unsigned long long>(queue[8]));
          json+=text;}
+        json+=",\"dxvkQueue\":"+dxvkQueueJson();
 #endif
         json+=",\"profile\":"+guestProfile.json(kProfileIntervalUs);
     }

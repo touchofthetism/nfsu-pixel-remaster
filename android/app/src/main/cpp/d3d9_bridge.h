@@ -13,6 +13,9 @@ void setD3D9Compatibility(bool cpuTextures,unsigned backBuffers);
 void setD3D9GraphicsQuality(unsigned anisotropy,unsigned msaaSamples,const std::string& configDirectory);
 // Launcher performance overlay: DXVK_HUD configuration ("" = none). Call before the game creates Direct3D.
 void setD3D9Hud(const std::string& config);
+// Launcher "GPU cleanup": finished command lists reset on DXVK's cleanup thread (true) or its queue thread.
+void setD3D9CleanupThread(bool ownThread);
+bool d3d9CleanupThread();
 // Session call counts per D3D9 method as a JSON object {"kind/method": count}; see guestTelemetryJson.
 std::string d3d9CallCountsJson();
 // Time spent per D3D9 method (bridge and DXVK) as {"kind/method": nanoseconds}; d3dDispatch adds to it.

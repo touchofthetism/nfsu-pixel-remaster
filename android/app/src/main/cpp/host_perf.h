@@ -14,8 +14,10 @@
 //    worker threads and the frame cap as target; every frame's CPU work is reported so the kernel's
 //    governor raises clocks to meet it instead of settling at the cheapest "busy enough" point.
 //    (DXVK's threads carry names only since build 9: until then the session held the render thread alone.)
-//  - DXVK's command-stream, submit and queue threads are kept off the render thread's cores (with
+//  - DXVK's command-stream, submit, queue and cleanup threads are kept off the render thread's cores (with
 //    FastestCores), and the command stream gets the render thread's priority.
+//  - The placement is kept: Android can replace a thread's affinity (build 10 lost it nine minutes into a
+//    session), so the profiler's sampler calls maintainPlacement() once a second (placement_keeper.h).
 namespace host_perf {
     enum class Placement { System = 0, FastestCores = 1 };
 
@@ -33,6 +35,8 @@ namespace host_perf {
     void setTargetFps(unsigned targetFps);
     // After each Present: the CPU work of the frame (without the pacer's sleep).
     void reportFrame(std::chrono::nanoseconds work);
+    // Puts back any placed thread's affinity or nice value that was replaced (once a second, while playing).
+    void maintainPlacement();
     // Session end.
     void release();
     // One line for the telemetry JSON.

@@ -362,6 +362,8 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     const char* text=configDir?env->GetStringUTFChars(configDir,nullptr):nullptr;std::string directory=text?text:"";if(text)env->ReleaseStringUTFChars(configDir,text);
     setD3D9GraphicsQuality(anisotropy<0?0u:unsigned(anisotropy),msaaSamples<0?0u:unsigned(msaaSamples),directory);
 }
+// Launcher "GPU cleanup" (GameOptions.CLEANUP): before the game creates its Direct3D device.
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeCleanupThread(JNIEnv*,jclass,jboolean ownThread){setD3D9CleanupThread(ownThread==JNI_TRUE);}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeGraphicsHud(JNIEnv* env,jclass,jstring config){
     const char* text=config?env->GetStringUTFChars(config,nullptr):nullptr;std::string value=text?text:"";if(text)env->ReleaseStringUTFChars(config,text);
     setD3D9Hud(value);

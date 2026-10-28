@@ -144,6 +144,9 @@ std::string dxvkConfigPath;
 // Launcher "Performance overlay: full": DXVK_HUD (fps, frame-time graph, GPU load...), read by DXVK when
 // the swap chain is created. Empty = no HUD.
 std::string dxvkHud;
+// Launcher "GPU cleanup" (build 11): DXVK resets finished command lists on its own thread (dxvk-recycle) unless
+// this is off; DXVK reads DXVK_NFSU_RECYCLE when the device is created (ci/dxvk_extra.py).
+bool dxvkCleanupThread=true;
 // What applyAntialiasing settled on for the current device, so a depth surface the game creates for
 // the back buffer gets the same sample count (D3D9 requires render target and depth to match).
 std::atomic<unsigned> activeMultisample{0};
@@ -250,6 +253,11 @@ void setD3D9GraphicsQuality(unsigned anisotropy,unsigned msaaSamples,const std::
     {std::lock_guard<std::mutex> lock(qualityMutex);dxvkConfigPath=path;}
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Graphics quality for this game session: anisotropy %u (%s, read by DXVK at Direct3DCreate9), MSAA %u requested (applied at CreateDevice/Reset)",graphics_quality::clampAnisotropy(anisotropy),path.empty()?"not forced":path.c_str(),msaaSamples);
 }
+void setD3D9CleanupThread(bool ownThread){
+    {std::lock_guard<std::mutex> lock(qualityMutex);dxvkCleanupThread=ownThread;}
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","DXVK command list cleanup: %s",ownThread?"own thread (dxvk-recycle)":"on the queue thread (DXVK's order)");
+}
+bool d3d9CleanupThread(){std::lock_guard<std::mutex> lock(qualityMutex);return dxvkCleanupThread;}
 void setD3D9Hud(const std::string& config){
     {std::lock_guard<std::mutex> lock(qualityMutex);dxvkHud=config;}
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","DXVK HUD for this game session: %s",config.empty()?"off":config.c_str());
@@ -292,6 +300,7 @@ uint32_t createGuestD3D9(uint32_t sdk){
         std::lock_guard<std::mutex> lock(qualityMutex);
         if(dxvkConfigPath.empty())unsetenv("DXVK_CONFIG_FILE");else setenv("DXVK_CONFIG_FILE",dxvkConfigPath.c_str(),1);
         if(dxvkHud.empty())unsetenv("DXVK_HUD");else setenv("DXVK_HUD",dxvkHud.c_str(),1);
+        setenv("DXVK_NFSU_RECYCLE",dxvkCleanupThread?"1":"0",1);
     }
     auto native=Direct3DCreate9(sdk);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","DXVK native Direct3DCreate9 sdk=%u",sdk);
