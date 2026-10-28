@@ -188,17 +188,44 @@ def check_layout(path: str, data: bytes, sections: Dict[int, Entry]) -> None:
         raise ValueError(f"{path}: {len(data) - cursor} bytes after the last section")
 
 
+def _alignment(offset: int) -> int:
+    return next(a for a in (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1) if offset % a == 0)
+
+
+def check_section(label: str, stock: bytes, section: bytes) -> None:
+    """A rebuilt section against its stock bytes: the same chunks in the same order (padding aside), every chunk
+    but the texture packs byte-identical, and the chunk after each texture pack still on (at least) the
+    alignment it had within the section (sections sit on 2048-byte boundaries)."""
+    stock_chunks = [c for c in top_chunks(stock) if c[1] != tpk.PADDING]
+    new_chunks = [c for c in top_chunks(section) if c[1] != tpk.PADDING]
+    if [c[1] for c in stock_chunks] != [c[1] for c in new_chunks]:
+        raise SystemExit(f"{label}: the rebuilt section's chunks differ from the original's")
+    after_pack = False
+    for (stock_at, chunk_id, size), (at, _, new_size) in zip(stock_chunks, new_chunks):
+        if chunk_id != tpk.TPK:
+            if stock[stock_at:stock_at + 8 + size] != section[at:at + 8 + new_size]:
+                raise SystemExit(f"{label}: chunk {chunk_id:08x} changed in the rebuild")
+            if after_pack and _alignment(at) < _alignment(stock_at):
+                raise SystemExit(f"{label}: chunk {chunk_id:08x} after a texture pack lost its alignment "
+                                 f"({_alignment(stock_at)} -> {_alignment(at)})")
+        after_pack = chunk_id == tpk.TPK
+
+
 def rebuild_stream(path: str, data: bytes, sections: Dict[int, Entry],
                    rebuild: Callable[[bytes, Entry], bytes]) -> Tuple[bytes, Dict[int, Tuple[int, int, int, int]]]:
-    """The stream with each section replaced by rebuild(section bytes, entry), laid out as the game's are.
-    Returns the file and {old offset: (new offset, size, resident size, byte sum)}."""
+    """The stream with each section replaced by rebuild(section bytes, entry), laid out as the game's are;
+    each rebuilt section passes check_section. Returns the file and {old offset: (new offset, size, resident
+    size, byte sum)}."""
     check_layout(path, data, sections)
     out = bytearray()
     moved = {}
     offsets = sorted(sections)
     for number, offset in enumerate(offsets):
         entry = sections[offset]
-        section = rebuild(data[offset:offset + entry.size], entry)
+        stock = data[offset:offset + entry.size]
+        section = rebuild(stock, entry)
+        if section != stock:
+            check_section(f"{path} {entry.name}", stock, section)
         start = len(out)
         out += section
         moved[offset] = (start, len(section), len(section) - texture_payload(section), sum(section) & 0xFFFFFFFF)

@@ -509,7 +509,8 @@ def build_streams(game: pathlib.Path, relatives, policy_name: str, models_dir: s
 
 def verify_rebuilt(relative: str, source: bytes, out: bytes) -> int:
     """Every JDLZ blob of a rebuilt file must decode under Speed.exe's own rules (tpk.jdlz_game_decode),
-    and the file must parse back into texture packs with the same textures by name. Returns the blob count.
+    and the file must parse back into texture packs with the same textures, every record's rendering fields as
+    they were. Returns the blob count.
 
     HD packs v1-v5 shipped blobs the game's decoder ran off the end of (one terminator token short), which
     overwrote the heap on the phone; this is the check that would have caught them."""
@@ -517,10 +518,16 @@ def verify_rebuilt(relative: str, source: bytes, out: bytes) -> int:
         blobs = tpk.verify_jdlz_blobs(out)
     except tpk.JdlzError as e:
         raise SystemExit(f"{relative}: {e}")
-    before = [t.name for offset, chunk in tpk.find_texture_packs(source) for t in tpk.TexturePack.parse(chunk, source, offset).textures]
-    after = [t.name for offset, chunk in tpk.find_texture_packs(out) for t in tpk.TexturePack.parse(chunk, out, offset).textures]
-    if sorted(before) != sorted(after):
+    def records(data: bytes):
+        # Everything in a texture record but its data placement, size, dimensions, format and mip count
+        # (+0x30..+0x4E): the name and hashes, TilableUV, alpha usage and blending, scrolling, the flags.
+        return sorted(bytes(t.record[:0x30]) + bytes(t.record[0x4F:]) for offset, chunk in tpk.find_texture_packs(data)
+                      for t in tpk.TexturePack.parse(chunk, data, offset).textures)
+    before, after = records(source), records(out)
+    if len(before) != len(after) or sorted(r[12:36] for r in before) != sorted(r[12:36] for r in after):
         raise SystemExit(f"{relative}: the rebuilt file lists different textures ({len(before)} -> {len(after)})")
+    if before != after:
+        raise SystemExit(f"{relative}: a texture record's rendering fields changed in the rebuild")
     return blobs
 
 

@@ -47,6 +47,16 @@ class HdpackTests(unittest.TestCase):
         del pack.textures[1]
         with self.assertRaises(SystemExit):
             self.hdpack.verify_rebuilt("Cars/X/TEXTURES.BIN", data, pack.serialize(0))
+        # So is one whose records lost a rendering field (here TilableUV), while a new size and format pass.
+        pack = synthetic_pack()
+        pack.compressed_source = True
+        pack.textures[0].record[0x4F] ^= 1
+        with self.assertRaises(SystemExit):
+            self.hdpack.verify_rebuilt("Cars/X/TEXTURES.BIN", data, pack.serialize(0))
+        pack.textures[0].record[0x4F] ^= 1
+        struct.pack_into("<HH", pack.textures[0].record, 0x44, 32, 32)
+        pack.textures[0].record[0x4A] = tpk.COMP_DXT3
+        self.assertEqual(2, self.hdpack.verify_rebuilt("Cars/X/TEXTURES.BIN", data, pack.serialize(0)))
 
     def test_repack_rewrites_every_file_and_bumps_the_version(self):
         source = streaming_file(0)
