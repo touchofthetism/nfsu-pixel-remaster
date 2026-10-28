@@ -1,5 +1,6 @@
 # Runs on every push, in minutes: compiles the launcher (Java) and its unit tests, the host C++ with the
-# NDK in syntax-only mode, and the host unit tests. No game data is involved.
+# NDK in syntax-only mode, the host unit tests, and DXVK's patched submission queue against a simulated
+# GPU under ThreadSanitizer and AddressSanitizer. No game data is involved.
 # The APK itself is built by the private companion repository (it holds the game inputs and publishes
 # the signed builds); that workflow checks this repository out at the commit named in its BUILD file.
 name: check
@@ -53,6 +54,8 @@ jobs:
         run: bash ci/syntax_check.sh
       - name: Host unit tests
         run: bash ci/host_tests.sh
+      - name: DXVK submission queue (ThreadSanitizer, AddressSanitizer)
+        run: bash ci/dxvk_queue_test.sh
       - name: Texture toolkit tests (tools/nfstex)
         run: |
           python3 -m pip install --quiet --user numpy pillow

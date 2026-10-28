@@ -17,6 +17,16 @@ Telemetry only; rendering is untouched:
     lists wait to be submitted and how many are on the GPU, whether the submit thread is inside
     vkQueuePresentKHR, the queue thread waiting on a GPU fence, the command stream blocked on a full queue;
     and every present timed (count, total, longest, over 16 ms).
+  * Finished command lists are reset and recycled on their own thread (dxvk-recycle). The queue thread
+    used to reset every list before it could notify the next one's signals, and the game's Present waits
+    on one of those (the frame-latency signal): build 10 caught 96 Present stalls of 20-127 ms with the
+    queue thread running and 11-19 finished lists queued behind it. The command list recycler holds 32
+    instead of 16 so a backlog does not turn into creating and destroying lists. DXVK_NFSU_RECYCLE=0
+    keeps DXVK's own order. Resets (and each of their steps), fence waits and vkQueueSubmit are timed;
+    command lists and descriptor pools created and destroyed are counted.
+    Nothing in this DXVK waits for a reset through the queue: D3D9's WaitForResource spins on the
+    resource's use count (DxvkResource::waitIdle) and the queue's only condition-variable waiter is
+    submit(), which waits for room in the submit and finish queues, not for resets.
 
 Usage: dxvk_extra.py <prepared dxvk-source>. Each edit must apply exactly once; otherwise the pinned
 recipe changed and this script needs a look (the build fails loudly instead of silently losing data).
@@ -39,6 +49,47 @@ namespace dxvk::android_stats {
   // waiting for room in the queue; presentImage timing.
   extern std::atomic<uint32_t> submitQueued, finishQueued, inPresent, gpuFenceWait, csQueueWait;
   extern std::atomic<uint64_t> presentCalls, presentNanos, presentMaxNanos, presentSlow;
+  // Command list processing and submission: lists waiting for the recycle thread; resets (count, ns, longest,
+  // over 4 ms, done on the queue thread because the recycle queue was full or disabled); fence waits;
+  // vkQueueSubmit; command lists created and destroyed.
+  extern std::atomic<uint32_t> recycleQueued;
+  extern std::atomic<uint64_t> resetCalls, resetNanos, resetMaxNanos, resetSlow, resetInline, fenceWaits, fenceNanos,
+                               submitCalls, submitNanos, submitMaxNanos, listsCreated, listsDestroyed,
+                               descriptorPoolsCreated, descriptorPoolsDestroyed;
+  // DxvkCommandList::reset() step by step: command pools, resources (and signals), descriptor pools,
+  // buffer slices with query and event handles.
+  extern std::atomic<uint64_t> resetStepNanos[4], resetStepMaxNanos[4];
+  inline void recordMax(std::atomic<uint64_t>& max, uint64_t value) {
+    uint64_t seen = max.load(std::memory_order_relaxed);
+    while (value > seen && !max.compare_exchange_weak(seen, value, std::memory_order_relaxed)) { }
+  }
+  inline uint64_t toNanos(std::chrono::nanoseconds spent) { return uint64_t(spent.count() < 0 ? 0 : spent.count()); }
+  inline void recordReset(std::chrono::nanoseconds spent, bool onQueueThread) {
+    uint64_t nanos = toNanos(spent);
+    resetCalls.fetch_add(1, std::memory_order_relaxed);
+    resetNanos.fetch_add(nanos, std::memory_order_relaxed);
+    if (nanos > 4000000) resetSlow.fetch_add(1, std::memory_order_relaxed);
+    if (onQueueThread) resetInline.fetch_add(1, std::memory_order_relaxed);
+    recordMax(resetMaxNanos, nanos);
+  }
+  template<typename Clock>
+  inline void recordResetSteps(const typename Clock::time_point (&at)[5]) {
+    for (int step = 0; step < 4; step++) {
+      uint64_t nanos = toNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(at[step + 1] - at[step]));
+      resetStepNanos[step].fetch_add(nanos, std::memory_order_relaxed);
+      recordMax(resetStepMaxNanos[step], nanos);
+    }
+  }
+  inline void recordFenceWait(std::chrono::nanoseconds spent) {
+    fenceWaits.fetch_add(1, std::memory_order_relaxed);
+    fenceNanos.fetch_add(toNanos(spent), std::memory_order_relaxed);
+  }
+  inline void recordSubmit(std::chrono::nanoseconds spent) {
+    uint64_t nanos = toNanos(spent);
+    submitCalls.fetch_add(1, std::memory_order_relaxed);
+    submitNanos.fetch_add(nanos, std::memory_order_relaxed);
+    recordMax(submitMaxNanos, nanos);
+  }
   inline void recordPresent(std::chrono::nanoseconds spent) {
     uint64_t nanos = uint64_t(spent.count() < 0 ? 0 : spent.count());
     presentCalls.fetch_add(1, std::memory_order_relaxed);
@@ -60,11 +111,46 @@ namespace dxvk::android_stats {
 
 STATS_SOURCE = '''#include "dxvk_android_stats.h"
 
+#include <cstddef>
+
 namespace dxvk::android_stats {
   std::atomic<uint64_t> graphicsCompiles{0}, computeCompiles{0}, compileNanos{0}, compileMaxNanos{0}, slowCompiles{0};
   std::atomic<uint64_t> gpuIdleMicros{0};
   std::atomic<uint32_t> submitQueued{0}, finishQueued{0}, inPresent{0}, gpuFenceWait{0}, csQueueWait{0};
   std::atomic<uint64_t> presentCalls{0}, presentNanos{0}, presentMaxNanos{0}, presentSlow{0};
+  std::atomic<uint32_t> recycleQueued{0};
+  std::atomic<uint64_t> resetCalls{0}, resetNanos{0}, resetMaxNanos{0}, resetSlow{0}, resetInline{0}, fenceWaits{0}, fenceNanos{0},
+                        submitCalls{0}, submitNanos{0}, submitMaxNanos{0}, listsCreated{0}, listsDestroyed{0},
+                        descriptorPoolsCreated{0}, descriptorPoolsDestroyed{0};
+  std::atomic<uint64_t> resetStepNanos[4]{}, resetStepMaxNanos[4]{};
+}
+
+// Command list processing totals: [0] resets, [1] their ns, [2] longest, [3] over 4 ms, [4] done on the queue
+// thread (the recycle thread off or 32 lists behind), [5] fence waits, [6] their ns, [7] vkQueueSubmit calls,
+// [8] their ns, [9] longest, [10] command lists created, [11] destroyed, [12] lists waiting for the recycle
+// thread now, [13] descriptor pools created, [14] destroyed, [15]-[18] ns spent in each step of a reset
+// (command pools, resources, descriptor pools, buffers with queries and events), [19]-[22] the longest of
+// each. Writes at most `count` values and returns how many there are.
+extern "C" size_t dxvkAndroidQueueTimings(uint64_t* out, size_t count) {
+  using namespace dxvk::android_stats;
+  const uint64_t values[] = {
+    resetCalls.load(std::memory_order_relaxed), resetNanos.load(std::memory_order_relaxed),
+    resetMaxNanos.load(std::memory_order_relaxed), resetSlow.load(std::memory_order_relaxed),
+    resetInline.load(std::memory_order_relaxed), fenceWaits.load(std::memory_order_relaxed),
+    fenceNanos.load(std::memory_order_relaxed), submitCalls.load(std::memory_order_relaxed),
+    submitNanos.load(std::memory_order_relaxed), submitMaxNanos.load(std::memory_order_relaxed),
+    listsCreated.load(std::memory_order_relaxed), listsDestroyed.load(std::memory_order_relaxed),
+    recycleQueued.load(std::memory_order_relaxed),
+    descriptorPoolsCreated.load(std::memory_order_relaxed), descriptorPoolsDestroyed.load(std::memory_order_relaxed),
+    resetStepNanos[0].load(std::memory_order_relaxed), resetStepNanos[1].load(std::memory_order_relaxed),
+    resetStepNanos[2].load(std::memory_order_relaxed), resetStepNanos[3].load(std::memory_order_relaxed),
+    resetStepMaxNanos[0].load(std::memory_order_relaxed), resetStepMaxNanos[1].load(std::memory_order_relaxed),
+    resetStepMaxNanos[2].load(std::memory_order_relaxed), resetStepMaxNanos[3].load(std::memory_order_relaxed),
+  };
+  const size_t total = sizeof(values) / sizeof(values[0]);
+  for (size_t i = 0; i < total && i < count; i++)
+    out[i] = values[i];
+  return total;
 }
 
 // The submission queue now (for a snapshot during a long call) and the present totals:
@@ -224,7 +310,9 @@ def main() -> None:
     replace(root, queue,
             '        status = entry.submit.cmdList->synchronize();\n',
             f'      {{ android_stats::gpuFenceWait.store(1, {relaxed});\n'
+            '        auto fenceStart = dxvk::high_resolution_clock::now();\n'
             '        status = entry.submit.cmdList->synchronize();\n'
+            '        android_stats::recordFenceWait(std::chrono::duration_cast<std::chrono::nanoseconds>(dxvk::high_resolution_clock::now() - fenceStart));\n'
             f'        android_stats::gpuFenceWait.store(0, {relaxed}); }}\n')
     replace(root, queue,
             '      m_finishQueue.pop();\n'
@@ -232,7 +320,217 @@ def main() -> None:
             '      m_finishQueue.pop();\n'
             f'      android_stats::finishQueued.store(uint32_t(m_finishQueue.size()), {relaxed});\n'
             '      m_finishCond.notify_all();\n')
-    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle thread-names queue-state\n", encoding="ascii")
+    # 6. Command lists reset and recycled on their own thread; a larger recycler; submissions timed.
+    header = "src/dxvk/dxvk_queue.h"
+    replace(root, header,
+            '    dxvk::thread                m_submitThread;\n',
+            '    // nfsu-pixel-remaster: finished command lists are reset and recycled on their own thread\n'
+            '    // (recycleCmdLists), so the queue thread notifies each list\'s signals - among them the frame-latency\n'
+            '    // signal the game\'s Present waits on - as soon as the GPU is done with it, instead of after the\n'
+            '    // resets of every list before it. DXVK_NFSU_RECYCLE=0 keeps DXVK\'s own order.\n'
+            '    static bool nfsuRecycleThread();\n'
+            '    bool                              m_recycleAsync = nfsuRecycleThread();\n'
+            '    bool                              m_recycleStopped = false;\n'
+            '    dxvk::mutex                       m_recycleMutex;\n'
+            '    dxvk::condition_variable          m_recycleCond;\n'
+            '    std::queue<Rc<DxvkCommandList>>   m_recycleQueue;\n'
+            '    dxvk::thread                      m_recycleThread;\n'
+            '    void recycleCmdLists();\n'
+            '\n'
+            '    dxvk::thread                m_submitThread;\n')
+    replace(root, queue,
+            '  : m_device(device),\n'
+            '    m_submitThread([this] () { submitCmdLists(); }),\n',
+            '  : m_device(device),\n'
+            '    m_recycleThread([this] () { recycleCmdLists(); }),\n'
+            '    m_submitThread([this] () { submitCmdLists(); }),\n')
+    replace(root, queue,
+            '    m_submitThread.join();\n'
+            '    m_finishThread.join();\n'
+            '  }\n',
+            '    m_submitThread.join();\n'
+            '    m_finishThread.join();\n'
+            '\n'
+            '    // Nothing reaches the recycle thread any more: let it drain its queue and stop.\n'
+            '    { std::unique_lock<dxvk::mutex> lock(m_recycleMutex);\n'
+            '      m_recycleStopped = true; }\n'
+            '    m_recycleCond.notify_all();\n'
+            '    m_recycleThread.join();\n'
+            '  }\n')
+    replace(root, queue,
+            '      entry.submit.cmdList->notifySignals();\n'
+            '      entry.submit.cmdList->reset();\n'
+            '\n'
+            '      m_device->recycleCommandList(entry.submit.cmdList);\n',
+            '      entry.submit.cmdList->notifySignals();\n'
+            '\n'
+            '      // nfsu-pixel-remaster: the reset waits on the recycle thread unless it is off or 32 lists behind\n'
+            '      // (then it happens here, which also holds the queue back as DXVK did).\n'
+            '      bool recycled = false;\n'
+            '      if (m_recycleAsync) {\n'
+            '        std::lock_guard<dxvk::mutex> recycleLock(m_recycleMutex);\n'
+            '        if (m_recycleQueue.size() < 32) {\n'
+            '          m_recycleQueue.push(std::move(entry.submit.cmdList));\n'
+            f'          android_stats::recycleQueued.store(uint32_t(m_recycleQueue.size()), {relaxed});\n'
+            '          recycled = true;\n'
+            '        }\n'
+            '      }\n'
+            '      if (recycled) {\n'
+            '        m_recycleCond.notify_one();\n'
+            '      } else {\n'
+            '        auto resetStart = dxvk::high_resolution_clock::now();\n'
+            '        entry.submit.cmdList->reset();\n'
+            '        m_device->recycleCommandList(entry.submit.cmdList);\n'
+            '        android_stats::recordReset(std::chrono::duration_cast<std::chrono::nanoseconds>(dxvk::high_resolution_clock::now() - resetStart), true);\n'
+            '      }\n')
+    replace(root, queue,
+            '  void DxvkSubmissionQueue::finishCmdLists() {\n',
+            '  bool DxvkSubmissionQueue::nfsuRecycleThread() {\n'
+            '    return env::getEnvVar("DXVK_NFSU_RECYCLE") != "0";\n'
+            '  }\n'
+            '\n'
+            '\n'
+            '  void DxvkSubmissionQueue::recycleCmdLists() {\n'
+            '    if (!m_recycleAsync)\n'
+            '      return;  // DXVK_NFSU_RECYCLE=0: the queue thread resets every list itself\n'
+            '\n'
+            '    env::setThreadName("dxvk-recycle");\n'
+            '\n'
+            '    std::unique_lock<dxvk::mutex> lock(m_recycleMutex);\n'
+            '\n'
+            '    while (true) {\n'
+            '      m_recycleCond.wait(lock, [this] {\n'
+            '        return m_recycleStopped || !m_recycleQueue.empty();\n'
+            '      });\n'
+            '\n'
+            '      if (m_recycleQueue.empty())\n'
+            '        return;  // stopped, and everything handed over has been reset\n'
+            '\n'
+            '      Rc<DxvkCommandList> cmdList = std::move(m_recycleQueue.front());\n'
+            '      m_recycleQueue.pop();\n'
+            f'      android_stats::recycleQueued.store(uint32_t(m_recycleQueue.size()), {relaxed});\n'
+            '      lock.unlock();\n'
+            '\n'
+            '      auto resetStart = dxvk::high_resolution_clock::now();\n'
+            '      cmdList->reset();\n'
+            '      m_device->recycleCommandList(cmdList);\n'
+            '      // A list the recycler has no room for is destroyed here, off the queue thread.\n'
+            '      cmdList = nullptr;\n'
+            '      android_stats::recordReset(std::chrono::duration_cast<std::chrono::nanoseconds>(dxvk::high_resolution_clock::now() - resetStart), false);\n'
+            '\n'
+            '      lock.lock();\n'
+            '    }\n'
+            '  }\n'
+            '\n'
+            '\n'
+            '  void DxvkSubmissionQueue::finishCmdLists() {\n')
+    replace(root, queue,
+            '          status = entry.submit.cmdList->submit(\n'
+            '            entry.submit.waitSync,\n'
+            '            entry.submit.wakeSync);\n',
+            '          auto submitStart = dxvk::high_resolution_clock::now();\n'
+            '          status = entry.submit.cmdList->submit(\n'
+            '            entry.submit.waitSync,\n'
+            '            entry.submit.wakeSync);\n'
+            '          android_stats::recordSubmit(std::chrono::duration_cast<std::chrono::nanoseconds>(dxvk::high_resolution_clock::now() - submitStart));\n')
+    # A backlog of up to 18 lists in flight used to overflow the 16-entry recycler: lists destroyed on the
+    # queue thread, new ones created on the command-stream thread.
+    replace(root, "src/dxvk/dxvk_device.h",
+            '    DxvkRecycler<DxvkCommandList,    16> m_recycledCommandLists;\n',
+            '    DxvkRecycler<DxvkCommandList,    32> m_recycledCommandLists;\n')
+    replace(root, "src/dxvk/dxvk_device.cpp", '#include "dxvk_device.h"\n', '#include "dxvk_device.h"\n#include "dxvk_android_stats.h"\n')
+    replace(root, "src/dxvk/dxvk_device.cpp",
+            '    if (cmdList == nullptr)\n'
+            '      cmdList = new DxvkCommandList(this);\n',
+            '    if (cmdList == nullptr) {\n'
+            '      cmdList = new DxvkCommandList(this);\n'
+            f'      android_stats::listsCreated.fetch_add(1, {relaxed});\n'
+            '    }\n')
+    replace(root, "src/dxvk/dxvk_cmdlist.cpp", '#include "dxvk_device.h"\n', '#include "dxvk_device.h"\n#include "dxvk_android_stats.h"\n')
+    replace(root, "src/dxvk/dxvk_cmdlist.cpp",
+            '  DxvkCommandList::~DxvkCommandList() {\n'
+            '    this->reset();\n',
+            '  DxvkCommandList::~DxvkCommandList() {\n'
+            f'    android_stats::listsDestroyed.fetch_add(1, {relaxed});\n'
+            '    this->reset();\n')
+    # Each step of a reset timed: which one is slow on this driver.
+    replace(root, "src/dxvk/dxvk_cmdlist.cpp",
+            '  void DxvkCommandList::reset() {\n'
+            '    // Reset the command buffers while everything they reference still exists.\n'
+            '    // Recycling descriptor pools and releasing resources first is legal, but\n'
+            '    // the 2020 Adreno 6xx driver (Redmi Note 8, Adreno 610) then follows freed\n'
+            '    // descriptor state while resetting and calls through a null pointer.\n'
+            '    if ((m_graphicsPool && m_vkd->vkResetCommandPool(m_vkd->device(), m_graphicsPool, 0) != VK_SUCCESS)\n'
+            '     || (m_transferPool && m_vkd->vkResetCommandPool(m_vkd->device(), m_transferPool, 0) != VK_SUCCESS))\n'
+            '      Logger::err("DxvkCommandList: Failed to reset command buffer");\n'
+            '\n'
+            '    // Signal resources and events to\n'
+            '    // avoid stalling main thread\n'
+            '    m_signalTracker.reset();\n'
+            '    m_resources.reset();\n'
+            '\n'
+            '    // Recycle heavy Vulkan objects\n'
+            '    m_descriptorPoolTracker.reset();\n'
+            '\n'
+            '    // Return buffer memory slices\n'
+            '    m_bufferTracker.reset();\n'
+            '\n'
+            '    // Return query and event handles\n'
+            '    m_gpuQueryTracker.reset();\n'
+            '    m_gpuEventTracker.reset();\n'
+            '\n'
+            '    // Less important stuff\n'
+            '    m_statCounters.reset();\n'
+            '  }\n',
+            '  void DxvkCommandList::reset() {\n'
+            '    // nfsu-pixel-remaster: each step timed (android_stats::recordResetSteps).\n'
+            '    dxvk::high_resolution_clock::time_point at[5];\n'
+            '    at[0] = dxvk::high_resolution_clock::now();\n'
+            '\n'
+            '    // Reset the command buffers while everything they reference still exists.\n'
+            '    // Recycling descriptor pools and releasing resources first is legal, but\n'
+            '    // the 2020 Adreno 6xx driver (Redmi Note 8, Adreno 610) then follows freed\n'
+            '    // descriptor state while resetting and calls through a null pointer.\n'
+            '    if ((m_graphicsPool && m_vkd->vkResetCommandPool(m_vkd->device(), m_graphicsPool, 0) != VK_SUCCESS)\n'
+            '     || (m_transferPool && m_vkd->vkResetCommandPool(m_vkd->device(), m_transferPool, 0) != VK_SUCCESS))\n'
+            '      Logger::err("DxvkCommandList: Failed to reset command buffer");\n'
+            '    at[1] = dxvk::high_resolution_clock::now();\n'
+            '\n'
+            '    // Signal resources and events to\n'
+            '    // avoid stalling main thread\n'
+            '    m_signalTracker.reset();\n'
+            '    m_resources.reset();\n'
+            '    at[2] = dxvk::high_resolution_clock::now();\n'
+            '\n'
+            '    // Recycle heavy Vulkan objects\n'
+            '    m_descriptorPoolTracker.reset();\n'
+            '    at[3] = dxvk::high_resolution_clock::now();\n'
+            '\n'
+            '    // Return buffer memory slices\n'
+            '    m_bufferTracker.reset();\n'
+            '\n'
+            '    // Return query and event handles\n'
+            '    m_gpuQueryTracker.reset();\n'
+            '    m_gpuEventTracker.reset();\n'
+            '\n'
+            '    // Less important stuff\n'
+            '    m_statCounters.reset();\n'
+            '    at[4] = dxvk::high_resolution_clock::now();\n'
+            '    android_stats::recordResetSteps<dxvk::high_resolution_clock>(at);\n'
+            '  }\n')
+    replace(root, "src/dxvk/dxvk_device.cpp",
+            '    if (pool == nullptr)\n'
+            '      pool = new DxvkDescriptorPool(m_vkd);\n',
+            '    if (pool == nullptr) {\n'
+            '      pool = new DxvkDescriptorPool(m_vkd);\n'
+            f'      android_stats::descriptorPoolsCreated.fetch_add(1, {relaxed});\n'
+            '    }\n')
+    replace(root, "src/dxvk/dxvk_descriptor.cpp", '#include "dxvk_device.h"\n', '#include "dxvk_device.h"\n#include "dxvk_android_stats.h"\n')
+    replace(root, "src/dxvk/dxvk_descriptor.cpp",
+            '  DxvkDescriptorPool::~DxvkDescriptorPool() {\n',
+            '  DxvkDescriptorPool::~DxvkDescriptorPool() {\n'
+            f'    android_stats::descriptorPoolsDestroyed.fetch_add(1, {relaxed});\n')
+    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle thread-names queue-state recycle-thread\n", encoding="ascii")
     print(f"dxvk_extra: applied to {root}")
 
 
