@@ -16,7 +16,7 @@ Later builds install straight over the previous one (same signing key, higher ve
 - [ ] Launcher is in English; **Game language** lists the languages found in the copy.
 - [ ] Intro movies play; the front end appears; profile creation works (keyboard button for text).
 - [ ] A race starts and runs; steering/pedals respond; a Bluetooth pad works (RT gas, LT brake).
-- [ ] Native resolution at **120 FPS**: smooth after the first minute (first-session shader compiles are normal).
+- [ ] Native resolution — the phone's own screen resolution, 2404×1080 or 2992×1344 (the summary's *Render* line shows the game back buffer at that size) — at the default **60 FPS** limit: smooth after the first minute (first-session shader compiles are normal). 120 is for a cool phone.
 - [ ] HUD, mirror, minimap sit correctly in the 20:9 picture; no stretching.
 - [ ] Cars show reflections; textures stay sharp at grazing angles (Texture filtering 16×).
 - [ ] Turn **Anti-aliasing** to 4× MSAA, play one race: smoother edges, no visual breakage, framerate holds. If anything breaks, set it back to Off and say so in the report.
