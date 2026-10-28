@@ -1,6 +1,7 @@
 // The look-ahead peak limiter after the host mix (android/app/src/main/cpp/audio_limiter.h).
 #include "../android/app/src/main/cpp/audio_limiter.h"
 #include <cstdio>
+#include <algorithm>
 #include <cstdlib>
 #include <vector>
 static void require(bool ok, const char* message) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); } }
@@ -55,6 +56,22 @@ int main() {
         // Quiet at the end: the gain has recovered within a 250 ms quiet burst.
         float lastGain = limiter.gain();
         require(lastGain > 0.6f, "recovering during the quiet burst");
+    }
+    {
+        // After a loud moment the gain comes all the way back: a 1.29 peak, then four seconds of quiet. Build 9's
+        // float recursion stalled at 0.9996 and counted every frame of every later silence as limited.
+        PeakLimiter limiter; limiter.configure(rate);
+        std::vector<float> buffer(2 * rate / 10);
+        for (unsigned i = 0; i < rate / 10; ++i) { float v = float(1.29 * std::sin(2 * pi * 100 * i / rate)); buffer[2 * i] = v; buffer[2 * i + 1] = v; }
+        limiter.process(buffer.data(), rate / 10);
+        require(limiter.gain() < 0.8f, "the peak was turned down");
+        std::vector<float> quiet(2 * rate, 0.0f);
+        for (int second = 0; second < 4; ++second) { std::fill(quiet.begin(), quiet.end(), 0.1f); limiter.process(quiet.data(), rate); }
+        require(limiter.gain() == 1.0f, "back to unity after four seconds of quiet");
+        uint64_t before = limiter.limitedFrames.load();
+        std::fill(quiet.begin(), quiet.end(), 0.1f); limiter.process(quiet.data(), rate);
+        require(limiter.limitedFrames.load() == before, "and a later quiet second counts no limited frames");
+        for (unsigned i = 0; i < rate; ++i) require(quiet[2 * i] == 0.1f, "a quiet second after recovery passes bit for bit");
     }
     {
         // Broken input never escapes: NaN and infinity become silence, huge values are limited.
