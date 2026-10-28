@@ -10,6 +10,9 @@ Telemetry only; rendering is untouched:
   * The GPU's idle time (the HUD's "GPU load" counter: the time the submission queue had no command list
     in flight) is mirrored into a process-wide counter, so each second of a session records how busy the
     GPU was and a report can tell a GPU-bound frame from a CPU-bound one.
+  * DXVK's threads get their names (dxvk-cs, dxvk-submit, dxvk-queue, dxvk-shader, ...): the native port's
+    setThreadName is an empty stub on Linux, so the game runtime's performance-hint session and CPU
+    placement (host_perf.cpp), which look the threads up by name, never found them.
 
 Usage: dxvk_extra.py <prepared dxvk-source>. Each edit must apply exactly once; otherwise the pinned
 recipe changed and this script needs a look (the build fails loudly instead of silently losing data).
@@ -125,7 +128,18 @@ def main() -> None:
             '        auto idle = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();\n'
             '        m_gpuIdle += idle;\n'
             '        android_stats::gpuIdleMicros.fetch_add(uint64_t(idle < 0 ? 0 : idle), std::memory_order_relaxed);\n')
-    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle\n", encoding="ascii")
+    # 4. Thread names (pthread names are 15 characters; DXVK's own are shorter except dxvk-adapter-N).
+    replace(root, "src/util/platform/util_env_linux.cpp", '#include <unistd.h>\n', '#include <unistd.h>\n#include <pthread.h>\n#include <cstring>\n')
+    replace(root, "src/util/platform/util_env_linux.cpp",
+            '  void setThreadName(const std::string& name) {\n'
+            '  }\n',
+            '  void setThreadName(const std::string& name) {\n'
+            '    // nfsu-pixel-remaster: the stub left every DXVK thread nameless; the runtime finds them by name.\n'
+            '    char posixName[16] = {};\n'
+            '    std::strncpy(posixName, name.c_str(), sizeof(posixName) - 1);\n'
+            '    ::pthread_setname_np(::pthread_self(), posixName);\n'
+            '  }\n')
+    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle thread-names\n", encoding="ascii")
     print(f"dxvk_extra: applied to {root}")
 
 

@@ -30,7 +30,7 @@ APerformanceHintSession* session=nullptr;
 CloseSessionFn closeSession=nullptr;UpdateTargetFn updateTarget=nullptr;ReportActualFn reportActual=nullptr;
 std::atomic<bool> adopted{false};
 unsigned currentTargetFps=120;
-std::string affinityResult="not applied",priorityResult="not applied",adpfResult="not applied";
+std::string affinityResult="not applied",priorityResult="not applied",adpfResult="not applied",dxvkResult="not applied";
 uint64_t reports=0,reportFailures=0;
 
 unsigned readKhz(const std::string& path){
@@ -75,18 +75,41 @@ void adoptRenderThread(Placement placement,unsigned targetFps){
     pid_t tid=pid_t(syscall(SYS_gettid));
     CpuTopology topology=readTopology();
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","CPU topology: %s MHz; fastest cluster: cpu %s",topology.summary.c_str(),topology.fastest.empty()?"?":topology.fastest.c_str());
+    // DXVK's threads (named since build 9, ci/dxvk_extra.py; before that the lookup found none): the command
+    // stream, which does the Vulkan half of every draw on its own thread, then submission and the queue.
+    // They exist once the device does, before the first Present. Command stream first.
+    std::vector<int32_t> commandStream=threadsNamed({"dxvk-cs"}),dxvk=commandStream;
+    for(int32_t thread:threadsNamed({"dxvk-submit","dxvk-queue"}))dxvk.push_back(thread);
     if(placement==Placement::FastestCores&&!topology.fastest.empty()){
         cpu_set_t set;CPU_ZERO(&set);
-        for(unsigned cpu=0;cpu<topology.cpus;++cpu){
+        for(unsigned cpu=0;cpu<topology.cpus&&cpu<CPU_SETSIZE;++cpu){
             std::string needle=std::to_string(cpu);std::string list=","+topology.fastest+",";
             if(list.find(","+needle+",")!=std::string::npos)CPU_SET(cpu,&set);
         }
         if(sched_setaffinity(tid,sizeof set,&set)==0)affinityResult="render thread on cpu "+topology.fastest;
         else affinityResult=std::string("sched_setaffinity failed: ")+std::strerror(errno);
-    }else affinityResult=placement==Placement::System?"system placement":"no fastest cluster found";
+        // DXVK's threads stay off the render thread's cores. The performance hint boosts them too, and the
+        // scheduler places a boosted thread on the biggest core that fits: the render thread's, where the
+        // two would take turns. Build 8 races ran at 45-50 FPS under a 60 cap with that core idle 40 % of
+        // the time, the render thread waiting on work outside it.
+        cpu_set_t rest;CPU_ZERO(&rest);unsigned others=0;
+        for(unsigned cpu=0;cpu<topology.cpus&&cpu<CPU_SETSIZE;++cpu)if(!CPU_ISSET(cpu,&set)){CPU_SET(cpu,&rest);++others;}
+        if(dxvk.empty())dxvkResult="DXVK threads not found";
+        else if(!others)dxvkResult="DXVK threads: system placement (one cluster)";
+        else{
+            unsigned placed=0;for(int32_t thread:dxvk)if(sched_setaffinity(pid_t(thread),sizeof rest,&rest)==0)++placed;
+            char text[128];std::snprintf(text,sizeof text,"%u of %zu DXVK threads off cpu %s",placed,dxvk.size(),topology.fastest.c_str());dxvkResult=text;
+        }
+    }else{
+        affinityResult=placement==Placement::System?"system placement":"no fastest cluster found";
+        dxvkResult=dxvk.empty()?"DXVK threads not found":"DXVK threads: system placement";
+    }
     // Apps may lower their own threads' nice value on Android (how THREAD_PRIORITY_URGENT_AUDIO works).
     if(setpriority(PRIO_PROCESS,id_t(tid),-10)==0)priorityResult="nice -10";
     else priorityResult=std::string("setpriority failed: ")+std::strerror(errno);
+    // The command stream is on every frame's critical path as much as the render thread is.
+    unsigned raised=0;for(int32_t thread:commandStream)if(setpriority(PRIO_PROCESS,id_t(thread),-10)==0)++raised;
+    if(!commandStream.empty()){char text[64];std::snprintf(text,sizeof text,"; command stream nice -10 (%u of %zu)",raised,commandStream.size());dxvkResult+=text;}
     // ADPF.
     void* android=dlopen("libandroid.so",RTLD_NOW|RTLD_NOLOAD);
     if(!android)android=dlopen("libandroid.so",RTLD_NOW);
@@ -97,14 +120,16 @@ void adoptRenderThread(Placement placement,unsigned targetFps){
     closeSession=android?reinterpret_cast<CloseSessionFn>(dlsym(android,"APerformanceHint_closeSession")):nullptr;
     if(!getManager||!createSession||!updateTarget||!reportActual||!closeSession){adpfResult="performance hints unavailable on this Android";}
     else{
-        std::vector<int32_t> tids=threadsNamed({"dxvk-cs","dxvk-submit","dxvk-queue"});
+        std::vector<int32_t> tids=dxvk;
         tids.insert(tids.begin(),int32_t(tid));
         auto manager=getManager();
         session=manager?createSession(manager,tids.data(),tids.size(),targetNanos(targetFps)):nullptr;
+        // A session the system will not take with DXVK's threads is still worth having for the render thread.
+        if(!session&&manager&&tids.size()>1){tids.resize(1);session=createSession(manager,tids.data(),tids.size(),targetNanos(targetFps));}
         if(session){char text[96];std::snprintf(text,sizeof text,"session with %zu threads, target %.2f ms",tids.size(),targetNanos(targetFps)/1e6);adpfResult=text;}
         else adpfResult="session refused";
     }
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Render thread placement: %s; priority: %s; ADPF: %s",affinityResult.c_str(),priorityResult.c_str(),adpfResult.c_str());
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Render thread placement: %s; priority: %s; %s; ADPF: %s",affinityResult.c_str(),priorityResult.c_str(),dxvkResult.c_str(),adpfResult.c_str());
 }
 
 void setTargetFps(unsigned targetFps){
@@ -130,9 +155,9 @@ void release(){
 
 std::string statusJson(){
     std::lock_guard<std::mutex> lock(mutex);
-    char text[512];
-    std::snprintf(text,sizeof text,"{\"affinity\":\"%s\",\"priority\":\"%s\",\"adpf\":\"%s\",\"targetFps\":%u,\"reports\":%llu,\"reportFailures\":%llu}",
-        affinityResult.c_str(),priorityResult.c_str(),adpfResult.c_str(),currentTargetFps,static_cast<unsigned long long>(reports),static_cast<unsigned long long>(reportFailures));
+    char text[640];
+    std::snprintf(text,sizeof text,"{\"affinity\":\"%s\",\"priority\":\"%s\",\"dxvk\":\"%s\",\"adpf\":\"%s\",\"targetFps\":%u,\"reports\":%llu,\"reportFailures\":%llu}",
+        affinityResult.c_str(),priorityResult.c_str(),dxvkResult.c_str(),adpfResult.c_str(),currentTargetFps,static_cast<unsigned long long>(reports),static_cast<unsigned long long>(reportFailures));
     return text;
 }
 }  // namespace host_perf

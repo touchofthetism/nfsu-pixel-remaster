@@ -46,7 +46,7 @@ public class SessionSummaryTest {
                 "Audio: xruns 0, buffer 1920 frames (burst 192), 48000 Hz",
                 "Thermal: max light (status 1) at 480 s; headroom min 0.4; battery 32.1→39.4°C (min 32.1, max 39.4), level 80→74%",
                 "Memory: game process PSS max 1012 MB; system free min 2900 MB; low-memory samples 0",
-                "CPU: game process 55% of one core on average (cores=8); clocks max 2600 MHz",
+                "CPU: game process 55% of one core on average (cores=8); clocks avg/max MHz: cpu0 1700/1700 cpu1 2600/2600",
                 "Panel refresh (samples):",
                 "D3D9 calls per frame: SetRenderState 1208 DrawIndexedPrimitive 408 SetTexture 376 Present 1 Release(5) 0",
                 "Events: [0 s start] [9 s status: Running the game] [300 s pause]"}) {
@@ -84,6 +84,26 @@ public class SessionSummaryTest {
                 "Guest machine (1000 samples): render thread game code 55%, D3D9 30%, imports 2%; other threads 8%; idle 5%. Top: sub_004A1B20 12.0% sub_0040B9C0 10.0% (D3D9)"}) {
             assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
         }
+    }
+
+    @Test public void threadsAndPerCpuClocks() throws Exception {
+        // Two samples: the render core (cpu1 here) averages half its peak.
+        String record = RECORD.replace("\"cpuMhz\":[1700,2600]}", "\"cpuMhz\":[1700,2600]},{\"t\":4,\"cpuMhz\":[1300,600]}")
+                .replace("\"d3d9Calls\":{", "\"host\":{\"affinity\":\"render thread on cpu 7\",\"priority\":\"nice -10\","
+                        + "\"dxvk\":\"3 of 3 DXVK threads off cpu 7; command stream nice -10 (1 of 1)\",\"adpf\":\"session with 4 threads, target 16.67 ms\","
+                        + "\"targetFps\":60,\"reports\":105930,\"reportFailures\":0},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "clocks avg/max MHz: cpu0 1500/1700 cpu1 1600/2600",
+                "Threads: render thread on cpu 7, nice -10; 3 of 3 DXVK threads off cpu 7; command stream nice -10 (1 of 1); "
+                        + "performance hints: session with 4 threads, target 16.67 ms (105930 reports, 0 failed)"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+        // Build 8 records: no "dxvk" field.
+        String old = RECORD.replace("\"d3d9Calls\":{", "\"host\":{\"affinity\":\"render thread on cpu 7\",\"priority\":\"nice -10\","
+                + "\"adpf\":\"session with 1 threads, target 16.67 ms\",\"targetFps\":60,\"reports\":5,\"reportFailures\":0},\"d3d9Calls\":{");
+        assertTrue(SessionSummary.parse(old).report.contains(
+                "Threads: render thread on cpu 7, nice -10; performance hints: session with 1 threads, target 16.67 ms (5 reports, 0 failed)"));
     }
 
     @Test public void incompleteAndEmptyRecordsAreReadable() throws Exception {

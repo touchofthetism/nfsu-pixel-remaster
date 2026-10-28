@@ -165,7 +165,10 @@ final class SessionSummary {
         }
         if (samples != null && samples.length() > 0) {
             double headroomMin = Double.NaN, battMin = Double.NaN, battMax = Double.NaN;
-            int thermalMax = 0, thermalAt = -1, pssMax = 0, availMin = Integer.MAX_VALUE, cpuSum = 0, cpuCount = 0, clockMax = 0, lowMemory = 0;
+            int thermalMax = 0, thermalAt = -1, pssMax = 0, availMin = Integer.MAX_VALUE, cpuSum = 0, cpuCount = 0, lowMemory = 0;
+            // Per-cpu clock average and maximum over the samples: the render thread's core is the one that
+            // matters, and a session-wide maximum hid that it ran far below its cap.
+            long[] clockSum = new long[16]; int[] clockMax = new int[16], clockSamples = new int[16]; int clockCpus = 0;
             Map<String, Integer> refresh = new HashMap<>();
             Integer levelStart = null, levelEnd = null; boolean charging = false;
             for (int i = 0; i < samples.length(); i++) {
@@ -181,7 +184,11 @@ final class SessionSummary {
                 if (s.optBoolean("lowMemory")) lowMemory++;
                 if (s.has("cpuPct")) { cpuSum += s.optInt("cpuPct"); cpuCount++; }
                 JSONArray mhz = s.optJSONArray("cpuMhz");
-                if (mhz != null) for (int c = 0; c < mhz.length(); c++) clockMax = Math.max(clockMax, mhz.optInt(c));
+                if (mhz != null) for (int c = 0; c < Math.min(16, mhz.length()); c++) {
+                    int value = mhz.optInt(c);
+                    clockSum[c] += value; clockSamples[c]++; clockMax[c] = Math.max(clockMax[c], value);
+                    clockCpus = Math.max(clockCpus, c + 1);
+                }
                 if (s.has("refresh")) { String hz = String.valueOf(Math.round(s.optDouble("refresh"))); refresh.put(hz, refresh.getOrDefault(hz, 0) + 1); }
             }
             out.append(String.format(Locale.US, "  Thermal: max %s (status %d) at %d s; headroom min %s; battery %s→%s°C (min %s, max %s), level %s→%s%%%s\n",
@@ -189,13 +196,24 @@ final class SessionSummary {
                     levelStart == null ? "?" : levelStart, levelEnd == null ? "?" : levelEnd, charging ? ", charging" : ""));
             out.append(String.format(Locale.US, "  Memory: game process PSS max %d MB; system free min %s MB; low-memory samples %d\n", pssMax,
                     availMin == Integer.MAX_VALUE ? "?" : String.valueOf(availMin), lowMemory));
-            out.append(String.format(Locale.US, "  CPU: game process %s%% of one core on average (cores=%d); clocks max %d MHz\n",
-                    cpuCount == 0 ? "?" : String.valueOf(cpuSum / cpuCount), record.optInt("cores"), clockMax));
+            StringBuilder clocks = new StringBuilder();
+            for (int c = 0; c < clockCpus; c++)
+                if (clockSamples[c] > 0) clocks.append(String.format(Locale.US, " cpu%d %d/%d", c, clockSum[c] / clockSamples[c], clockMax[c]));
+            out.append(String.format(Locale.US, "  CPU: game process %s%% of one core on average (cores=%d); clocks avg/max MHz:%s\n",
+                    cpuCount == 0 ? "?" : String.valueOf(cpuSum / cpuCount), record.optInt("cores"), clocks.length() == 0 ? " ?" : clocks.toString()));
             if (!refresh.isEmpty()) {
                 StringBuilder line = new StringBuilder("  Panel refresh (samples):");
                 for (Map.Entry<String, Integer> e : refresh.entrySet()) line.append(' ').append(e.getKey()).append(" Hz×").append(e.getValue());
                 out.append(line).append('\n');
             }
+        }
+        JSONObject host = nat == null ? null : nat.optJSONObject("host");
+        if (host != null) {
+            // Where the render thread and DXVK's threads ran, and whether the performance-hint session took them.
+            String dxvk = host.optString("dxvk", "");
+            out.append(String.format(Locale.US, "  Threads: %s, %s%s; performance hints: %s (%d reports, %d failed)\n",
+                    host.optString("affinity", "?"), host.optString("priority", "?"), dxvk.isEmpty() ? "" : "; " + dxvk,
+                    host.optString("adpf", "?"), host.optLong("reports"), host.optLong("reportFailures")));
         }
         JSONObject calls = nat == null ? null : nat.optJSONObject("d3d9Calls");
         if (calls != null && frames != null && frames.optLong("frames") > 0) {
