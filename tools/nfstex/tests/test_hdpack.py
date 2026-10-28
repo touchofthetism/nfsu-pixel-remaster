@@ -287,6 +287,49 @@ class TracksProfileTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             hdpack.build_pack(root, "tracks", None, hdpack.Cache(None), lambda m: None)
 
+    def test_split_keeps_each_race_whole(self):
+        hdpack, root = self.hdpack, self.game.root
+        cache = hdpack.Cache(os.path.join(self.folder.name, "cache"))
+        jobs = hdpack.plan(root, "tracks")
+        with mock.patch.object(hdpack, "build_dds", side_effect=self.fake_dds):
+            hdpack.run_shard(jobs, 0, 1, cache, "models", lambda m: None)
+        files = hdpack.build_pack(root, "tracks", None, cache, lambda m: None)
+        # A second region with its own race, and a file no race names, so there is something to split.
+        other = dict(files)
+        groups = hdpack.pack_groups(files, files.__getitem__, lambda name: len(files[name]))
+        self.assertEqual([{"Tracks/STREAMT1.BUN", "Tracks/STREAMT1_1234.BUN", "Tracks/TRACKB1234.lzc", "Tracks/TRACKB1235.lzc",
+                           "Tracks/TEX1234TRACK.BIN"}], groups)
+        other["Global/LONE.BIN"] = bytes(range(256)) * 4
+        pack = os.path.join(self.folder.name, "pack.zip")
+        with zipfile.ZipFile(pack, "w", zipfile.ZIP_STORED) as zf:
+            for name, data in other.items():
+                zf.writestr(name, data)
+            zf.writestr("nfsu-modpack.json", json.dumps({"format": 1, "name": "HD tracks pack", "version": "11", "game": "nfsu1",
+                                                          "notes": "n", "files": [{"path": p, "bytes": len(b)} for p, b in other.items()],
+                                                          "remove": []}))
+        self.assertEqual([], hdpack.split_pack(pack, 1 << 30, lambda m: None))           # fits: nothing to do
+        with zipfile.ZipFile(pack) as zf:
+            race_bytes = sum(zf.getinfo(name).compress_size for name in groups[0])
+        # Room for the race group (parts keep 2 % spare) but not for the lone file as well.
+        parts = hdpack.split_pack(pack, int((race_bytes + 512) / 0.98), lambda m: None)
+        self.assertEqual(2, len(parts))
+        seen = []
+        for number, part in enumerate(parts, 1):
+            with zipfile.ZipFile(part) as zf:
+                manifest = json.loads(zf.read("nfsu-modpack.json"))
+                names = sorted(i.filename for i in zf.infolist() if i.filename != "nfsu-modpack.json")
+                self.assertEqual(f"HD tracks pack ({number} of 2)", manifest["name"])
+                self.assertEqual(names, sorted(f["path"] for f in manifest["files"]))
+                for name in names:
+                    self.assertEqual(other[name], zf.read(name))
+                seen += names
+                # The race group never splits across parts.
+                race_files = {n for n in names if n.startswith("Tracks/")}
+                self.assertIn(race_files, (set(), groups[0]))
+        self.assertEqual(sorted(other), sorted(seen))
+        with self.assertRaises(SystemExit):                                              # a group bigger than a part
+            hdpack.split_pack(pack, 2048, lambda m: None)
+
     def test_only_one_stream(self):
         hdpack, root = self.hdpack, self.game.root
         cache = hdpack.Cache(os.path.join(self.folder.name, "cache"))

@@ -569,6 +569,91 @@ def repack(source_zip: str, out_zip: str, version: str, name: str | None, log) -
     log(f"wrote {out_zip}: {len(files)} files, {sum(len(b) for b in files.values()) >> 20} MB uncompressed")
 
 
+def pack_groups(names, read, size) -> list:
+    """The files of a pack that must be installed together, as sets of paths: each race table
+    (Tracks/TRACKB<race>.lzc) with the stream files it names (its region stream, found by the size its table
+    gives, and its own STREAM<region>_<race>.BUN) and its sky bundle (Tracks/TEX<race>TRACK.BIN). Races that
+    share a region stream end up in one group; every other file is a group of its own. ``read(name)`` gives a
+    file's bytes, ``size(name)`` its length."""
+    names = list(names)
+    parent = {name: name for name in names}
+
+    def find(name):
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    lower = {name.lower(): name for name in names}
+    streams = [name for name in names if tracks.is_stream(name)]
+    for name in names:
+        stem = pathlib.PurePosixPath(name).name
+        if not (stem.upper().startswith("TRACKB") and stem.lower().endswith(".lzc")):
+            continue
+        race = tracks.parse_race(name, read(name))
+        for stream in streams:
+            if "_" not in pathlib.PurePosixPath(stream).stem and size(stream) == race.sizes[1]:
+                union(name, stream)
+                own = f"{stream.rsplit('.', 1)[0]}_{race.number}.bun".lower()
+                if race.sizes[2] and own in lower:
+                    union(name, lower[own])
+        sky = f"tracks/tex{race.number}track.bin"
+        if sky in lower:
+            union(name, lower[sky])
+    groups = {}
+    for name in names:
+        groups.setdefault(find(name), set()).add(name)
+    return list(groups.values())
+
+
+def split_pack(source_zip: str, limit: int, log) -> list:
+    """Writes a pack larger than ``limit`` bytes again as installable parts of at most about ``limit`` bytes each,
+    next to it as <name>-part<k>.zip (files that must be installed together stay together: pack_groups; the
+    largest groups go first into the first part with room). Each part installs and uninstalls on its own.
+    Returns the part paths ([] when the pack fits as it is)."""
+    path = pathlib.Path(source_zip)
+    if path.stat().st_size <= limit:
+        return []
+    with zipfile.ZipFile(path) as source:
+        manifest = json.loads(source.read("nfsu-modpack.json"))
+        infos = {info.filename: info for info in source.infolist() if info.filename != "nfsu-modpack.json" and not info.is_dir()}
+        groups = pack_groups(infos, source.read, lambda name: infos[name].file_size)
+        # Sized by their compressed bytes in this ZIP, with 2 % kept for headers and a recompression that can
+        # come out a little larger (another zlib build).
+        budget = int(limit * 0.98)
+        parts = []                                          # [compressed bytes, [names]]
+        for size, names in sorted(((sum(infos[n].compress_size for n in group), sorted(group)) for group in groups),
+                                  key=lambda item: (-item[0], item[1])):
+            if size > budget:
+                raise SystemExit(f"{names[0]} and the files it must go with take {size >> 20} MB: more than a part")
+            for part in parts:
+                if part[0] + size <= budget:
+                    part[0] += size
+                    part[1] += names
+                    break
+            else:
+                parts.append([size, list(names)])
+        outputs = []
+        for number, (_, names) in enumerate(parts, 1):
+            chosen = set(names)
+            part_manifest = dict(manifest)
+            part_manifest["name"] = f"{manifest['name']} ({number} of {len(parts)})"
+            part_manifest["notes"] = (manifest.get("notes", "") + f" Part {number} of {len(parts)} of version "
+                                      f"{manifest.get('version', '?')}: the same files, split to stay under {limit >> 20} MB.")
+            part_manifest["files"] = [entry for entry in manifest["files"] if entry["path"] in chosen]
+            out = path.with_name(f"{path.stem}-part{number}.zip")
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target:
+                for name in sorted(chosen):
+                    target.writestr(name, source.read(name))
+                target.writestr("nfsu-modpack.json", json.dumps(part_manifest, indent=2))
+            log(f"wrote {out}: {len(chosen)} files, {out.stat().st_size >> 20} MB")
+            outputs.append(str(out))
+    return outputs
+
+
 def build_pack(game: pathlib.Path, profile: str, models_dir: str | None, cache: Cache, log, only: str | None = None,
                limit: int = 0, fast: bool = False) -> dict:
     """{game path: bytes} of every file the profile changes."""
@@ -605,6 +690,7 @@ def main() -> None:
     parser.add_argument("--shard", metavar="K/N", help="upscale only the K-th (1-based) of N cost-balanced shares into --cache, then stop")
     parser.add_argument("--fast", action="store_true", help="the compact animevideo net for colour too (packs v1-v9), for quick checks")
     parser.add_argument("--repack", metavar="PACK.zip", help="rewrite an existing HD pack with the current code instead of upscaling (no game folder or models needed)")
+    parser.add_argument("--split-mb", type=int, default=0, help="also write the pack as installable parts of at most this many MB when it is larger (a chat upload limit)")
     args = parser.parse_args()
     if args.repack:
         if not args.out:
@@ -653,6 +739,8 @@ def main() -> None:
             zf.writestr(p, b)
         zf.writestr("nfsu-modpack.json", json.dumps(manifest, indent=2))
     print(f"wrote {args.out}: {len(files)} files, {sum(len(b) for b in files.values()) >> 20} MB uncompressed")
+    if args.split_mb:
+        split_pack(args.out, args.split_mb << 20, print)
 
 
 if __name__ == "__main__":
