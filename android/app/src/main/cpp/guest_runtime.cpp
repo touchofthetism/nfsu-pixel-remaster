@@ -12,6 +12,7 @@
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 #include "d3d9_bridge.h"
 #include "nfs_widescreen.h"
+#include "nfs_misc_fixes.h"
 #endif
 #include <array>
 #include <cstdio>
@@ -806,6 +807,10 @@ std::string connectGuestRuntime(const char* executable) {
         testGuestFileTime();
         testGuestCriticalSections();
         testGuestAssetGuards();
+        // ThirteenAG's 44.1 kHz audio (misc_fixes.c): the sound library would open at 22.05 kHz at
+        // performance tiers 0-1; the override it reads is set before the game runs.
+        nfs_misc_fixes_boot();
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Sound: mixer rate override %u Hz (the game picks 22050 at performance tiers 0-1)",read32(NFS_MISC_SOUND_RATE_OVERRIDE));
         // Restore a clean CPU state before executing the real CRT entry.
         fresh.load();
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Entering actual lifted CRT entry %08x",entry);

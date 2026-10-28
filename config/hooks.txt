@@ -63,3 +63,5 @@
 0x0051D24B  EAXSound::Update after loading the sound-on flag: updates batched to >= 1/60 s, frames between leave by its own early return
 0x0040A74D  particle systems update call: the frame's real time step instead of the pushed 1/60
 0x00460A3A  steering: after fnstsw of fcomp [1 degree], the snap-to-zero is skipped (test ah,5 sees PF)
+# HD Cursor Support (src/runtime/misc_fixes.c, from AeroWidescreen's NFSUHDContentSupport).
+0x004F36B6  front-end arrow: before its size is read from the texture record, PC_CURSOR is drawn 16x16 whatever its texture size

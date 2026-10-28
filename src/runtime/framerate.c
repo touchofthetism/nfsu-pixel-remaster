@@ -7,11 +7,12 @@
  * RECOMP_HOOK -> recomp_hook, dispatched here from widescreen.c) at the
  * instruction after the one whose result it changes, plus one data write.
  *
- * Of the mod's six: the limiter's target is the data write (re-asserted once
- * per present, like the mod's ProtectedGameRef); the busy-wait threshold it
- * also sets stays at the game's 1/30 s, which is what the mod computes for
- * every cap of 60 and above; the other four are hooks. The mod's FPSLimit
- * defaults to the monitor's refresh rate, so this is its shipped behaviour.
+ * Of the mod's seven changes: the limiter's target and the busy-wait threshold
+ * are data writes (re-asserted once per present, like the mod's
+ * ProtectedGameRef); the time-step floor, tick rule, audio batching, particle
+ * step and steering snap are hooks. The mod's FPSLimit defaults to the
+ * monitor's refresh rate, so this is its shipped behaviour; unlike the mod,
+ * "unlimited" is never passed here (the runtime maps it to the 120 Hz panel).
  *
  * Shared by the Windows host and the Android runtime.
  */
@@ -24,6 +25,7 @@
 static unsigned s_fps;                      /* 0: the game's own 60 */
 static float s_target = 1.0f / 60.0f;
 static float s_min_step = 1.0f / 60.0f;
+static float s_wait_threshold = 1.0f / 30.0f;
 static float s_audio_time;                  /* EAXSound::Update batching (time not yet passed on) */
 
 static float fr_rdf(uint32_t va) { uint32_t v = MEM32(va); float f; memcpy(&f, &v, 4); return f; }
@@ -31,15 +33,16 @@ static void fr_wrf(uint32_t va, float f) { uint32_t v; memcpy(&v, &f, 4); MEM32(
 
 void nfs_widescreen_set_frame_rate(unsigned fps) {
     s_fps = fps;
-    nfs_fr_plan(fps, &s_target, &s_min_step);
+    nfs_fr_plan(fps, &s_target, &s_min_step, &s_wait_threshold);
     s_audio_time = 0.0f;
 }
 
-/* Once per present: PrepareRealTimestep reads its target from .data every
- * frame, and the game may re-initialise it on video-mode changes. */
+/* Once per present: PrepareRealTimestep reads both cells every frame, and the
+ * game may re-initialise the target on video-mode changes. */
 void nfs_widescreen_apply_frame_rate(void) {
     if (!s_fps) return;
     if (fr_rdf(NFS_FR_TARGET_FRAME_TIME) != s_target) fr_wrf(NFS_FR_TARGET_FRAME_TIME, s_target);
+    if (fr_rdf(NFS_FR_WAIT_THRESHOLD) != s_wait_threshold) fr_wrf(NFS_FR_WAIT_THRESHOLD, s_wait_threshold);
 }
 
 /* The hooks: 1 when `va` was one of ours. Registers are the synced globals,

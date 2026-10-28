@@ -122,7 +122,12 @@ bool soundFormat(uint32_t address,PcmVoice& voice){
     if(!address)return false;unsigned channels=soundRead16(address+2),rate=read32(address+4),bits=soundRead16(address+14);
     if(soundRead16(address)!=1||(channels!=1&&channels!=2)||(bits!=8&&bits!=16)||rate<100||rate>200000)return false;
     if(soundRead16(address+12)!=channels*(bits/8)||read32(address+8)!=rate*channels*(bits/8))return false;
-    voice.channels=channels;voice.rate=voice.frequency=rate;voice.bits=bits;return true;
+    voice.channels=channels;voice.rate=voice.frequency=rate;voice.bits=bits;
+    // Each distinct PCM format once: the sound library's mixer buffer shows the rate it runs at.
+    static std::set<uint32_t> loggedFormats;
+    if(loggedFormats.size()<16&&loggedFormats.insert(rate*16u+channels*8u+bits/8u).second)
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","DirectSound buffer format: %u Hz, %u channel(s), %u-bit",rate,channels,bits);
+    return true;
 }
 void directSoundCreate(){
     if(!arg(1)){ret(0x80004003,3);return;}write32(arg(1),0);

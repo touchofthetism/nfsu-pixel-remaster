@@ -7,8 +7,8 @@
  * frame. Lifting the cap alone therefore ran the game fast. ThirteenAG's
  * NFSUnderground.WidescreenFix (WidescreenFixesPack, MIT; Misc.ixx, namespace
  * FrameRate) carries the complete, long-shipped correction, on by default at
- * the monitor's refresh rate: six small patches. framerate.c ports them as
- * host hooks (config/hooks.txt) and one data write; the decisions each hook
+ * the monitor's refresh rate: seven small changes. framerate.c ports them as
+ * host hooks (config/hooks.txt) and two data writes; the decisions each hook
  * makes live here, header-only, so tests/frame_rate_unlock.cpp can exercise
  * them without a guest.
  */
@@ -20,7 +20,8 @@ extern "C" {
 #endif
 
 /* Guest addresses in Speed.exe 1.4 (found by the mod's byte patterns). */
-#define NFS_FR_TARGET_FRAME_TIME   0x006F0890u   /* float, 1/60: `fld` at 0x585B84 */
+#define NFS_FR_TARGET_FRAME_TIME   0x006F0890u   /* float, 1/60: `fld` at 0x585B83 */
+#define NFS_FR_WAIT_THRESHOLD      0x006CCDECu   /* float, 1/30: `fcomp` at 0x585BBB gates the spin */
 #define NFS_FR_REAL_TIME_ELAPSED   0x0073AD38u   /* float, the frame's time step (1/3600 s steps) */
 #define NFS_FR_HOOK_MIN_STEP       0x00585CB5u   /* `test ah,41h` after `fcom [1/60]`: min time step clamp */
 #define NFS_FR_HOOK_TICK           0x00585DB1u   /* `mov ecx,[tickCount]` after the forced `mov eax,1` */
@@ -28,25 +29,32 @@ extern "C" {
 #define NFS_FR_HOOK_PARTICLES      0x0040A74Du   /* `call` after `push 1/60; push system`: particle step */
 #define NFS_FR_HOOK_STEERING       0x00460A3Au   /* `test ah,5` after `fcomp [1.0]`: steering snap */
 
-/* Pacing for a launcher cap: the limiter's target frame time and the smallest
- * time step a frame may report (the mod's fTargetFrameTime / fMinFrameTime).
- * fps 0 means the original game (1/60 both). Above 60 the step follows the
- * frame; at or below 60 the game keeps its 1/60 floor exactly as shipped. */
-static inline void nfs_fr_plan(unsigned fps, float *target, float *min_step) {
-    float sixty = 1.0f / 60.0f;
-    if (fps == 0) { *target = sixty; *min_step = sixty; return; }
+/* Pacing for a launcher cap: the limiter's target frame time, the smallest
+ * time step a frame may report and the spin's wait threshold (the mod's
+ * fTargetFrameTime / fMinFrameTime / WaitThreshold). fps 0 means the original
+ * game (1/60, 1/60, 1/30). Above 60 the step follows the frame; at or below 60
+ * the game keeps its 1/60 floor exactly as shipped. The threshold is
+ * max(2 x target, 1/30): the stock 1/30 at every cap of 60 and above, 2/cap
+ * below (the busy-wait is skipped when the time left exceeds it). */
+static inline void nfs_fr_plan(unsigned fps, float *target, float *min_step, float *wait_threshold) {
+    float sixty = 1.0f / 60.0f, thirty = 1.0f / 30.0f;
+    if (fps == 0) { *target = sixty; *min_step = sixty; *wait_threshold = thirty; return; }
     *target = 1.0f / (float)fps;
     *min_step = *target < sixty ? *target : sixty;
+    *wait_threshold = 2.0f * *target > thirty ? 2.0f * *target : thirty;
 }
 
-/* 0x585CB5: ST0 holds the frame's time step T, ax the fcom status against
- * 1/60 (C0 = ah bit 0 "below", C3 = bit 6 "equal"; `test ah,41h; je` skips
- * the clamp when both are clear). Returns the step to leave in ST0 and
- * clears C0/C3 in *eax so the game's own clamp to 1/60 never runs: the
- * clamp is ours now, to min_step. */
+/* 0x585CB5: ST0 holds the step being floored (the carried remainder
+ * [0x734570] plus the frame's elapsed time; the 3/60 ceiling was already
+ * computed and stored to [esp+0Ch]), ax the fcom status against 1/60 (C0 =
+ * ah bit 0 "below", C3 = bit 6 "equal"; `test ah,41h; je` skips the clamp
+ * when both are clear). Returns the value to leave in ST0 and clears C0/C3 in
+ * *eax so the game's own clamp to 1/60 never runs: the clamp is ours now, to
+ * min_step. A NaN is replaced by the floor, as the mod's redirected fcom
+ * (unordered sets C0|C2|C3) would. */
 static inline double nfs_fr_min_step(double step, float min_step, uint32_t *eax) {
     *eax &= ~0x4100u;
-    return step < (double)min_step ? (double)min_step : step;
+    return !(step >= (double)min_step) ? (double)min_step : step;
 }
 
 /* 0x585DB1: the tick accumulator (0x585D70) computed `ticks` whole 1/60 ticks
