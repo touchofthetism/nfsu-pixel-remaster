@@ -1119,21 +1119,23 @@ std::string nativeBuildId(){
     return id;
 }
 #ifdef __ANDROID__
-// DXVK's command list processing for the session record (ci/dxvk_extra.py, build 11).
+// DXVK's command list processing for the session record (ci/dxvk_extra.py, build 11), and (build 13) the
+// D3D9 Locks that waited for a buffer or texture the GPU still had: count, total and longest ms.
 std::string dxvkQueueJson(){
-    uint64_t t[23]{};
-    size_t count=dxvkAndroidQueueTimings(t,23);
-    if(count<23)return "{}";
-    char text[900];
+    uint64_t t[26]{};
+    size_t count=dxvkAndroidQueueTimings(t,26);
+    if(count<26)return "{}";
+    char text[960];
     std::snprintf(text,sizeof text,"{\"cleanupThread\":%s,\"submits\":[%llu,%.1f,%.2f],\"resets\":[%llu,%.1f,%.2f,%llu,%llu],"
         "\"resetStepsMs\":[[%.1f,%.2f],[%.1f,%.2f],[%.1f,%.2f],[%.1f,%.2f]],\"fenceWaits\":[%llu,%.1f],"
-        "\"commandLists\":[%llu,%llu],\"descriptorPools\":[%llu,%llu]}",
+        "\"commandLists\":[%llu,%llu],\"descriptorPools\":[%llu,%llu],\"resourceWaits\":[%llu,%.1f,%.2f]}",
         d3d9CleanupThread()?"true":"false",
         static_cast<unsigned long long>(t[7]),t[8]/1e6,t[9]/1e6,
         static_cast<unsigned long long>(t[0]),t[1]/1e6,t[2]/1e6,static_cast<unsigned long long>(t[3]),static_cast<unsigned long long>(t[4]),
         t[15]/1e6,t[19]/1e6,t[16]/1e6,t[20]/1e6,t[17]/1e6,t[21]/1e6,t[18]/1e6,t[22]/1e6,
         static_cast<unsigned long long>(t[5]),t[6]/1e6,
-        static_cast<unsigned long long>(t[10]),static_cast<unsigned long long>(t[11]),static_cast<unsigned long long>(t[13]),static_cast<unsigned long long>(t[14]));
+        static_cast<unsigned long long>(t[10]),static_cast<unsigned long long>(t[11]),static_cast<unsigned long long>(t[13]),static_cast<unsigned long long>(t[14]),
+        static_cast<unsigned long long>(t[23]),t[24]/1e6,t[25]/1e6);
     return text;
 }
 #endif

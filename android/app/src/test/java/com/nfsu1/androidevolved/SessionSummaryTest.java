@@ -179,6 +179,18 @@ public class SessionSummaryTest {
         assertTrue(SessionSummary.parse(held).report.contains("(1 reports, 0 failed); placement held all session"));
     }
 
+    @Test public void locksThatWaitedForTheGpu() throws Exception {
+        // Build 13: D3D9 Locks of a buffer or texture the GPU still had, counted and timed in DXVK.
+        String queue = "\"dxvkQueue\":{\"cleanupThread\":true,\"submits\":[10,2.0,0.5],\"resets\":[10,3.0,1.0,0,0],"
+                + "\"fenceWaits\":[10,5.0],\"commandLists\":[4,0],\"descriptorPools\":[1,0]";
+        String waited = SessionSummary.parse(RECORD.replace("\"d3d9Calls\":{", queue + ",\"resourceWaits\":[24,604.0,87.0]},\"d3d9Calls\":{")).report;
+        assertTrue(waited, waited.contains("; descriptor pools created 1, freed 0; Locks that waited for the GPU 24 (604.0 ms in all, longest 87.0 ms)\n"));
+        String none = SessionSummary.parse(RECORD.replace("\"d3d9Calls\":{", queue + ",\"resourceWaits\":[0,0.0,0.00]},\"d3d9Calls\":{")).report;
+        assertTrue(none, none.contains("; descriptor pools created 1, freed 0; no Lock waited for the GPU\n"));
+        String older = SessionSummary.parse(RECORD.replace("\"d3d9Calls\":{", queue + "},\"d3d9Calls\":{")).report;
+        assertTrue(older, older.contains("; descriptor pools created 1, freed 0\n"));
+    }
+
     @Test public void renderThreadFollowsTheFastestCluster() throws Exception {
         // Build 12: the clock each cpu was allowed (two samples), and where the render thread ran as the X4 was capped.
         String record = RECORD.replace("\"cpuMhz\":[1700,2600]}", "\"cpuMhz\":[1700,2600],\"cpuCapMhz\":[2246,3782]},"

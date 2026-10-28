@@ -358,7 +358,8 @@ final class SessionSummary {
             // DXVK's command list processing (ci/dxvk_extra.py, build 11): submissions, the resets of finished lists
             // (and which step of them took the time), fence waits, lists and descriptor pools created and freed.
             JSONArray submits = queue.optJSONArray("submits"), resets = queue.optJSONArray("resets"), steps = queue.optJSONArray("resetStepsMs"),
-                    fences = queue.optJSONArray("fenceWaits"), lists = queue.optJSONArray("commandLists"), pools = queue.optJSONArray("descriptorPools");
+                    fences = queue.optJSONArray("fenceWaits"), lists = queue.optJSONArray("commandLists"), pools = queue.optJSONArray("descriptorPools"),
+                    waits = queue.optJSONArray("resourceWaits");
             long submitCount = submits == null ? 0 : submits.optLong(0), resetCount = resets == null ? 0 : resets.optLong(0);
             long frameCount = frames == null ? 0 : frames.optLong("frames");
             StringBuilder line = new StringBuilder(String.format(Locale.US, "  DXVK queue: cleanup %s; vkQueueSubmit %d",
@@ -383,6 +384,9 @@ final class SessionSummary {
                 line.append(String.format(Locale.US, "; fence waits avg %.2f ms", fences.optDouble(1) / fences.optLong(0)));
             if (lists != null) line.append(String.format(Locale.US, "; command lists created %d, freed %d", lists.optLong(0), lists.optLong(1)));
             if (pools != null) line.append(String.format(Locale.US, "; descriptor pools created %d, freed %d", pools.optLong(0), pools.optLong(1)));
+            // Build 13: Locks of a buffer or texture the GPU still had (D3D9 WaitForResource).
+            if (waits != null) line.append(waits.optLong(0) == 0 ? "; no Lock waited for the GPU"
+                    : String.format(Locale.US, "; Locks that waited for the GPU %d (%.1f ms in all, longest %.1f ms)", waits.optLong(0), waits.optDouble(1), waits.optDouble(2)));
             out.append(line).append('\n');
         }
         JSONObject profile = nat == null ? null : nat.optJSONObject("profile");

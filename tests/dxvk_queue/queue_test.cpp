@@ -10,7 +10,10 @@
 //      reproduces the build-10 stall;
 //   3. with 32 lists waiting for the recycle thread, the queue thread resets the next ones itself;
 //   4. destroying the queue lets the recycle thread finish every list it was handed;
-//   5. the telemetry (dxvkAndroidQueueTimings) counts what happened.
+//   5. with the recycle thread the resources a list used are released with its signals, before its reset and
+//      whatever the recycle thread is doing (D3D9's Lock waits on them); with it off, at the end of the reset,
+//      as DXVK does; exactly once either way;
+//   6. the telemetry (dxvkAndroidQueueTimings) counts what happened.
 // The script builds this twice, with ThreadSanitizer and with AddressSanitizer + UBSan.
 #include "dxvk_device.h"
 #include "dxvk_android_stats.h"
@@ -62,6 +65,17 @@ namespace {
   std::condition_variable signalCond;
   uint64_t lastNotifiedSequence = 0, lastNotifiedFrame = 0;
   std::vector<int64_t> notifyLatencyNs;   // notified - finished on the GPU, per list
+  // Resources released: after the GPU finished, and after the signals; how many before the reset.
+  std::vector<int64_t> releaseLatencyNs, releaseAfterSignalsNs;
+  uint64_t earlyReleases = 0, lateReleases = 0;
+
+  void recordRelease(const dxvk::DxvkCommandList& list, bool early) {
+    int64_t at = nowNs();
+    std::lock_guard<std::mutex> lock(signalMutex);
+    releaseLatencyNs.push_back(at - list.gpuDoneNs.load());
+    releaseAfterSignalsNs.push_back(at - list.notifiedNs.load());
+    (early ? earlyReleases : lateReleases)++;
+  }
 
   std::atomic<uint64_t> loggedErrors = { 0 }, deviceWaits = { 0 }, presents = { 0 }, listsAlive = { 0 },
                         synchronizes = { 0 }, listSubmits = { 0 }, listResets = { 0 };
@@ -106,6 +120,7 @@ namespace dxvk {
     require(phase.compare_exchange_strong(expected, Submitted), "submitted a list that was not being recorded");
     submits++;
     listSubmits++;
+    require(!resourcesHeld.exchange(true), "a list submitted while it still held the resources of a previous submission");
     std::lock_guard<std::mutex> lock(gpuMutex);
     int64_t start = std::max(nowNs(), gpuFreeAtNs);
     gpuFreeAtNs = start + gpuWorkNs.load();
@@ -126,6 +141,7 @@ namespace dxvk {
     require(phase.compare_exchange_strong(expected, Notified), "notified a list the GPU had not finished");
     int64_t at = nowNs();
     require(at >= gpuDoneNs.load(), "notified before the GPU finished");
+    notifiedNs = at;
     std::lock_guard<std::mutex> lock(signalMutex);
     require(sequence.load() == lastNotifiedSequence + 1, "signals out of submission order");
     lastNotifiedSequence = sequence.load();
@@ -135,10 +151,19 @@ namespace dxvk {
     signalCond.notify_all();
   }
 
+  void DxvkCommandList::notifyResources() {
+    require(phase.load() == Notified, "resources released before the list's signals, or once its reset had begun");
+    require(nowNs() >= gpuDoneNs.load(), "resources released before the GPU finished");
+    require(resourcesHeld.exchange(false), "resources released twice");
+    recordRelease(*this, true);
+  }
+
   void DxvkCommandList::reset() {
     int expected = Notified;
     require(phase.compare_exchange_strong(expected, Resetting), "reset a list before its signals, or twice at once");
-    sleepNs(resetNs.load());   // command pools, resource releases: the slow part
+    sleepNs(resetNs.load());   // command pools first (the slow part), then the resources, as DXVK orders it
+    if (resourcesHeld.exchange(false))
+      recordRelease(*this, false);
     resets++;
     listResets++;
     phase.store(Idle);
@@ -162,7 +187,7 @@ namespace {
   using dxvk::DxvkCommandList;
   using dxvk::Rc;
 
-  constexpr size_t TimingCount = 23;
+  constexpr size_t TimingCount = 26;
 
   struct Scenario {
     const char* name;
@@ -176,7 +201,8 @@ namespace {
 
   struct Result {
     int64_t frameWaitNs = 0, maxLatencyNs = 0, p99LatencyNs = 0;
-    uint64_t lists = 0, timings[TimingCount] = {};
+    int64_t releaseP99Ns = 0, releaseMaxNs = 0, releaseAfterSignalsMaxNs = 0;
+    uint64_t lists = 0, earlyReleases = 0, timings[TimingCount] = {};
   };
 
   Rc<DxvkCommandList> takeList(std::vector<Rc<DxvkCommandList>>* registry) {
@@ -200,14 +226,15 @@ namespace {
   Result run(const Scenario& s) {
     setenv("DXVK_NFSU_RECYCLE", s.recycleThread ? "1" : "0", 1);
     { std::lock_guard<std::mutex> lock(signalMutex);
-      lastNotifiedSequence = 0; lastNotifiedFrame = 0; notifyLatencyNs.clear(); }
+      lastNotifiedSequence = 0; lastNotifiedFrame = 0; notifyLatencyNs.clear();
+      releaseLatencyNs.clear(); releaseAfterSignalsNs.clear(); earlyReleases = 0; lateReleases = 0; }
     { std::lock_guard<std::mutex> lock(namesMutex); threadNames.clear(); }
     { std::lock_guard<std::mutex> lock(gpuMutex); gpuFreeAtNs = 0; }
     { std::lock_guard<std::mutex> lock(recyclerMutex); recycled.clear(); }
     gpuWorkNs = s.gpuNs;
 
     uint64_t before[TimingCount] = {};
-    require(dxvkAndroidQueueTimings(before, TimingCount) == TimingCount, "dxvkAndroidQueueTimings: 23 values");
+    require(dxvkAndroidQueueTimings(before, TimingCount) == TimingCount, "dxvkAndroidQueueTimings: 26 values");
     uint64_t submitsBefore = listSubmits.load(), resetsBefore = listResets.load(), syncsBefore = synchronizes.load();
 
     Result result;
@@ -260,7 +287,12 @@ namespace {
     for (const auto& list : registry) {
       require(list->phase.load() == DxvkCommandList::Idle, "every list idle after the queue is gone");
       require(list->resets.load() == list->submits.load(), "each list reset once per submission");
+      require(!list->resourcesHeld.load(), "every list's resources released");
     }
+    { std::lock_guard<std::mutex> lock(signalMutex);
+      require(earlyReleases + lateReleases == sequence, "the resources of each submission released exactly once");
+      require(earlyReleases == (s.recycleThread ? sequence : 0), "released with the signals exactly when the recycle thread resets");
+      result.earlyReleases = earlyReleases; }
     { std::lock_guard<std::mutex> lock(namesMutex);
       require(threadNames.count("dxvk-submit") == 1 && threadNames.count("dxvk-queue") == 1, "the queue's own threads");
       require(threadNames.count("dxvk-recycle") == (s.recycleThread ? 1u : 0u), "a recycle thread exactly when enabled"); }
@@ -268,7 +300,7 @@ namespace {
     uint64_t after[TimingCount] = {};
     dxvkAndroidQueueTimings(after, TimingCount);
     for (size_t i = 0; i < TimingCount; i++)
-      result.timings[i] = after[i] - (i == 2 || i == 9 || i == 12 ? 0 : before[i]);   // longest and now: not deltas
+      result.timings[i] = after[i] - (i == 2 || i == 9 || i == 12 || (i >= 19 && i <= 22) || i == 25 ? 0 : before[i]);   // longest and now: not deltas
     require(result.timings[0] == sequence, "telemetry: one reset recorded per list");
     if (!s.recycleThread)
       require(result.timings[4] == sequence, "telemetry: with the thread off, the queue thread resets every list");
@@ -281,10 +313,19 @@ namespace {
     std::sort(latencies.begin(), latencies.end());
     result.maxLatencyNs = latencies.empty() ? 0 : latencies.back();
     result.p99LatencyNs = latencies.empty() ? 0 : latencies[latencies.size() * 99 / 100];
+    std::vector<int64_t> releases, afterSignals;
+    { std::lock_guard<std::mutex> lock(signalMutex); releases = releaseLatencyNs; afterSignals = releaseAfterSignalsNs; }
+    std::sort(releases.begin(), releases.end());
+    std::sort(afterSignals.begin(), afterSignals.end());
+    result.releaseMaxNs = releases.empty() ? 0 : releases.back();
+    result.releaseP99Ns = releases.empty() ? 0 : releases[releases.size() * 99 / 100];
+    result.releaseAfterSignalsMaxNs = afterSignals.empty() ? 0 : afterSignals.back();
 
     std::printf("%-34s %4llu lists: frame-latency waits %6.1f ms, signal delay p99 %5.1f ms max %5.1f ms; "
+                "resources released p99 %5.1f ms max %5.1f ms after the GPU (%llu with the signals); "
                 "resets on the queue thread %llu\n", s.name, static_cast<unsigned long long>(sequence),
                 result.frameWaitNs / 1e6, result.p99LatencyNs / 1e6, result.maxLatencyNs / 1e6,
+                result.releaseP99Ns / 1e6, result.releaseMaxNs / 1e6, static_cast<unsigned long long>(result.earlyReleases),
                 static_cast<unsigned long long>(result.timings[4]));
     registry.clear();
     { std::lock_guard<std::mutex> lock(recyclerMutex); recycled.clear(); }
@@ -308,12 +349,19 @@ int main() {
   require(withoutThread.frameWaitNs >= 40 * Ms, "the simulation reproduces the stall: the producer waits on it");
   require(withThread.p99LatencyNs < 8 * Ms, "with the recycle thread, signals follow the GPU");
   require(withThread.frameWaitNs * 3 < withoutThread.frameWaitNs, "with the recycle thread, the frame-latency waits shrink");
+  // D3D9's Lock waits on the resources: released right after the GPU, with the signals, whatever the resets
+  // cost; DXVK's own order holds them until the slow reset ahead is done.
+  require(withThread.releaseP99Ns < 8 * Ms, "with the recycle thread, resources are released as the GPU finishes");
+  require(withThread.releaseAfterSignalsMaxNs < 5 * Ms, "with the recycle thread, resources are released with the signals");
+  require(withoutThread.releaseMaxNs >= 12 * Ms, "with DXVK's order a slow reset holds the next resources too");
 
   // Resets slower than the GPU and the producer: the recycle queue fills to 32 and the queue thread resets the
   // next lists itself; lists the full recycler has no room for are freed.
   Scenario backlog = { "recycle thread, 32 behind", true, 40, 10, 0, Ms / 20, [](uint64_t) { return 3 * Ms; }, 0, false };
   Result full = run(backlog);
   require(full.timings[4] > 0, "a full recycle queue makes the queue thread reset");
+  // Build 11 released them only in the reset, so a Lock waited for all 32 resets queued ahead (3 ms each here).
+  require(full.releaseAfterSignalsMaxNs < 5 * Ms, "32 lists behind: resources still released with the signals");
 
   // Shutdown with lists still waiting for the recycle thread: the destructor lets it finish them all.
   Scenario shutdown = { "recycle thread, destroyed busy", true, 5, 6, 0, Ms / 20, [](uint64_t) { return 5 * Ms; }, 0, true };

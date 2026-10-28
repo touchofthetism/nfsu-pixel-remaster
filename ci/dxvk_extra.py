@@ -24,9 +24,15 @@ Telemetry only; rendering is untouched:
     instead of 16 so a backlog does not turn into creating and destroying lists. DXVK_NFSU_RECYCLE=0
     keeps DXVK's own order. Resets (and each of their steps), fence waits and vkQueueSubmit are timed;
     command lists and descriptor pools created and destroyed are counted.
-    Nothing in this DXVK waits for a reset through the queue: D3D9's WaitForResource spins on the
-    resource's use count (DxvkResource::waitIdle) and the queue's only condition-variable waiter is
-    submit(), which waits for room in the submit and finish queues, not for resets.
+  * With the recycle thread, the resources a finished list used are released (their use counts) by the
+    queue thread with the list's signals, and the list keeps only its references until the reset (DXVK 2.x
+    splits DxvkLifetimeTracker the same way: notify, then reset). D3D9's Lock of a buffer or texture the GPU
+    has used waits in WaitForResource until that use count drops (DxvkResource::waitIdle); in build 11 the
+    count dropped only in the reset, on the recycle thread, so a Lock waited for every reset queued before
+    that list: 24 Locks of 20-87 ms in the 06:57 session, the game thread spinning while dxvk-recycle worked
+    through up to 30 lists. Each such wait is now timed (count, total, longest).
+    The queue's only condition-variable waiter is submit(), which waits for room in the submit and finish
+    queues, not for resets; the resources' use counts are the one thing the game waits on that a reset set.
 
 Usage: dxvk_extra.py <prepared dxvk-source>. Each edit must apply exactly once; otherwise the pinned
 recipe changed and this script needs a look (the build fails loudly instead of silently losing data).
@@ -59,6 +65,8 @@ namespace dxvk::android_stats {
   // DxvkCommandList::reset() step by step: command pools, resources (and signals), descriptor pools,
   // buffer slices with query and event handles.
   extern std::atomic<uint64_t> resetStepNanos[4], resetStepMaxNanos[4];
+  // D3D9 Lock waiting for a buffer or texture the GPU still had (D3D9DeviceEx::WaitForResource -> waitIdle).
+  extern std::atomic<uint64_t> resourceWaits, resourceWaitNanos, resourceWaitMaxNanos;
   inline void recordMax(std::atomic<uint64_t>& max, uint64_t value) {
     uint64_t seen = max.load(std::memory_order_relaxed);
     while (value > seen && !max.compare_exchange_weak(seen, value, std::memory_order_relaxed)) { }
@@ -79,6 +87,12 @@ namespace dxvk::android_stats {
       resetStepNanos[step].fetch_add(nanos, std::memory_order_relaxed);
       recordMax(resetStepMaxNanos[step], nanos);
     }
+  }
+  inline void recordResourceWait(std::chrono::nanoseconds spent) {
+    uint64_t nanos = toNanos(spent);
+    resourceWaits.fetch_add(1, std::memory_order_relaxed);
+    resourceWaitNanos.fetch_add(nanos, std::memory_order_relaxed);
+    recordMax(resourceWaitMaxNanos, nanos);
   }
   inline void recordFenceWait(std::chrono::nanoseconds spent) {
     fenceWaits.fetch_add(1, std::memory_order_relaxed);
@@ -123,6 +137,7 @@ namespace dxvk::android_stats {
                         submitCalls{0}, submitNanos{0}, submitMaxNanos{0}, listsCreated{0}, listsDestroyed{0},
                         descriptorPoolsCreated{0}, descriptorPoolsDestroyed{0};
   std::atomic<uint64_t> resetStepNanos[4]{}, resetStepMaxNanos[4]{};
+  std::atomic<uint64_t> resourceWaits{0}, resourceWaitNanos{0}, resourceWaitMaxNanos{0};
 }
 
 // Command list processing totals: [0] resets, [1] their ns, [2] longest, [3] over 4 ms, [4] done on the queue
@@ -130,7 +145,8 @@ namespace dxvk::android_stats {
 // [8] their ns, [9] longest, [10] command lists created, [11] destroyed, [12] lists waiting for the recycle
 // thread now, [13] descriptor pools created, [14] destroyed, [15]-[18] ns spent in each step of a reset
 // (command pools, resources, descriptor pools, buffers with queries and events), [19]-[22] the longest of
-// each. Writes at most `count` values and returns how many there are.
+// each, [23] D3D9 Locks that waited for a resource the GPU still had, [24] their ns, [25] the longest.
+// Writes at most `count` values and returns how many there are.
 extern "C" size_t dxvkAndroidQueueTimings(uint64_t* out, size_t count) {
   using namespace dxvk::android_stats;
   const uint64_t values[] = {
@@ -146,6 +162,8 @@ extern "C" size_t dxvkAndroidQueueTimings(uint64_t* out, size_t count) {
     resetStepNanos[2].load(std::memory_order_relaxed), resetStepNanos[3].load(std::memory_order_relaxed),
     resetStepMaxNanos[0].load(std::memory_order_relaxed), resetStepMaxNanos[1].load(std::memory_order_relaxed),
     resetStepMaxNanos[2].load(std::memory_order_relaxed), resetStepMaxNanos[3].load(std::memory_order_relaxed),
+    resourceWaits.load(std::memory_order_relaxed), resourceWaitNanos.load(std::memory_order_relaxed),
+    resourceWaitMaxNanos.load(std::memory_order_relaxed),
   };
   const size_t total = sizeof(values) / sizeof(values[0]);
   for (size_t i = 0; i < total && i < count; i++)
@@ -368,6 +386,9 @@ def main() -> None:
             '      // (then it happens here, which also holds the queue back as DXVK did).\n'
             '      bool recycled = false;\n'
             '      if (m_recycleAsync) {\n'
+            '        // The resources it used are released now, with its signals: D3D9\'s Lock waits on their use\n'
+            '        // counts, which the reset would otherwise drop only after every list queued before it.\n'
+            '        entry.submit.cmdList->notifyResources();\n'
             '        std::lock_guard<dxvk::mutex> recycleLock(m_recycleMutex);\n'
             '        if (m_recycleQueue.size() < 32) {\n'
             '          m_recycleQueue.push(std::move(entry.submit.cmdList));\n'
@@ -530,7 +551,81 @@ def main() -> None:
             '  DxvkDescriptorPool::~DxvkDescriptorPool() {\n',
             '  DxvkDescriptorPool::~DxvkDescriptorPool() {\n'
             f'    android_stats::descriptorPoolsDestroyed.fetch_add(1, {relaxed});\n')
-    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle thread-names queue-state recycle-thread\n", encoding="ascii")
+    # 7. The resources of a finished list released with its signals (the queue thread calls notifyResources in
+    #    the recycle-thread branch above); the references stay with the list until its reset. D3D9's Lock waits
+    #    on these use counts (WaitForResource -> DxvkResource::waitIdle), timed here.
+    replace(root, "src/dxvk/dxvk_lifetime.h",
+            '    void reset();\n'
+            '    \n'
+            '  private:\n'
+            '    \n'
+            '    std::vector<std::pair<Rc<DxvkResource>, DxvkAccess>> m_resources;\n',
+            '    void reset();\n'
+            '\n'
+            '    /**\n'
+            '     * \\brief Releases the resources\' use counts\n'
+            '     *\n'
+            '     * nfsu-pixel-remaster: called once the GPU has finished the command list, before its reset, so\n'
+            '     * what waits on a resource (D3D9\'s Lock) does not wait for the reset too. The references stay\n'
+            '     * until reset(), which releases whatever this has not (DXVK 2.x splits it the same way).\n'
+            '     */\n'
+            '    void notify();\n'
+            '    \n'
+            '  private:\n'
+            '    \n'
+            '    std::vector<std::pair<Rc<DxvkResource>, DxvkAccess>> m_resources;\n'
+            '    bool m_notified = false;\n')
+    replace(root, "src/dxvk/dxvk_lifetime.cpp",
+            '  void DxvkLifetimeTracker::reset() {\n'
+            '    for (const auto& resource : m_resources)\n'
+            '      resource.first->release(resource.second);\n'
+            '    m_resources.clear();\n'
+            '  }\n',
+            '  void DxvkLifetimeTracker::notify() {\n'
+            '    if (m_notified)\n'
+            '      return;\n'
+            '    for (const auto& resource : m_resources)\n'
+            '      resource.first->release(resource.second);\n'
+            '    m_notified = true;\n'
+            '  }\n'
+            '\n'
+            '\n'
+            '  void DxvkLifetimeTracker::reset() {\n'
+            '    this->notify();\n'
+            '    m_resources.clear();\n'
+            '    m_notified = false;\n'
+            '  }\n')
+    replace(root, "src/dxvk/dxvk_cmdlist.h",
+            '    void notifySignals() {\n'
+            '      m_signalTracker.notify();\n'
+            '    }\n',
+            '    void notifySignals() {\n'
+            '      m_signalTracker.notify();\n'
+            '    }\n'
+            '\n'
+            '    /**\n'
+            '     * \\brief Releases the use counts of the resources it used\n'
+            '     *\n'
+            '     * nfsu-pixel-remaster: the queue thread calls this with notifySignals when the recycle thread will\n'
+            '     * do the reset (DxvkLifetimeTracker::notify); the reset releases them otherwise.\n'
+            '     */\n'
+            '    void notifyResources() {\n'
+            '      m_resources.notify();\n'
+            '    }\n')
+    replace(root, "src/d3d9/d3d9_device.cpp", '#include "d3d9_device.h"\n', '#include "d3d9_device.h"\n#include "../dxvk/dxvk_android_stats.h"\n')
+    replace(root, "src/d3d9/d3d9_device.cpp",
+            '        Flush();\n'
+            '        SynchronizeCsThread();\n'
+            '\n'
+            '        Resource->waitIdle(access);\n',
+            '        Flush();\n'
+            '        SynchronizeCsThread();\n'
+            '\n'
+            '        // nfsu-pixel-remaster: how long the game waits here (android_stats::recordResourceWait).\n'
+            '        auto waitStart = dxvk::high_resolution_clock::now();\n'
+            '        Resource->waitIdle(access);\n'
+            '        android_stats::recordResourceWait(std::chrono::duration_cast<std::chrono::nanoseconds>(dxvk::high_resolution_clock::now() - waitStart));\n')
+    (root / "NFSU_EXTRA_APPLIED").write_text("logcat-all-levels pipeline-stats gpu-idle thread-names queue-state recycle-thread resources-early resource-waits\n", encoding="ascii")
     print(f"dxvk_extra: applied to {root}")
 
 
