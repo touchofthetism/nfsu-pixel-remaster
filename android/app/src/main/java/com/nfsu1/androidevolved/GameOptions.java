@@ -152,7 +152,10 @@ final class GameOptions {
         boolean high = totalMemory >= HIGH_TIER_MEMORY;
         switch (key) {
             case RESOLUTION: return high ? "100" : "75";
-            case FPS: return "120";
+            // 60, the game's own pace: races are CPU-bound, and at 120 the big core runs flat out until the phone
+            // warms and its clock is capped (build 8: 92 FPS falling to 45 within three minutes). A 60 cap lets
+            // the pacer sleep and the governor run lower clocks, so the phone heats later.
+            case FPS: return "60";
             case ANISOTROPY: return "16";
             case ANTIALIAS: return "0";
             case WIDESCREEN: return "on";

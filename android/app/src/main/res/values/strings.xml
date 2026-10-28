@@ -42,10 +42,10 @@
     <string name="res_720">720 lines · lightest</string>
     <string name="opt_fps">FPS limit</string>
     <string name="fps_30">30 FPS · saves battery</string>
-    <string name="fps_60">60 FPS</string>
+    <string name="fps_60">60 FPS · the game\'s own pace; runs cooler (recommended)</string>
     <string name="fps_90">90 FPS</string>
-    <string name="fps_120">120 FPS</string>
-    <string name="fps_unlimited">Unlimited</string>
+    <string name="fps_120">120 FPS · smoothest while the phone is cool</string>
+    <string name="fps_unlimited">Unlimited · like 120 but hotter (the game spins between frames)</string>
     <string name="opt_widescreen">Widescreen</string>
     <string name="widescreen_on">HUD and camera corrected</string>
     <string name="widescreen_off">Original 4:3 stretched</string>

@@ -40,10 +40,10 @@
     <string name="res_720">720 líneas · lo más ligero</string>
     <string name="opt_fps">Límite de FPS</string>
     <string name="fps_30">30 FPS · ahorra batería</string>
-    <string name="fps_60">60 FPS</string>
+    <string name="fps_60">60 FPS · el ritmo propio del juego; más fresco (recomendado)</string>
     <string name="fps_90">90 FPS</string>
-    <string name="fps_120">120 FPS</string>
-    <string name="fps_unlimited">Sin límite</string>
+    <string name="fps_120">120 FPS · lo más fluido mientras el móvil está frío</string>
+    <string name="fps_unlimited">Sin límite · como 120 pero más caliente (el juego gira en vacío entre fotogramas)</string>
     <string name="opt_widescreen">Pantalla panorámica</string>
     <string name="widescreen_on">HUD y cámara corregidos</string>
     <string name="widescreen_off">Original 4:3 estirado</string>
