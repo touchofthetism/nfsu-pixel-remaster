@@ -60,6 +60,6 @@
 # Frame pacing at the launcher's cap (src/runtime/framerate.c, from the mod's FrameRate block).
 0x00585CB5  PrepareRealTimestep: after fnstsw of fcom [1/60], the time-step floor becomes min(1/60, 1/cap)
 0x00585DB1  tick accumulator: a forced single tick (mov eax,1 when 0 ticks passed) back to 0; the remainder carries
-0x004479D3  EAXSound::Update(dt) call: dt batched to at least 1/60 s, 0 (the game's paused value) in between
+0x0051D24B  EAXSound::Update after loading the sound-on flag: updates batched to >= 1/60 s, frames between leave by its own early return
 0x0040A74D  particle systems update call: the frame's real time step instead of the pushed 1/60
 0x00460A3A  steering: after fnstsw of fcomp [1 degree], the snap-to-zero is skipped (test ah,5 sees PF)

@@ -24,7 +24,7 @@
 static unsigned s_fps;                      /* 0: the game's own 60 */
 static float s_target = 1.0f / 60.0f;
 static float s_min_step = 1.0f / 60.0f;
-static float s_audio_time;                  /* EAXSound::Update batching */
+static float s_audio_time;                  /* EAXSound::Update batching (time not yet passed on) */
 
 static float fr_rdf(uint32_t va) { uint32_t v = MEM32(va); float f; memcpy(&f, &v, 4); return f; }
 static void fr_wrf(uint32_t va, float f) { uint32_t v; memcpy(&v, &f, 4); MEM32(va) = v; }
@@ -45,9 +45,10 @@ void nfs_widescreen_apply_frame_rate(void) {
 /* The hooks: 1 when `va` was one of ours. Registers are the synced globals,
  * g_st[0] is ST(0). They are in effect at every cap, as in the mod. At 60 FPS
  * the step clamp, the tick rule and the audio batching give the game's own
- * results (a frame is never shorter than the 1/60 floor there); the particle
- * step becomes the frame's real time (about 1/60) and the steering snap is
- * skipped at any rate, the mod's two deliberate changes. */
+ * results (a frame is never shorter than the 1/60 floor there, so no update
+ * is skipped); the particle step becomes the frame's real time (about 1/60)
+ * and the steering snap is skipped at any rate, the mod's two deliberate
+ * changes. */
 int nfs_framerate_hook(uint32_t va) {
     switch (va) {
     case NFS_FR_HOOK_MIN_STEP:
@@ -56,9 +57,14 @@ int nfs_framerate_hook(uint32_t va) {
     case NFS_FR_HOOK_TICK:
         g_eax = nfs_fr_ticks(MEM32(g_esp), g_eax);
         return 1;
-    case NFS_FR_HOOK_AUDIO:
-        fr_wrf(g_esp, nfs_fr_audio_step(&s_audio_time, fr_rdf(g_esp)));
+    case NFS_FR_HOOK_AUDIO: {
+        /* After `push ebx; push edi` the return slot is at [esp+8] and dt at
+         * [esp+0Ch] (the function reads it there itself, at 0x51D269). */
+        float dt = fr_rdf(g_esp + 0xC);
+        if (!nfs_fr_should_update_audio(&s_audio_time, &dt)) g_eax = 0;   /* je -> pop edi; pop ebx; ret 4 */
+        else fr_wrf(g_esp + 0xC, dt);
         return 1;
+    }
     case NFS_FR_HOOK_PARTICLES:
         fr_wrf(g_esp + 4, nfs_fr_particle_step(fr_rdf(NFS_FR_REAL_TIME_ELAPSED)));
         return 1;

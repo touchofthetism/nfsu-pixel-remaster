@@ -39,17 +39,31 @@ int main() {
     require(nfs_fr_ticks(0, 1) == 0, "a forced single tick for a frame shorter than 1/60 becomes none (the remainder carries)");
     require(nfs_fr_ticks(1, 1) == 1 && nfs_fr_ticks(3, 3) == 3, "real tick counts pass through");
 
-    // 0x4479D3: EAXSound::Update(dt) batched to at least 1/60.
-    float acc = 0.0f;
-    require(nfs_fr_audio_step(&acc, 1.0f / 120) == 0.0f, "the first of two 1/120 frames passes 0 (the game's paused value)");
-    require(near(nfs_fr_audio_step(&acc, 1.0f / 120), 1.0 / 60) && acc == 0.0f, "the second passes the batched 1/60 and resets");
-    require(near(nfs_fr_audio_step(&acc, 1.0f / 60), 1.0 / 60), "a 60 FPS frame passes through unchanged");
-    require(near(nfs_fr_audio_step(&acc, 60.0f / 3600.0f), 1.0 / 60), "a 60 FPS frame counted in the game's 1/3600 steps still updates (the mod's margin)");
-    require(nfs_fr_audio_step(&acc, 59.0f / 3600.0f) == 0.0f && near(nfs_fr_audio_step(&acc, 60.0f / 3600.0f), 119.0 / 3600), "one step short batches with the next frame");
-    require(nfs_fr_audio_step(&acc, 0.0f) == 0.0f && nfs_fr_audio_step(&acc, -1.0f) == -1.0f, "dt <= 0 passes through");
+    // EAXSound::Update (hook 0x51D24B): updates batched to at least 1/60, the frames between skipped.
+    float acc = 0.0f, dt = 1.0f / 120;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 0, "the first of two 1/120 frames skips the update");
+    dt = 1.0f / 120;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 1 && near(dt, 1.0 / 60) && acc == 0.0f, "the second updates with the batched 1/60 and resets");
+    dt = 1.0f / 60;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 1 && near(dt, 1.0 / 60), "a 60 FPS frame updates with its own step");
+    dt = 60.0f / 3600.0f;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 1 && near(dt, 1.0 / 60), "a 60 FPS frame counted in the game's 1/3600 steps still updates (the mod's margin)");
+    dt = 59.0f / 3600.0f;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 0, "one 1/3600 step short is held back");
+    dt = 60.0f / 3600.0f;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 1 && near(dt, 119.0 / 3600), "and passed on with the next frame");
+    dt = 0.0f;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 1 && dt == 0.0f, "paused (0) updates, step untouched");
+    dt = -1.0f;
+    require(nfs_fr_should_update_audio(&acc, &dt) == 1 && dt == -1.0f && acc == 0.0f, "negative steps pass through and add nothing");
     acc = 0.0f;
-    nfs_fr_audio_step(&acc, 0.004f); nfs_fr_audio_step(&acc, 0.004f); nfs_fr_audio_step(&acc, 0.004f);
-    require(near(nfs_fr_audio_step(&acc, 0.005f), 0.017), "any number of short frames batch up");
+    int updates = 0;
+    for (int frame = 0; frame < 3; frame++) { dt = 0.004f; updates += nfs_fr_should_update_audio(&acc, &dt); }
+    dt = 0.005f;
+    require(updates == 0 && nfs_fr_should_update_audio(&acc, &dt) == 1 && near(dt, 0.017), "any number of short frames batch into one update");
+    acc = 0.0f; updates = 0;
+    for (int frame = 0; frame < 1200; frame++) { dt = 1.0f / 120; updates += nfs_fr_should_update_audio(&acc, &dt); }
+    require(updates == 600, "ten seconds at 120 FPS: exactly the 600 updates the original game made at 60");
 
     // 0x40A74D: particle step from the frame's real time, clamped like the mod.
     require(near(nfs_fr_particle_step(1.0f / 120), 1.0 / 120), "120 FPS particles step 1/120");

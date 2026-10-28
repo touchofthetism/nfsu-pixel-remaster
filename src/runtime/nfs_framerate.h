@@ -24,7 +24,7 @@ extern "C" {
 #define NFS_FR_REAL_TIME_ELAPSED   0x0073AD38u   /* float, the frame's time step (1/3600 s steps) */
 #define NFS_FR_HOOK_MIN_STEP       0x00585CB5u   /* `test ah,41h` after `fcom [1/60]`: min time step clamp */
 #define NFS_FR_HOOK_TICK           0x00585DB1u   /* `mov ecx,[tickCount]` after the forced `mov eax,1` */
-#define NFS_FR_HOOK_AUDIO          0x004479D3u   /* `call EAXSound::Update` after `push edx` (dt) */
+#define NFS_FR_HOOK_AUDIO          0x0051D24Bu   /* EAXSound::Update: `cmp eax,ebx` on the sound-on flag, dt at [esp+0Ch] */
 #define NFS_FR_HOOK_PARTICLES      0x0040A74Du   /* `call` after `push 1/60; push system`: particle step */
 #define NFS_FR_HOOK_STEERING       0x00460A3Au   /* `test ah,5` after `fcomp [1.0]`: steering snap */
 
@@ -58,18 +58,23 @@ static inline uint32_t nfs_fr_ticks(uint32_t ticks, uint32_t eax) {
     return ticks == 0 ? 0u : eax;
 }
 
-/* 0x4479D3: EAXSound::Update(dt) was only ever called at up to 60 FPS. Frames
- * are batched so every update covers at least 1/60 s (a small margin keeps
- * 1/3600-s rounding from skipping an update at exactly 60 FPS); the frames in
- * between pass 0, the value the game itself passes while paused, so queued
- * sound starts are still serviced. dt <= 0 passes through unchanged. */
-static inline float nfs_fr_audio_step(float *accumulated, float dt) {
-    if (dt <= 0.0f) return dt;
-    *accumulated += dt;
-    if (*accumulated < 1.0f / 60.0f - 1.0f / 7200.0f) return 0.0f;
-    float batched = *accumulated;
+/* EAXSound::Update(dt) (0x51D240, called only from the main loop at 0x4479D3)
+ * was only ever called at up to 60 FPS. Above 60 the frames are batched so
+ * every update covers at least 1/60 s, as in the original game; the frames in
+ * between skip the update entirely (a small margin keeps the game's 1/3600-s
+ * rounding from skipping one at exactly 60 FPS). This is the mod's
+ * ShouldUpdateAudio verbatim: 0 = skip, else *dt is the batched step. The
+ * hook at 0x51D24B skips by zeroing eax, the sound-on flag the function has
+ * just loaded, so it leaves through its own `pop edi; pop ebx; ret 4` - the
+ * stack effect of the mod's `ret 4` at the call site. dt <= 0 (paused) is
+ * passed through untouched, as by the mod. */
+static inline int nfs_fr_should_update_audio(float *accumulated, float *dt) {
+    if (*dt <= 0.0f) return 1;
+    *accumulated += *dt;
+    if (*accumulated < 1.0f / 60.0f - 1.0f / 7200.0f) return 0;
+    *dt = *accumulated;
     *accumulated = 0.0f;
-    return batched;
+    return 1;
 }
 
 /* 0x40A74D: the particle systems were stepped by a fixed 1/60 every frame;
