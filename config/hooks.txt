@@ -65,3 +65,6 @@
 0x00460A3A  steering: after fnstsw of fcomp [1 degree], the snap-to-zero is skipped (test ah,5 sees PF)
 # HD Cursor Support (src/runtime/misc_fixes.c, from AeroWidescreen's NFSUHDContentSupport).
 0x004F36B6  front-end arrow: before its size is read from the texture record, PC_CURSOR is drawn 16x16 whatever its texture size
+# BlackMagazineFix (src/runtime/misc_fixes.c, from ThirteenAG's NFSUnderground.WidescreenFix).
+0x004098B4  3D view setup call (0x40ABD0): in the magazine view its clear flag is 0, so the cover's background survives
+0x00409CF7  background view setup call (0x40ABD0, esi = 0x71AA4C): in the magazine view it clears instead

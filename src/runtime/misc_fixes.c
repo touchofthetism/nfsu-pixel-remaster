@@ -18,6 +18,10 @@
  *     implements. The 0xAAAAAAAA corruption the mod prevents cannot arise.
  *   - Skip intro, language select, icons, controls-menu names, best-lap
  *     counter: front-end conveniences for the PC, not ported.
+ *   - BlackMagazineFix (BlackMagazineFix.ixx): ported (nfs_misc_hook). The
+ *     magazine covers' background was cleared to black by the 3D pass whenever
+ *     Light Trails or Motion Blur was on, which the launcher's "Game graphics:
+ *     Maximum" turns on for every new profile.
  * From AeroWidescreen's NFSUHDContentSupport (NFSU part): HD Cursor Support,
  * ported (nfs_misc_hook). Its HD Font Support is not needed: the fonts live in
  * Languages/LanguageTextures.bin, which no HD pack rewrites.
@@ -33,12 +37,29 @@ void nfs_misc_fixes_boot(void) {
 }
 
 int nfs_misc_hook(uint32_t va) {
-    if (va == NFS_MISC_HOOK_CURSOR_SIZE) {
+    switch (va) {
+    case NFS_MISC_HOOK_CURSOR_SIZE: {
         /* edi: the arrow's texture record, about to be read at +0x44. */
         uint32_t size = MEM32(g_edi + 0x44);
         uint32_t wanted = nfs_misc_cursor_size(MEM32(g_edi + 0x24), size);
         if (wanted != size) MEM32(g_edi + 0x44) = wanted;
         return 1;
     }
-    return 0;
+    case NFS_MISC_HOOK_WORLD_VIEWPORT: {
+        /* [esp]: the clear flag 0x40ABD0 is about to take for the 3D view. */
+        uint32_t clear = MEM32(g_esp);
+        uint32_t wanted = nfs_misc_world_viewport_clear(MEM8(NFS_MISC_MAGAZINE_MODE), clear);
+        if (wanted != clear) MEM32(g_esp) = wanted;
+        return 1;
+    }
+    case NFS_MISC_HOOK_BACKGROUND_VIEWPORT: {
+        /* [esp]: the clear flag (a pushed 0); esi: the view being set up. */
+        uint32_t clear = MEM32(g_esp);
+        uint32_t wanted = nfs_misc_background_viewport_clear(MEM8(NFS_MISC_MAGAZINE_MODE), g_esi, clear);
+        if (wanted != clear) MEM32(g_esp) = wanted;
+        return 1;
+    }
+    default:
+        return 0;
+    }
 }
