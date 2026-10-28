@@ -44,7 +44,7 @@ final class GameOptions {
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
             ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu",
-            GAMEGFX = "gamegfx", READS = "reads";
+            GAMEGFX = "gamegfx", READS = "reads", REFLECTIONS = "reflections";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -65,6 +65,11 @@ final class GameOptions {
             new Option(GAMEGFX, R.string.opt_gamegfx,
                     new String[] {"max", "game"},
                     new int[] {R.string.gamegfx_max, R.string.gamegfx_game}),
+            // Reflection targets (reflections.c): the game draws the wet-road, car and mirror reflections at 320x240,
+            // 128 and 256x64 and stretches them; "sharp" sizes them from the render height (996x448, 256, 896x224).
+            new Option(REFLECTIONS, R.string.opt_reflections,
+                    new String[] {"sharp", "original"},
+                    new int[] {R.string.reflections_sharp, R.string.reflections_original}),
             new Option(WIDESCREEN, R.string.opt_widescreen,
                     new String[] {"on", "off"},
                     new int[] {R.string.widescreen_on, R.string.widescreen_off}),
@@ -159,6 +164,7 @@ final class GameOptions {
             case WRONGWAY: return "on";
             case GAMEGFX: return "max";
             case READS: return "overlapped";
+            case REFLECTIONS: return "sharp";
             case CPU: return "fast";
             case GFXLOG: return "info";
             default: throw new IllegalArgumentException(key);

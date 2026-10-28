@@ -68,3 +68,8 @@
 # BlackMagazineFix (src/runtime/misc_fixes.c, from ThirteenAG's NFSUnderground.WidescreenFix).
 0x004098B4  3D view setup call (0x40ABD0): in the magazine view its clear flag is 0, so the cover's background survives
 0x00409CF7  background view setup call (0x40ABD0, esi = 0x71AA4C): in the magazine view it clears instead
+# HD reflection targets (src/runtime/reflections.c, from AeroWidescreen's NFS HD Reflections).
+0x0040A8BF  road reflection CreateTexture: before push this, [esp]/[esp+4] = 320/240 -> the sharper size
+0x0040A8F5  road reflection depth surface: before push this, [esp]/[esp+4] = 320/240 -> the sharper size
+0x00408557  road reflection view reset: after its 320/240 stores at [ecx+14h]/[ecx+18h]
+0x0040AAD5  road reflection view table entry: after its 320/240 stores at [esi+14h]/[esi+18h]

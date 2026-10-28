@@ -28,6 +28,7 @@
 #include "recomp_types.h"
 #include "nfs_widescreen.h"
 #include "nfs_misc_fixes.h"
+#include "nfs_reflections.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -167,9 +168,9 @@ void nfs_widescreen_set_minimap_offset(float dy) { (void)dy; }
 int nfs_framerate_hook(uint32_t va);
 
 void recomp_hook(uint32_t va) {
-    /* Frame pacing (framerate.c) and the other PC-community fixes
-     * (misc_fixes.c) apply whatever the display aspect. */
-    if (nfs_framerate_hook(va) || nfs_misc_hook(va)) return;
+    /* Frame pacing (framerate.c), the other PC-community fixes (misc_fixes.c)
+     * and the reflection sizes (reflections.c) apply whatever the display aspect. */
+    if (nfs_framerate_hook(va) || nfs_misc_hook(va) || nfs_reflections_hook(va)) return;
     /* Arrow draw calls: X/Y loaded, about to be pushed for sub_004F3030. */
     /* Arrow draw calls: superseded (the touch cursor is already in FE units);
      * the lifted code still calls here, so they stay accepted and inert. */

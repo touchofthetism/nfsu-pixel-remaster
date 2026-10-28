@@ -285,6 +285,9 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
     <string name="opt_gamegfx">Game graphics</string>
     <string name="gamegfx_max">Maximum to start · your changes in the game stay</string>
     <string name="gamegfx_game">As set in the game\'s own options</string>
+    <string name="opt_reflections">Reflections</string>
+    <string name="reflections_sharp">Sharp · road, car and mirror reflections at high resolution</string>
+    <string name="reflections_original">Original · the game\'s small reflection images</string>
     <string name="opt_reads">Loader reads</string>
     <string name="reads_overlapped">Overlapped · the game keeps running while files load</string>
     <string name="reads_atomic">Hold the game during every read (builds 1–3)</string>

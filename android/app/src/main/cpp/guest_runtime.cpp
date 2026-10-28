@@ -14,6 +14,7 @@
 #include "d3d9_bridge.h"
 #include "nfs_widescreen.h"
 #include "nfs_misc_fixes.h"
+#include "nfs_reflections.h"
 #endif
 #include <array>
 #include <cstdio>
@@ -195,6 +196,8 @@ bool guestWidescreen=true;
 // hashed lookups then find nothing), which is what the Free Roam Mod's patcher does to Speed.exe so
 // driving against the circuit direction is not flagged in free roam.
 bool guestWrongWayWarning=true;
+// Launcher "Reflections": sharper road, car and mirror reflection targets (reflections.c).
+bool guestHdReflections=true;
 void* ptr(uint32_t va, uint64_t bytes);
 void applyWrongWayPatch(){
     struct Patch{uint32_t va;const char* expected;};
@@ -883,14 +886,20 @@ std::string connectGuestRuntime(const char* executable) {
 #ifdef __ANDROID__
         frameTelemetry.gpuIdleSource(dxvkAndroidGpuIdleMicros);   // each second's GPU busy share
 #endif
+        float pictureAspect=4.f/3.f;   // the game's back buffer shape, for the reflection targets
         if(guestWidescreen){
             nfs_widescreen_init(hostGameRoot.c_str());
             // Landscape surface: the long side over the short one.
             float longSide=float(std::max(displayWidth.load(),displayHeight.load())),shortSide=float(std::min(displayWidth.load(),displayHeight.load()));
             float aspect=shortSide>0?longSide/shortSide:16.f/9.f;
-            nfs_widescreen_set_display_aspect(aspect);
+            nfs_widescreen_set_display_aspect(aspect);pictureAspect=aspect;
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Widescreen: render width follows the display aspect %.3f, 3D FOV corrected (front end and HUD still 4:3)",aspect);
         }else NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Widescreen disabled: original 4:3 geometry");
+        // Reflection targets (reflections.c) follow the render height; the originals are 320x240, 128, 256x64.
+        nfs_reflections_configure(guestHdReflections,renderWidth.load(),renderHeight.load(),pictureAspect);
+        {auto sizes=nfs_refl_sizes(guestHdReflections,renderWidth.load(),renderHeight.load(),pictureAspect);
+         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Reflections %s: road %ux%u, car cube map %u, rear-view mirror %ux%u",guestHdReflections?"sharp":"original",
+             sizes.road_w,sizes.road_h,sizes.cube,sizes.mirror_w,sizes.mirror_h);}
         memory->commit(stackBase,stackSize); memory->commit(tib,0x1000);
         State fresh; fresh.esp=stackBase+stackSize-64; fresh.fs=tib; fresh.load();
         write32(tib,0xffffffff); write32(tib+4,stackBase+stackSize); write32(tib+8,stackBase); write32(tib+0x18,tib);
@@ -904,6 +913,7 @@ std::string connectGuestRuntime(const char* executable) {
         // ThirteenAG's 44.1 kHz audio (misc_fixes.c): the sound library would open at 22.05 kHz at
         // performance tiers 0-1; the override it reads is set before the game runs.
         nfs_misc_fixes_boot();
+        nfs_reflections_boot();   // the cube map and mirror sizes the target setup reads
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Sound: mixer rate override %u Hz (the game picks 22050 at performance tiers 0-1)",read32(NFS_MISC_SOUND_RATE_OVERRIDE));
         // Restore a clean CPU state before executing the real CRT entry.
         fresh.load();
@@ -1016,6 +1026,7 @@ void typeGuestText(const std::vector<uint32_t>& characters){enqueueGuestText(cha
 void setGuestOnlineServer(const std::string& host){std::lock_guard<MachineMutex> lock(machine);if(!memory&&!host.empty())onlineServer=host;}
 void setGuestWidescreen(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWidescreen=enabled;}
 void setGuestWrongWayWarning(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWrongWayWarning=enabled;}
+void setGuestHdReflections(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestHdReflections=enabled;}
 void setGuestLanguage(const char* language){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;
     for(const char* known:{"Spanish","English","French","German","Italian","Dutch","Swedish","Korean","Chinese"})

@@ -20,6 +20,8 @@ bool guestGamepadInUse();
 void setGuestWidescreen(bool enabled);
 /** Launcher option; only before the guest boots. Off blanks the HUD wrong-way element names (free roam). */
 void setGuestWrongWayWarning(bool enabled);
+// Launcher "Reflections": the sharper reflection targets (true) or the game's original sizes.
+void setGuestHdReflections(bool enabled);
 void setGuestOnlineServer(const std::string& host);
 /** Touch as mouse: x/y as a fraction of the game view; phase 0 down, 1 move, 2 up (left button). */
 void setGuestPointer(float x,float y,int phase);

@@ -165,6 +165,7 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeGraphicsQuality(int anisotropy, int msaaSamples, String configDir);
     private static native void nativeWidescreen(boolean enabled);
     private static native void nativeWrongWayWarning(boolean enabled);
+    private static native void nativeHdReflections(boolean enabled);
     private static native void nativeCpuPlacement(int placement);
     private static native void nativeReadHandover(boolean overlapped);
     /** Instrumented (PGO) builds write their profile; false in ordinary builds. */
@@ -255,6 +256,7 @@ public final class GameActivity extends NativeActivity {
                 launch.getIntExtra("antialias", GameOptions.intValue(this, GameOptions.ANTIALIAS)), getFilesDir().getAbsolutePath());
         nativeWidescreen(launch.getBooleanExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on")));
         nativeWrongWayWarning(launch.getBooleanExtra("wrongWay", GameOptions.get(this, GameOptions.WRONGWAY).equals("on")));
+        nativeHdReflections(launch.getBooleanExtra("hdReflections", GameOptions.get(this, GameOptions.REFLECTIONS).equals("sharp")));
         String server = launch.getStringExtra("onlineServer");
         nativeOnlineServer(GameOptions.validServer(server) ? server : GameOptions.onlineServer(this));
         nativeMinimapTop(launch.getBooleanExtra("minimapTop", GameOptions.get(this, GameOptions.MINIMAP).equals("top")));
