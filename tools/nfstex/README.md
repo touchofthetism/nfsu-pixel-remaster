@@ -9,8 +9,9 @@ TSELECT.BIN, MAGAZINE_TEXTURES.BIN, DYNTEX.BIN, Cars/*/TEXTURES.BIN), whose blob
   EA's compressor on the game's own textures), an exact emulation of Speed.exe's JDLZ decoder for verification, texture pack parse/serialize (bundle and streaming layouts with the engine's
   128-byte alignment rules reproduced), DDS export, in-place texture replacement, whole-file rebuild that
   keeps the neighbouring chunks aligned.
-- `upscale.py` — Real-ESRGAN inference without basicsr (RRDBNet and the compact anime-video net), alpha
-  through the same network, tiled.
+- `upscale.py` — Real-ESRGAN inference without basicsr (RRDBNet: x4plus, x2plus, anime 6B; the compact nets:
+  animevideo, general), tiled; alpha through the colour net or a cheaper one. Two cores manage about 65
+  thousand input pixels a second with animevideo, 30k with general, 16k with x2plus, 2k with x4plus.
 - `hdpack.py` — builds an HD texture pack (a launcher mod pack ZIP with `nfsu-modpack.json`) from a game
   folder: HUD gauges 4×, interface 2–4×, track previews 2×, world photographs 2× up to 512 px, car detail
   maps 4×/2×, DXT3/DXT1 with mip chains that stop at 8 px like the originals, bundles written uncompressed
@@ -19,6 +20,12 @@ TSELECT.BIN, MAGAZINE_TEXTURES.BIN, DYNTEX.BIN, Cars/*/TEXTURES.BIN), whose blob
   the texture list against the source. A bundle whose textures all stay stock is left out of the pack;
   `--limit N` upscales only the first N textures per bundle for a quick look at a policy;
   `--repack old.zip` rewrites an existing pack with the current code (no upscaling, no game folder).
+  Colour goes through x4plus for 4× and x2plus for 2× (they recover detail on the game's photographs that the
+  compact anime-tuned net of packs v1–v9 smoothed into paint), alpha through animevideo; `--fast` uses
+  animevideo throughout. Each texture is a job keyed by its source bytes, factor, models and
+  `UPSCALE_VERSION`: `--shard K/N --cache DIR` upscales one of N cost-balanced shares into finished DDS files,
+  and a build with `--cache DIR` and no models packs from them (the private workflow runs the shares as a
+  matrix of jobs).
 - `tests/` — synthetic-data tests run by `.github/workflows/check.yml`.
 
 Format notes (Underground 1):

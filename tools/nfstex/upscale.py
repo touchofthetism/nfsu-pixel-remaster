@@ -2,11 +2,16 @@
 
 Two network definitions, matching the public Real-ESRGAN checkpoints byte for byte:
   * ``RRDBNet`` — RealESRGAN_x4plus (23 blocks), RealESRGAN_x4plus_anime_6B (6 blocks), RealESRGAN_x2plus
-    (23 blocks, pixel-unshuffle input, scale 2).
-  * ``SRVGGNetCompact`` — realesr-animevideov3 (x4, tiny; clean edges for UI and gauge art, fast on a CPU).
+    (23 blocks, pixel-unshuffle input, scale 2: a quarter of x4plus's work per input pixel).
+  * ``SRVGGNetCompact`` — realesr-animevideov3 (x4, tiny; clean edges for UI and gauge art, fast on a CPU) and
+    realesr-general-x4v3 (x4, the photograph-trained compact net).
 
-Alpha is upscaled as a separate greyscale image through the same network (replicated to RGB), which keeps
-mask edges as crisp as the colour edges. Images are padded to a multiple of 4 and tiled so large textures
+Measured on two cores: animevideo ~65 thousand input pixels a second, general ~30k, x2plus ~16k, x4plus ~2k.
+On the game's photographs (track previews, car parts, portraits) x4plus and x2plus recover detail the compact
+nets smooth into paint; on flat art all four are clean.
+
+Alpha is upscaled as a separate greyscale image (replicated to RGB), through the colour net or a cheaper one,
+which keeps mask edges as crisp as the colour edges. Images are padded to a multiple of 4 and tiled so large textures
 fit in memory. Runs on CPU; torch is the only dependency (plus numpy/Pillow for the image plumbing).
 """
 from __future__ import annotations
@@ -125,6 +130,8 @@ class SRVGGNetCompact(nn.Module):
 MODELS = {
     # name: (builder, scale, filename)
     "animevideo": (lambda: SRVGGNetCompact(num_feat=64, num_conv=16, upscale=4), 4, "realesr-animevideov3.pth"),
+    # The compact net trained on real-world photographs (twice the convolutions of animevideo, ~1/10 of RRDBNet).
+    "general": (lambda: SRVGGNetCompact(num_feat=64, num_conv=32, upscale=4), 4, "realesr-general-x4v3.pth"),
     "x4plus": (lambda: RRDBNet(scale=4, num_block=23), 4, "RealESRGAN_x4plus.pth"),
     "anime6b": (lambda: RRDBNet(scale=4, num_block=6), 4, "RealESRGAN_x4plus_anime_6B.pth"),
     "x2plus": (lambda: RRDBNet(scale=2, num_block=23), 2, "RealESRGAN_x2plus.pth"),
@@ -167,22 +174,31 @@ def upscale_array(rgb: np.ndarray, model: nn.Module, scale: int, tile: int = 128
     return (out.squeeze(0).permute(1, 2, 0).clamp(0, 1).numpy() * 255.0 + 0.5).astype(np.uint8)
 
 
-def upscale_image(image: Image.Image, model_name: str, models_dir: str, factor: int) -> Image.Image:
-    """Upscales an RGBA image by ``factor`` (2 or 4) with the named model; alpha goes through the same net."""
+def upscale_image(image: Image.Image, model_name: str, models_dir: str, factor: int,
+                  alpha_model: str | None = None) -> Image.Image:
+    """Upscales an RGBA image by ``factor`` (2 or 4) with the named model. Alpha goes through ``alpha_model``
+    when given (a mask needs clean edges, not recovered detail: the compact net does it at a fraction of the
+    cost), else through the same net as the colour. Each result is resized to the factor when its model's
+    scale differs (x4 models for a 2x target)."""
     model, scale = load_model(model_name, models_dir)
+    target = (image.width * factor, image.height * factor)
     rgba = np.array(image.convert("RGBA"))
     rgb, alpha = rgba[:, :, :3], rgba[:, :, 3]
     # Transparent pixels carry garbage colour in many game textures; bleed the visible colour outward first
     # so the network does not sharpen the junk into visible fringes at the alpha edge.
     rgb = bleed_colour(rgb, alpha)
-    up_rgb = upscale_array(rgb, model, scale)
+    up_rgb = Image.fromarray(upscale_array(rgb, model, scale), "RGB")
+    if up_rgb.size != target:
+        up_rgb = up_rgb.resize(target, Image.LANCZOS)
     if alpha.min() == 255:
-        up_alpha = np.full(up_rgb.shape[:2], 255, np.uint8)
+        up_alpha = Image.new("L", target, 255)
     else:
-        up_alpha = upscale_array(np.repeat(alpha[:, :, None], 3, axis=2), model, scale)[:, :, 0]
-    result = Image.fromarray(np.dstack([up_rgb, up_alpha]), "RGBA")
-    if factor != scale:
-        result = result.resize((image.width * factor, image.height * factor), Image.LANCZOS)
+        a_model, a_scale = (model, scale) if alpha_model is None else load_model(alpha_model, models_dir)
+        up_alpha = Image.fromarray(upscale_array(np.repeat(alpha[:, :, None], 3, axis=2), a_model, a_scale)[:, :, 0], "L")
+        if up_alpha.size != target:
+            up_alpha = up_alpha.resize(target, Image.LANCZOS)
+    result = up_rgb.convert("RGBA")
+    result.putalpha(up_alpha)
     return result
 
 

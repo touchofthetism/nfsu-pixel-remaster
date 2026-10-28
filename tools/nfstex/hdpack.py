@@ -8,7 +8,15 @@ game's own modded copies and the Free Roam mod show). The result is a ZIP the la
 pack: files at their game-folder paths plus ``nfsu-modpack.json`` describing them.
 
 Usage:
-  hdpack.py --game <game folder> --out <pack.zip> --models <dir with Real-ESRGAN .pth> [--profile hud|ui|all]
+  hdpack.py --game <game folder> --out <pack.zip> --models <dir with Real-ESRGAN .pth> [--profile hud|ui|cars|all]
+  hdpack.py --game <game folder> --models <dir> --cache <dir> --shard K/N [--profile ...]   (upscale one share)
+  hdpack.py --game <game folder> --out <pack.zip> --cache <dir> [--profile ...]             (pack from the shares)
+
+The sharper models are slow on a CPU (Real-ESRGAN x4plus: about two thousand input pixels a second on two
+cores), so the work can be split: every texture to upscale becomes a job keyed by its source bytes, the
+factor, the models and UPSCALE_VERSION; ``--shard K/N`` runs the K-th of N cost-balanced shares and writes
+each result as a ready DDS (mip chain encoded) to ``--cache``; the pack is then built from the cache with no
+upscaling at all. A key that is already in the cache is never upscaled again.
 
 Memory discipline (32-bit guest, phone): the upscale factor depends on the texture's size, and the
 output edge is capped, so a pack stays within a few tens of MB of texture memory per bundle.
@@ -16,6 +24,8 @@ output edge is capped, so a pack stays within a few tens of MB of texture memory
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import hashlib
 import io
 import json
 import os
@@ -47,18 +57,31 @@ PROFILES = {
 PROFILES["cars"] = [("Cars/*/TEXTURES.BIN", "Cars/*/TEXTURES.BIN", "car")]
 PROFILES["all"] = PROFILES["ui"] + PROFILES["cars"]
 
-# Policy: (model, max output edge, factor for inputs <= 128, factor for inputs <= 256, factor above).
+# Policy: (max output edge, factor for inputs <= 128, factor for inputs <= 256, factor above).
 POLICIES = {
-    "hud": ("animevideo", 1024, 4, 4, 2),
-    "ui": ("animevideo", 1024, 4, 2, 2),
-    # Photographs also go through the compact net: RRDBNet is 20x slower on a CPU and the gain on these
-    # mostly-dark 2003 renders is small at 2x. 512-px ones stay as they are (world textures in Road_Segment).
-    "photo": ("animevideo", 512, 4, 2, 1),
+    "hud": (1024, 4, 4, 2),
+    "ui": (1024, 4, 2, 2),
+    # World photographs (Road_Segment): 512-px ones stay as they are.
+    "photo": (512, 4, 2, 1),
     # Track previews: 512x256 -> 1024x512 (the whole set is 54 MB of DXT1, resident only in the front end).
-    "preview": ("animevideo", 1024, 4, 2, 2),
+    "preview": (1024, 4, 2, 2),
     # Cars: small detail maps 4x, 256-px ones 2x, the few 512-px ones as they are (several cars stay loaded).
-    "car": ("animevideo", 512, 4, 2, 1),
+    "car": (512, 4, 2, 1),
 }
+
+# Models. Colour goes through Real-ESRGAN's general models, x4plus for a 4x target and x2plus for 2x: on the
+# game's photographs (track previews, car parts, portraits) they recover detail that the compact anime-tuned
+# net of packs v1-v9 smoothed into paint, and flat art comes out as clean; x2plus works on a half-resolution
+# unshuffle, a quarter of x4plus's cost. Alpha (masks and cut-outs) goes through the compact animevideo net:
+# edges as clean at a thirtieth of the cost. --fast uses animevideo for everything, as packs v1-v9 did.
+COLOUR_MODELS = {4: "x4plus", 2: "x2plus"}
+ALPHA_MODEL = "animevideo"
+FAST_MODEL = "animevideo"
+# Part of every job key: bump it whenever the same source would come out differently (models, the colour
+# bleed, the DXT encoder, the mip rules), so no stale result is ever reused.
+UPSCALE_VERSION = "2"
+# Relative cost per input pixel, measured on two cores, for balancing shards.
+MODEL_COST = {"x4plus": 7.6, "x2plus": 1.0, "general": 0.5, "animevideo": 0.25, "anime6b": 2.5}
 
 
 def should_skip(texture: tpk.Texture, policy_name: str = "") -> str:
@@ -79,7 +102,7 @@ def should_skip(texture: tpk.Texture, policy_name: str = "") -> str:
 
 
 def factor_for(policy, width: int, height: int) -> int:
-    _, max_edge, f128, f256, fbig = policy
+    max_edge, f128, f256, fbig = policy
     edge = max(width, height)
     factor = f128 if edge <= 128 else f256 if edge <= 256 else fbig
     while edge * factor > max_edge and factor > 1:
@@ -132,13 +155,38 @@ def soft_alpha(image: Image.Image) -> bool:
     return sum(1 for count in histogram if count) > 17
 
 
-def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_dir: str, log,
-                   limit: int = 0) -> bytes | None:
-    """The rebuilt bundle, or None when no texture qualified (the stock file is then left alone).
+def models_for(factor: int, fast: bool) -> tuple[str, str]:
+    """(colour model, alpha model) for an upscale factor."""
+    return (FAST_MODEL, FAST_MODEL) if fast else (COLOUR_MODELS[factor], ALPHA_MODEL)
 
-    limit > 0 upscales only the first `limit` eligible textures (for local checks of a policy)."""
-    from nfstex import upscale  # torch import deferred: only needed when building
-    policy = POLICIES[policy_name]
+
+@dataclasses.dataclass
+class Job:
+    """One texture to upscale. The key covers everything the result depends on."""
+    key: str
+    relative: str
+    texture: tpk.Texture
+    factor: int
+    colour: str
+    alpha: str
+
+    @property
+    def cost(self) -> float:
+        pixels = self.texture.width * self.texture.height
+        alpha = 0.0 if self.texture.compression == tpk.COMP_DXT1 else MODEL_COST.get(self.alpha, 1.0)
+        return pixels * (MODEL_COST.get(self.colour, 1.0) + alpha)
+
+
+def job_key(texture: tpk.Texture, factor: int, colour: str, alpha: str) -> str:
+    digest = hashlib.sha1(f"nfstex-hd {UPSCALE_VERSION} {texture.width}x{texture.height} {texture.compression} "
+                          f"x{factor} {colour} {alpha}".encode())
+    digest.update(texture.pixels)
+    digest.update(texture.palette)
+    return digest.hexdigest()
+
+
+def load_bundle(game: pathlib.Path, relative: str):
+    """(decompressed data, [(offset, chunk)], [TexturePack]) of a game file, found case-insensitively."""
     path = game / relative
     if not path.is_file():
         for candidate in path.parent.iterdir() if path.parent.is_dir() else []:
@@ -148,46 +196,163 @@ def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_d
     data = path.read_bytes()
     if tpk.is_jdlz(data):
         data = tpk.jdlz_decompress(data)
-    packs = tpk.find_texture_packs(data)
-    rebuilt = {}
-    stats = {"textures": 0, "upscaled": 0, "skipped": 0, "bytes_in": 0, "bytes_out": 0}
-    started = time.time()
-    for offset, chunk in packs:
-        pack = tpk.TexturePack.parse(chunk, data, offset)
+    chunks = tpk.find_texture_packs(data)
+    return data, chunks, [tpk.TexturePack.parse(chunk, data, offset) for offset, chunk in chunks]
+
+
+def profile_bundles(game: pathlib.Path, profile: str, only: str | None = None):
+    """[(input path, policy, [output paths])] for a profile, globs expanded, each input listed once."""
+    found = {}
+    for relative, output, policy in PROFILES[profile]:
+        if only and relative not in only.split(","):
+            continue
+        if "*" in relative:
+            for path in sorted(game.glob(relative)):
+                rel = path.relative_to(game).as_posix()
+                found.setdefault(rel, (policy, []))[1].append(rel)
+        else:
+            found.setdefault(relative, (policy, []))[1].append(output)
+    return [(rel, policy, outputs) for rel, (policy, outputs) in found.items()]
+
+
+def bundle_jobs(relative: str, packs, policy_name: str, limit: int = 0, fast: bool = False):
+    """The jobs of one bundle, in texture order (limit > 0: the first `limit` eligible textures only)."""
+    policy = POLICIES[policy_name]
+    jobs = []
+    for pack in packs:
         for texture in pack.textures:
-            stats["textures"] += 1
-            stats["bytes_in"] += len(texture.pixels)
-            reason = should_skip(texture, policy_name)
-            if reason:
-                stats["skipped"] += 1
-                stats["bytes_out"] += len(texture.pixels)
+            if should_skip(texture, policy_name):
                 continue
             factor = factor_for(policy, texture.width, texture.height)
-            if factor < 2 or (limit and stats["upscaled"] >= limit):
-                stats["skipped"] += 1
-                stats["bytes_out"] += len(texture.pixels)
+            if factor < 2 or (limit and len(jobs) >= limit):
                 continue
-            image = Image.open(io.BytesIO(texture.to_dds())).convert("RGBA")
-            up = upscale.upscale_image(image, policy[0], models_dir, factor)
-            # The output keeps the stored format family: DXT sources stay DXT (DXT3 when there is alpha),
-            # uncompressed sources (interface bundles only; cars skip them above) stay A8R8G8B8 when their
-            # alpha is a gradient and go DXT when it is a hard mask or absent.
-            compression = tpk.COMP_A8R8G8B8 if texture.compression == tpk.COMP_A8R8G8B8 and soft_alpha(image) \
-                else tpk.COMP_DXT3 if has_alpha(image) else tpk.COMP_DXT1
-            texture.replace_with_dds(mip_chain_dds(up, compression))
-            stats["upscaled"] += 1
-            stats["bytes_out"] += len(texture.pixels)
-            log(f"  {relative}: {texture.name} {image.width}x{image.height} -> {up.width}x{up.height} "
-                f"{ {tpk.COMP_DXT3: 'DXT3', tpk.COMP_DXT1: 'DXT1', tpk.COMP_A8R8G8B8: 'A8R8G8B8'}[compression]} "
-                f"({stats['upscaled']} done, {time.time() - started:.0f}s)")
-        rebuilt[offset] = (lambda base, p=pack: p.serialize(base))
+            colour, alpha = models_for(factor, fast)
+            jobs.append(Job(job_key(texture, factor, colour, alpha), relative, texture, factor, colour, alpha))
+    return jobs
+
+
+def plan(game: pathlib.Path, profile: str, only: str | None = None, limit: int = 0, fast: bool = False):
+    """Every distinct job of a profile, in a fixed order (the same in every shard and in the pack step)."""
+    jobs, seen = [], set()
+    for relative, policy, _ in profile_bundles(game, profile, only):
+        _, _, packs = load_bundle(game, relative)
+        for job in bundle_jobs(relative, packs, policy, limit, fast):
+            if job.key not in seen:
+                seen.add(job.key)
+                jobs.append(job)
+    return jobs
+
+
+def assign_shards(jobs, count: int):
+    """Splits the jobs into `count` shares of near-equal cost: largest first, each to the lightest share
+    (ties to the lower index). Deterministic for the same plan."""
+    shares = [[] for _ in range(count)]
+    loads = [0.0] * count
+    for job in sorted(jobs, key=lambda j: (-j.cost, j.key)):
+        lightest = min(range(count), key=lambda i: (loads[i], i))
+        shares[lightest].append(job)
+        loads[lightest] += job.cost
+    return shares, loads
+
+
+class Cache:
+    """Finished textures as DDS files named by job key, in one directory."""
+
+    def __init__(self, directory: str | None):
+        self.directory = pathlib.Path(directory) if directory else None
+        if self.directory:
+            self.directory.mkdir(parents=True, exist_ok=True)
+
+    def get(self, key: str) -> bytes | None:
+        if not self.directory:
+            return None
+        path = self.directory / f"{key}.dds"
+        return path.read_bytes() if path.is_file() else None
+
+    def put(self, key: str, dds: bytes) -> None:
+        if not self.directory:
+            return
+        temp = self.directory / f"{key}.dds.tmp"
+        temp.write_bytes(dds)
+        os.replace(temp, self.directory / f"{key}.dds")
+
+
+def build_dds(job: Job, models_dir: str) -> bytes:
+    """Upscales one texture and encodes it in the format family it was stored in. DXT sources stay DXT (DXT3
+    when there is alpha); uncompressed sources (interface bundles only; cars skip them) stay A8R8G8B8 when
+    their alpha is a gradient and go DXT when it is a hard mask or absent."""
+    from nfstex import upscale  # torch import deferred: only needed when upscaling
+    texture = job.texture
+    image = Image.open(io.BytesIO(texture.to_dds())).convert("RGBA")
+    up = upscale.upscale_image(image, job.colour, models_dir, job.factor, alpha_model=job.alpha)
+    compression = tpk.COMP_A8R8G8B8 if texture.compression == tpk.COMP_A8R8G8B8 and soft_alpha(image) \
+        else tpk.COMP_DXT3 if has_alpha(image) else tpk.COMP_DXT1
+    return mip_chain_dds(up, compression)
+
+
+def dds_summary(dds: bytes) -> str:
+    """"1024x512 DXT1" from a DDS header."""
+    height, width = struct.unpack_from("<II", dds, 12)
+    fourcc = dds[84:88]
+    return f"{width}x{height} {fourcc.decode('ascii') if fourcc in (b'DXT1', b'DXT3', b'DXT5') else 'A8R8G8B8'}"
+
+
+def run_shard(jobs, index: int, count: int, cache: Cache, models_dir: str, log) -> int:
+    """Upscales share `index` of `count` into the cache; returns how many were upscaled (cached ones skipped)."""
+    shares, loads = assign_shards(jobs, count)
+    mine = shares[index]
+    log(f"shard {index + 1}/{count}: {len(mine)} of {len(jobs)} jobs, cost {loads[index] / 1e6:.1f} "
+        f"(shares {min(loads) / 1e6:.1f}-{max(loads) / 1e6:.1f})")
+    started, done = time.time(), 0
+    for number, job in enumerate(mine, 1):
+        if cache.get(job.key) is not None:
+            continue
+        dds = build_dds(job, models_dir)
+        cache.put(job.key, dds)
+        done += 1
+        log(f"  {job.relative}: {job.texture.name} {job.texture.width}x{job.texture.height} -> {dds_summary(dds)} "
+            f"{job.colour}/{job.alpha} ({number}/{len(mine)}, {time.time() - started:.0f}s)")
+    return done
+
+
+def process_bundle(game: pathlib.Path, relative: str, policy_name: str, models_dir: str | None, log,
+                   limit: int = 0, cache: Cache | None = None, fast: bool = False) -> bytes | None:
+    """The rebuilt bundle, or None when no texture qualified (the stock file is then left alone).
+
+    Each upscaled texture comes from the cache when it holds the job's key, else is upscaled here (and
+    stored in the cache) when models are given; a missing result without models stops the build.
+    limit > 0 upscales only the first `limit` eligible textures (for local checks of a policy)."""
+    cache = cache or Cache(None)
+    data, chunks, packs = load_bundle(game, relative)
+    jobs = bundle_jobs(relative, packs, policy_name, limit, fast)
+    stats = {"textures": sum(len(p.textures) for p in packs), "upscaled": 0, "cached": 0,
+             "bytes_in": sum(len(t.pixels) for p in packs for t in p.textures), "bytes_out": 0}
+    started = time.time()
+    for job in jobs:
+        dds = cache.get(job.key)
+        if dds is not None:
+            stats["cached"] += 1
+        elif models_dir:
+            dds = build_dds(job, models_dir)
+            cache.put(job.key, dds)
+        else:
+            raise SystemExit(f"{relative}: {job.texture.name} ({job.key}) is not in the cache and no models were given")
+        before = len(job.texture.pixels)
+        job.texture.replace_with_dds(dds)
+        stats["upscaled"] += 1
+        stats["bytes_out"] += len(job.texture.pixels) - before
+        log(f"  {relative}: {job.texture.name} -> {dds_summary(dds)} {job.colour}/{job.alpha} "
+            f"({stats['upscaled']} done, {time.time() - started:.0f}s)")
+    stats["bytes_out"] += stats["bytes_in"]
+    kept = stats["textures"] - stats["upscaled"]
     if not stats["upscaled"]:
-        log(f"{relative}: nothing to upscale under policy {policy_name} ({stats['skipped']} textures kept); not shipped")
+        log(f"{relative}: nothing to upscale under policy {policy_name} ({kept} textures kept); not shipped")
         return None
-    out = tpk.replace_texture_packs(data, packs, rebuilt)
+    rebuilt = {offset: (lambda base, p=pack: p.serialize(base)) for (offset, _), pack in zip(chunks, packs)}
+    out = tpk.replace_texture_packs(data, chunks, rebuilt)
     blobs = verify_rebuilt(relative, data, out)
-    log(f"{relative}: {stats['upscaled']} upscaled, {stats['skipped']} kept, texture bytes {stats['bytes_in'] >> 10} KB -> {stats['bytes_out'] >> 10} KB, "
-        f"file {len(out) >> 10} KB, {blobs} JDLZ blobs pass the game's decoder")
+    log(f"{relative}: {stats['upscaled']} upscaled ({stats['cached']} from the cache), {kept} kept, texture bytes "
+        f"{stats['bytes_in'] >> 10} KB -> {stats['bytes_out'] >> 10} KB, file {len(out) >> 10} KB, {blobs} JDLZ blobs pass the game's decoder")
     return out
 
 
@@ -249,47 +414,57 @@ def repack(source_zip: str, out_zip: str, version: str, name: str | None, log) -
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="game folder (holds Speed.exe)")
-    parser.add_argument("--out", required=True, help="output ZIP")
-    parser.add_argument("--models", help="directory with the Real-ESRGAN .pth files")
+    parser.add_argument("--out", help="output ZIP")
+    parser.add_argument("--models", help="directory with the Real-ESRGAN .pth files (not needed when the cache holds every job)")
     parser.add_argument("--profile", default="ui", choices=sorted(PROFILES))   # hud | ui | cars | all
     parser.add_argument("--name", default=None, help="pack name in the manifest (default: HD interface pack, or the repacked pack's own)")
     parser.add_argument("--version", default="1")
     parser.add_argument("--only", help="comma-separated bundle names to build (others skipped)")
     parser.add_argument("--limit", type=int, default=0, help="upscale at most N textures per bundle (policy checks)")
+    parser.add_argument("--cache", help="directory of finished textures (DDS by job key): read, and written when upscaling")
+    parser.add_argument("--shard", metavar="K/N", help="upscale only the K-th (1-based) of N cost-balanced shares into --cache, then stop")
+    parser.add_argument("--fast", action="store_true", help="the compact animevideo net for colour too (packs v1-v9), for quick checks")
     parser.add_argument("--repack", metavar="PACK.zip", help="rewrite an existing HD pack with the current code instead of upscaling (no game folder or models needed)")
     args = parser.parse_args()
     if args.repack:
+        if not args.out:
+            parser.error("--out is required")
         repack(args.repack, args.out, args.version, args.name, print)
         return
-    if not args.game or not args.models:
-        parser.error("--game and --models are required unless --repack is given")
+    if not args.game:
+        parser.error("--game is required unless --repack is given")
+    game = pathlib.Path(args.game)
+    cache = Cache(args.cache)
+    if args.shard:
+        if not args.cache or not args.models:
+            parser.error("--shard needs --cache and --models")
+        index, count = (int(v) for v in args.shard.split("/"))
+        if not 1 <= index <= count:
+            parser.error("--shard K/N needs 1 <= K <= N")
+        jobs = plan(game, args.profile, args.only, args.limit, args.fast)
+        run_shard(jobs, index - 1, count, cache, args.models, print)
+        return
+    if not args.out:
+        parser.error("--out is required")
+    if not args.models and not args.cache:
+        parser.error("--models or --cache is required")
     if args.name is None:
         args.name = "HD interface pack"
-    game = pathlib.Path(args.game)
     files = {}
-    processed = {}     # one upscale per input, however many names it is written under
-    for relative, output, policy in PROFILES[args.profile]:
-        if args.only and relative not in args.only.split(","):
-            continue
-        if "*" in relative:
-            for path in sorted(game.glob(relative)):
-                rel = path.relative_to(game).as_posix()
-                built = process_bundle(game, rel, policy, args.models, print, args.limit)
-                if built is not None:
-                    files[rel] = built
-            continue
-        if relative not in processed:
-            processed[relative] = process_bundle(game, relative, policy, args.models, print, args.limit)
-        if processed[relative] is not None:
-            files[output] = processed[relative]
+    for relative, policy, outputs in profile_bundles(game, args.profile, args.only):
+        built = process_bundle(game, relative, policy, args.models, print, args.limit, cache, args.fast)
+        if built is not None:
+            for output in outputs:
+                files[output] = built
     if not files:
         sys.exit("no bundle changed: nothing to pack")
+    colour = "Real-ESRGAN animevideo" if args.fast else "Real-ESRGAN x4plus (4x) and x2plus (2x), alpha through animevideo"
     manifest = {
         "format": 1,
         "name": args.name,
         "version": args.version,
         "game": "nfsu1",
-        "notes": "Upscaled with Real-ESRGAN from the game's own textures; bundles rewritten uncompressed.",
+        "notes": f"Upscaled with {colour} from the game's own textures; bundles rewritten uncompressed.",
         "files": [{"path": p, "bytes": len(b)} for p, b in files.items()],
         # The uncompressed bundle replaces both names the game may look for.
         "remove": [],
