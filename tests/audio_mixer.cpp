@@ -29,8 +29,8 @@ int main(){
     {
         PcmMixer mixer;
         for(unsigned i=0;i<3;++i){auto voice=std::make_shared<PcmVoice>();voice->channels=1;pcm16(*voice,{16384});voice->playing=voice->loop=true;mixer.add(voice);}
-        mixer.render(out,8);for(float value:out)require(value==1,"mixed output must stay within PCM range");
-        require(mixer.peakAmplitude==1.5f&&mixer.clippedSamples==16,"detect saturation before clamping");
+        mixer.render(out,8);for(float value:out)require(value==1.5f,"the mixer leaves the raw sum for the limiter");
+        require(mixer.peakAmplitude==1.5f&&mixer.clippedSamples==16,"overs measured on the raw sum");
     }
     {
         constexpr double pi=3.14159265358979323846;PcmMixer mixer;
@@ -49,5 +49,5 @@ int main(){
         require(std::abs(tone-0.25)<0.005,"filter must preserve the original tone level");
         std::printf("Resampling image at 16.05 kHz: %.1f dB improvement, source amplitude %.4f\n",20*std::log10(oldImage/newImage),tone);
     }
-    std::puts("PCM mixer passed: 8-bit silence, signed stereo, mute, fractional pitch, loop boundaries and clipping detection");
+    std::puts("PCM mixer passed: 8-bit silence, signed stereo, mute, fractional pitch, loop boundaries and overs detection");
 }

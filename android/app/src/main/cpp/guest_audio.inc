@@ -1,4 +1,5 @@
 #include "audio_mixer.h"
+#include "audio_limiter.h"
 constexpr uint32_t soundMethodBase=0x7c000000;
 constexpr uint32_t soundBadFormat=0x88780064;
 PcmMixer soundMixer;
@@ -20,9 +21,14 @@ struct AudioStats{int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0;};
 AudioStats lastAudioStats;
 int32_t soundLastXruns=0;
 std::atomic<uint32_t> soundCallbackPeakUs{0};
+// The mix can sum past full scale (music + engine + effects in a race); the look-ahead limiter keeps it in
+// range without flattening the peaks (audio_limiter.h). Configured when the stream starts, then used only
+// on the callback thread.
+PeakLimiter soundLimiter;
 aaudio_data_callback_result_t soundCallback(AAudioStream*,void*,void* data,int32_t frames){
     auto start=std::chrono::steady_clock::now();
     soundMixer.render(static_cast<float*>(data),unsigned(frames));
+    soundLimiter.process(static_cast<float*>(data),unsigned(frames));
     uint32_t us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());
     auto peak=soundCallbackPeakUs.load(std::memory_order_relaxed);
     while(us>peak&&!soundCallbackPeakUs.compare_exchange_weak(peak,us,std::memory_order_relaxed)){}
@@ -63,6 +69,7 @@ bool startSoundStream(){
     if(!soundStream)soundStream=openSoundStream(AAUDIO_PERFORMANCE_MODE_NONE);
     if(!soundStream)return false;
     soundMixer.rate=unsigned(AAudioStream_getSampleRate(soundStream));
+    soundLimiter.configure(soundMixer.rate);
     AAudioStream_setBufferSizeInFrames(soundStream,soundFrames(soundTargetMs));
     soundLastXruns=0;soundCallbackPeakUs=0;
     auto status=AAudioStream_requestStart(soundStream);
@@ -90,7 +97,8 @@ void serviceGuestSound(){
             }
             object.maxPublishGap={};}}
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio producer: maxPublishGap=%.2f ms ring=%.2f ms",publishGapMs,ringMs);
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio mix: active=%u peak=%.4f clipped=%llu",active,double(peak),static_cast<unsigned long long>(clipped));
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio mix: active=%u peak=%.4f over full scale=%llu limited frames=%llu (limiter ceiling -0.3 dBFS)",active,double(peak),
+        static_cast<unsigned long long>(clipped),static_cast<unsigned long long>(soundLimiter.limitedFrames.exchange(0,std::memory_order_relaxed)));
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio health: xruns=%d buffer=%d/%d burst=%d rate=%u callbackPeak=%u us mode=%d",
         xruns,AAudioStream_getBufferSizeInFrames(soundStream),capacity,burst,soundMixer.rate,
         soundCallbackPeakUs.exchange(0,std::memory_order_relaxed),int(AAudioStream_getPerformanceMode(soundStream)));

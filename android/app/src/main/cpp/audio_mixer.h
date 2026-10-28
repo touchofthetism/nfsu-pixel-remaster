@@ -31,7 +31,8 @@ public:
     std::mutex mutex;
     std::array<std::shared_ptr<PcmVoice>,128> voices{};
     unsigned rate=48000;
-    // Protected by mutex, including callback updates. Inspect before clamping.
+    // Protected by mutex, including callback updates. Measured on the raw sum: samples over full scale and
+    // the largest amplitude. The sum is left as it is; PeakLimiter (audio_limiter.h) brings it into range.
     uint64_t clippedSamples=0;float peakAmplitude=0;
     bool add(const std::shared_ptr<PcmVoice>& voice){
         std::lock_guard<std::mutex> lock(mutex);
@@ -87,7 +88,6 @@ public:
         for(unsigned i=0;i<frames*2;++i){
             float amplitude=std::abs(output[i]);peakAmplitude=std::max(peakAmplitude,amplitude);
             if(amplitude>1.f)++clippedSamples;
-            output[i]=std::clamp(output[i],-1.f,1.f);
         }
     }
 };
