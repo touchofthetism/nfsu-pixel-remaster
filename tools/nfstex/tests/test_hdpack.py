@@ -1,5 +1,6 @@
 """Pack-level checks for tools/nfstex/hdpack.py: the post-build verification and --repack (no game files, no torch)."""
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -344,15 +345,16 @@ class TracksProfileTests(unittest.TestCase):
         self.assertEqual({"Tracks/STREAMT1_1234.BUN", "Tracks/TRACKB1234.lzc"}, set(files))
 
 
-def named_pack(path: str, names, size: int = 16, compressed: bool = False) -> tpk.TexturePack:
+def named_pack(path: str, names, size: int = 16, compressed: bool = False, mips: int = 2) -> tpk.TexturePack:
     """A pack whose header path gives its collection name (``Global\\FrontEndTexturesPC.tpk``) and whose textures
-    carry the game's name hashes, so a mod's DDS stems find them: DXT1, 2 mips, each with bytes of its own. Record
-    names are cut at 24 bytes as the game's are (the hash is of the whole name)."""
+    carry the game's name hashes, so a mod's DDS stems find them: DXT1, ``mips`` levels, each with bytes of its
+    own. Record names are cut at 24 bytes as the game's are (the hash is of the whole name)."""
     pack = synthetic_pack()
     pack.header[32:96] = path.encode("latin1").ljust(64, b"\0")
     pack.compressed_source = compressed
-    chain = sum(tpk.mip_sizes(size, size, 2, tpk.COMP_DXT1))
-    pack.textures = [tpk.Texture(make_record(name[:24], size, size, tpk.COMP_DXT1, 2, chain, chain * 4 // 5, tpk.bin_hash(name)),
+    chain = sum(tpk.mip_sizes(size, size, mips, tpk.COMP_DXT1))
+    base = tpk.mip_sizes(size, size, 1, tpk.COMP_DXT1)[0]
+    pack.textures = [tpk.Texture(make_record(name[:24], size, size, tpk.COMP_DXT1, mips, chain, base, tpk.bin_hash(name)),
                                  make_format(b"DXT1"), bytes((index * 31 + i) % 251 for i in range(chain)), b"")
                      for index, name in enumerate(names)]
     return pack
@@ -421,16 +423,70 @@ class OverlayTests(unittest.TestCase):
                 after = textures_of(out)["FRONTENDTEXTURESPC"]
                 self.assertEqual(3, len(after))                                        # replaced, never added
                 button = after[tpk.bin_hash("BUTTON")]
-                self.assertEqual((64, 32, 1, tpk.COMP_DXT1), (button.width, button.height, button.mips, button.compression))
-                self.assertEqual(tpk.parse_dds(dxt1_dds(64, 32, 1))[4], button.pixels)
+                # The DDS's own level, then the levels it came without (the game mipmaps this texture): 64x32 -> 16x8.
+                self.assertEqual((64, 32, 3, tpk.COMP_DXT1), (button.width, button.height, button.mips, button.compression))
+                self.assertEqual(tpk.parse_dds(dxt1_dds(64, 32, 1))[4], button.pixels[:1024])
+                self.assertEqual(1024 + 256 + 64, len(button.pixels))
                 gauge = after[tpk.bin_hash("3RDPERSON_DRIFTANGLE_ANGLE_DEGREES")]      # the misnamed file found its texture
-                self.assertEqual(tpk.parse_dds(dxt1_dds(32, 32, 2))[4], gauge.pixels)
+                self.assertEqual(tpk.parse_dds(dxt1_dds(32, 32, 2))[4], gauge.pixels[:512])
+                self.assertEqual(2, report["mips_completed"])
                 self.assertEqual(["3RDPERSON_DRIFTANGLE_ANGLE_DEGREE -> 3RDPERSON_DRIFTANGLE_ANGLE_DEGREES"], report["aliased"])
                 logo = after[tpk.bin_hash("LOGO")]                                     # not in the mod: exactly as it was
                 self.assertEqual((pack.textures[1].pixels, 16, 2), (logo.pixels, logo.width, logo.mips))
                 self.assertEqual(bytes(pack.textures[1].record[:0x30]), bytes(logo.record[:0x30]))
                 self.assertEqual(2, report["replaced"])
                 self.assertEqual(3 if compressed else 0, report["blobs"])              # one per texture, each passing the game's decoder
+
+    def test_missing_mip_levels(self):
+        import numpy as np
+        from PIL import Image
+        hdpack = self.hdpack
+        self.assertEqual([4, 5, 3, 1, 6], [hdpack.game_mip_count(*size) for size in ((256, 64), (128, 128), (64, 32), (8, 8), (1024, 256))])
+        # A solid colour in, its own top level kept byte for byte, every added level the same colour.
+        for compression, colour in ((tpk.COMP_DXT1, (200, 40, 40, 255)), (tpk.COMP_DXT3, (30, 90, 200, 136)),
+                                    (tpk.COMP_A8R8G8B8, (10, 220, 120, 77))):
+            with self.subTest(compression=compression):
+                full = hdpack.mip_chain_dds(Image.new("RGBA", (64, 32), colour), compression)
+                width, height, mips, _, pixels = tpk.parse_dds(full)
+                top = tpk.mip_sizes(64, 32, 1, compression)[0]
+                single = bytearray(full[:128] + pixels[:top])
+                struct.pack_into("<I", single, 28, 1)
+                done, added = hdpack.complete_mips(bytes(single))
+                self.assertEqual(2, added)
+                self.assertEqual((64, 32, 3, compression), tpk.parse_dds(done)[:4])
+                self.assertEqual(bytes(single[128:]), tpk.parse_dds(done)[4][:top])
+                self.assertEqual(sum(tpk.mip_sizes(64, 32, 3, compression)), len(done) - 128)        # nothing more
+                with Image.open(io.BytesIO(done)) as image:
+                    expected = np.array(image.convert("RGBA"))[0, 0]
+                levels = tpk.mip_sizes(64, 32, 3, compression)
+                rest = tpk.parse_dds(done)[4][top:]
+                for (w, h), size in zip(((32, 16), (16, 8)), levels[1:]):
+                    level, rest = rest[:size], rest[size:]
+                    texture = tpk.Texture(make_record("L", w, h, compression, 1, size, size, 0),
+                                          make_format(b"DXT1" if compression == tpk.COMP_DXT1 else b"DXT3"), level, b"")
+                    if compression == tpk.COMP_A8R8G8B8:
+                        texture.format[20:24] = struct.pack("<I", tpk.D3DFMT_A8R8G8B8)
+                    with Image.open(io.BytesIO(texture.to_dds())) as image:
+                        decoded = np.array(image.convert("RGBA"))
+                    self.assertTrue((np.abs(decoded.astype(int) - expected.astype(int)) <= 17).all(), (w, h, decoded[0, 0], expected))
+        # A full chain, and a format there is no encoder for, come back unchanged.
+        full = hdpack.mip_chain_dds(Image.new("RGBA", (32, 32), (1, 2, 3, 255)), tpk.COMP_DXT1)
+        self.assertEqual((full, 0), hdpack.complete_mips(full))
+        dxt5 = bytearray(dxt1_dds(32, 32, 9)[:128] + bytes(1024))
+        dxt5[84:88] = b"DXT5"
+        self.assertEqual((bytes(dxt5), 0), hdpack.complete_mips(bytes(dxt5)))
+        # In an overlay: only where the game mipmaps the texture it replaces.
+        quiet = lambda line: None
+        for stock_mips, expected_mips in ((2, 3), (1, 1)):
+            data = named_pack("Global\\FrontEndTexturesPC.tpk", ["BUTTON"], mips=stock_mips).serialize(0)
+            binding = endscript.Binding("FRONTEND/FRONTB.LZC", "FRONTENDTEXTURESPC", self.folder(f"m{stock_mips}", {"BUTTON": dxt1_dds(64, 32, 4)}), "synchronize")
+            out, report = hdpack.overlay_file("FrontEnd/FrontB.lzc", data, [binding], [], quiet)
+            self.assertEqual(expected_mips, textures_of(out)["FRONTENDTEXTURESPC"][tpk.bin_hash("BUTTON")].mips)
+            self.assertEqual(int(expected_mips > 1), report["mips_completed"])
+        data = named_pack("Global\\FrontEndTexturesPC.tpk", ["BUTTON"]).serialize(0)
+        binding = endscript.Binding("FRONTEND/FRONTB.LZC", "FRONTENDTEXTURESPC", self.folder("dxt5", {"BUTTON": bytes(dxt5)}), "synchronize")
+        out, report = hdpack.overlay_file("FrontEnd/FrontB.lzc", data, [binding], [], quiet)
+        self.assertEqual((["BUTTON"], 1), (report["mips_short"], textures_of(out)["FRONTENDTEXTURESPC"][tpk.bin_hash("BUTTON")].mips))
 
     def test_what_an_overlay_refuses(self):
         data = named_pack("Global\\FrontEndTexturesPC.tpk", ["BUTTON"]).serialize(0)
@@ -462,7 +518,7 @@ class OverlayTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "BUTTON.dds did not land in FRONTENDTEXTURESPC"):
             self.hdpack.overlay_file("FrontEnd/FrontB.lzc", data, [good], [], quiet)
 
-    def mod(self, script: str = MOD_SCRIPT, game: str = "Underground1", extra: dict = None) -> pathlib.Path:
+    def mod(self, script: str = MOD_SCRIPT, game: str = "Underground1", extra: dict = None, launcher: str = "Mod.end") -> pathlib.Path:
         """A Binarius mod folder laid out as Plajer's (launcher, Assets/main.end, Assets/Textures/...); returns
         its launcher file. ``extra``: more texture folders, {path under Assets/Textures: {stem: DDS}}."""
         mod = pathlib.Path(tempfile.mkdtemp(dir=self.root))
@@ -472,7 +528,7 @@ class OverlayTests(unittest.TestCase):
         for folder, files in (extra or {}).items():
             self.folder(str(textures / folder), files)
         (mod / "Assets/main.end").write_text(script, encoding="utf-8")
-        launcher = mod / "Mod.end"
+        launcher = mod / launcher
         launcher.write_text('[VERSN1]\n{\n  "Usage": "User",\n  "Game": "%s",\n  "Directory": "",\n'
                             '  "Endscript": "Assets\\main.end"\n}\n' % game, encoding="utf-8")
         return launcher
@@ -485,6 +541,9 @@ class OverlayTests(unittest.TestCase):
         (game / "Global/DYNTEX.BIN").write_bytes(named_pack("Global\\DynamicTextures.tpk", ["CARD", "BADGE"]).serialize(0))
         (game / "Global/GlobalB.lzc").write_bytes(tpk.jdlz_compress(
             named_pack("Global\\GlobalTextures.tpk", ["SPEEDO", "NEEDLE"]).serialize(0)))
+        (game / "Cars").mkdir()
+        (game / "Cars/TEXTURES.BIN").write_bytes(named_pack("Global\\CarTextures.tpk", ["DECAL_ONE", "DECAL_TWO"],
+                                                            compressed=True).serialize(0))
         bases = []
         for version, badge in (("10", 32), ("11", 64)):
             base = self.root / f"nfsu-hdpack-v{version}.zip"
@@ -496,7 +555,7 @@ class OverlayTests(unittest.TestCase):
     def test_a_mod_goes_on_top_of_the_installed_packs(self):
         game, bases = self.game_and_bases()
         log = []
-        files, min_version, script = self.hdpack.overlay_pack(game, str(self.mod()), bases, log.append)
+        files, min_version, scripts = self.hdpack.overlay_pack(game, str(self.mod()), bases, log.append)
         # DYNTEX from the last base that has it; GlobalB from the stock file, decompressed and under both names.
         self.assertEqual({"Global/DYNTEX.BIN", "Global/GlobalB.lzc", "Global/GLOBALB.BUN"}, set(files))
         self.assertEqual(files["Global/GlobalB.lzc"], files["Global/GLOBALB.BUN"])
@@ -509,9 +568,43 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(16, globalb[tpk.bin_hash("NEEDLE")].width)
         # The plugin the mod copies is in build 14's runtime; the repair block found no DEFAULT pack.
         self.assertEqual(1014, min_version)
-        self.assertEqual("Remastered UI by Tester", script.watermark)
+        self.assertEqual(["Remastered UI by Tester"], [s.watermark for s in scripts])
         self.assertTrue(any("Global/DYNTEX.BIN (from nfsu-hdpack-v11.zip)" in line for line in log), log)
         self.assertTrue(any("Global/GlobalB.lzc (from stock)" in line and "also as Global/GLOBALB.BUN" in line for line in log), log)
+
+    def decals_mod(self) -> pathlib.Path:
+        """A second mod shaped like Plajer's HD Decals: no combobox, the shared car textures, and DYNTEX too."""
+        script = (r'[VERSN2]' '\n'
+                  r'unlock_memory all' '\n'
+                  r'if collection_exists CARS\TEXTURES.BIN TPKBlocks DEFAULT' '\n' 'do' '\n'
+                  r'update_collection CARS\TEXTURES.BIN TPKBlocks CARTEXTURES CompressionType CompressedFullData' '\n'
+                  'else' '\n' 'end' '\n'
+                  r'bind_textures synchronize CARS\TEXTURES.BIN TPKBlocks CARTEXTURES "Textures\DECALS"' '\n'
+                  r'bind_textures synchronize GLOBAL\DYNTEX.BIN TPKBlocks DYNAMICTEXTURES "Textures\MORE"' '\n'
+                  r'delete CARS\TEXTURES.BIN' '\n' 'version 2.8.3' '\n' 'watermark "Plajer\'s mod"' '\n')
+        return self.mod(script, launcher="HD_Decals.end", extra={
+            "DECALS": {"DECAL_ONE": dxt1_dds(64, 16, 6)},
+            "MORE": {"CARD": dxt1_dds(256, 256, 7), "BADGE": dxt1_dds(128, 128, 8)}})
+
+    def test_mods_stack_in_the_order_given(self):
+        game, bases = self.game_and_bases()
+        interface, decals = str(self.mod()), str(self.decals_mod())
+        log = []
+        files, min_version, scripts = self.hdpack.overlay_pack(game, [interface, decals], bases, log.append)
+        self.assertEqual(["Mod.end", "HD_Decals.end"], [s.label for s in scripts])
+        self.assertEqual({"Global/DYNTEX.BIN", "Global/GlobalB.lzc", "Global/GLOBALB.BUN", "Cars/TEXTURES.BIN"}, set(files))
+        dyntex = textures_of(files["Global/DYNTEX.BIN"])["DYNAMICTEXTURES"]
+        self.assertEqual(256, dyntex[tpk.bin_hash("CARD")].width)          # the second mod's, over the first's 128
+        self.assertEqual(128, dyntex[tpk.bin_hash("BADGE")].width)         # the second mod's, over v11's 64
+        cars = textures_of(files["Cars/TEXTURES.BIN"])["CARTEXTURES"]
+        self.assertEqual((64, 16), (cars[tpk.bin_hash("DECAL_ONE")].width, cars[tpk.bin_hash("DECAL_TWO")].width))
+        self.assertEqual(1014, min_version)                                 # the first mod's plugin
+        self.assertTrue(any("Global/DYNTEX.BIN (from Mod.end)" in line for line in log), log)
+        self.assertTrue(any("Cars/TEXTURES.BIN (from stock)" in line for line in log), log)
+        # The other way round the interface mod's CARD wins, and the rest is the same.
+        files, _, _ = self.hdpack.overlay_pack(game, [decals, interface], bases, lambda line: None)
+        dyntex = textures_of(files["Global/DYNTEX.BIN"])["DYNAMICTEXTURES"]
+        self.assertEqual((128, 128), (dyntex[tpk.bin_hash("CARD")].width, dyntex[tpk.bin_hash("BADGE")].width))
 
     def test_both_names_of_a_bundle_are_one_bundle(self):
         # GLOBALB.BUN and GlobalB.lzc hold the same bundle: bindings to either land in it, written under both names.
@@ -553,6 +646,16 @@ class OverlayTests(unittest.TestCase):
         self.assertIn("Needs app build 14 or newer (NFSUHDContentSupport.asi is in its runtime)", manifest["notes"])
         self.assertEqual({f["path"] for f in manifest["files"]} | {"nfsu-modpack.json"}, names)
         self.assertEqual([], manifest["remove"])
+        # Two mods in one pack, credited by their watermarks when no --credit is given.
+        argv = ["hdpack.py", "--overlay", str(self.mod()), "--overlay", str(self.decals_mod()), "--game", str(game),
+                "--out", str(out), "--version", "12"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("builtins.print"):
+            self.hdpack.main()
+        with zipfile.ZipFile(out) as zf:
+            manifest = json.loads(zf.read("nfsu-modpack.json"))
+        self.assertTrue(manifest["notes"].startswith("Remastered UI by Tester; Plajer's mod: textures laid over the stock files"), manifest["notes"])
+        self.assertEqual(1014, manifest["minVersionCode"])
+        self.assertIn("Cars/TEXTURES.BIN", {f["path"] for f in manifest["files"]})
 
 
 if __name__ == "__main__":

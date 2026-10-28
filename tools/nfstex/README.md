@@ -50,9 +50,10 @@ blobs are recompressed.
   `[VERSN1]` launcher file and a `[VERSN2]` endscript) laid over installed HD packs instead of upscaling:
 
   ```
-  python3 tools/nfstex/hdpack.py --overlay "HD User Interface 1.8/HD_User_Interface.end" --game GAME \
+  python3 tools/nfstex/hdpack.py --overlay "HD User Interface 1.8/HD_User_Interface.end" \
+      --overlay "HD Decals 1.3/HD_Decals.end" --game GAME \
       --base nfsu-hdpack-v10.zip --base nfsu-hdpack-v11.zip --out nfsu-hdpack-v12.zip --version 12 \
-      --name "HD User Interface (Plajer)" --credit "Plajer's HD User Interface 1.8"
+      --name "HD User Interface and Decals (Plajer)" --credit "Plajer's HD User Interface 1.8 and HD Decals 1.3"
   ```
 
   The endscript is read, not run: its *Install* branch only, and only what a texture swap needs —
@@ -62,9 +63,14 @@ blobs are recompressed.
   `if collection_exists … do / else / end` with `update_collection` inside, and `move_file` of the PC plugins the
   mod copies. Binarius' own housekeeping (`version`, `unlock_memory`, `delete`, `create_folder`, `speedreflect`,
   `watermark`) is skipped; any other command stops the build, so a mod that does more than replace textures is
-  never half applied. Each game file comes from the last `--base` pack that has it, else the stock folder; the
-  result is checked as every pack is (texture list, rendering fields, each JDLZ blob through the game's decoder)
-  and read back to confirm every DDS landed. A DDS whose name matches no texture stops the build too (Binarius
+  never half applied. Several `--overlay`s go on in the order given, each over the files the ones before it
+  wrote. Each game file comes from the last `--base` pack that has it, else the stock folder; the result is
+  checked as every pack is (texture list, rendering fields, each JDLZ blob through the game's decoder) and read
+  back to confirm every DDS landed. Where the texture a DDS replaces is mipmapped and the DDS's chain is shorter
+  than the game's own for its size (halving until the smaller edge is 8 px), `complete_mips` adds the missing
+  levels from the DDS's top level with the same filter as the upscaled packs, in its own format (DXT1, DXT3,
+  A8R8G8B8), and keeps the levels it has byte for byte: mods ship decals and icons without them, which would
+  sparkle when drawn small. A DDS whose name matches no texture stops the build too (Binarius
   would add it as a texture nothing looks up), except the drift gauge's two textures that Plajer's HD User
   Interface names after their cut-off record names, which `OVERLAY_ALIASES` sends where they belong. A mod that
   needs a PC plugin gets the app build whose runtime has its fixes as the manifest's `minVersionCode`

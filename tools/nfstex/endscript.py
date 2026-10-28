@@ -70,6 +70,12 @@ class Script:
     conditionals: List[Conditional]
     plugins: List[str]      # file names of the PC plugins the mod copies (NFSUHDContentSupport.asi)
     watermark: str
+    source: Optional[pathlib.Path] = None   # the file parse() was given: the launcher, or the endscript itself
+
+    @property
+    def label(self) -> str:
+        """The mod's own name for logs: its launcher file's name (HD_User_Interface.end)."""
+        return (self.source or self.path).name
 
 
 class EndscriptError(ValueError):
@@ -141,7 +147,7 @@ def _resolve(base: pathlib.Path, relative: str) -> pathlib.Path:
 
 def parse(path: pathlib.Path, option: str = "Install") -> Script:
     """Reads a launcher file or an endscript. ``option``: the combobox answer to follow."""
-    path = pathlib.Path(path)
+    path = source = pathlib.Path(path)
     game = ""
     if path.read_bytes()[:16].lstrip().startswith(b"[VERSN1]"):
         path, game = read_launcher(path)
@@ -246,7 +252,7 @@ def parse(path: pathlib.Path, option: str = "Install") -> Script:
         raise EndscriptError(f"{where}: command {command!r} is not supported here")
     if stack:
         raise EndscriptError(f"{path.name}: {len(stack)} block(s) left open at the end")
-    return Script(path, game, bindings, conditionals, plugins, watermark)
+    return Script(path, game, bindings, conditionals, plugins, watermark, source)
 
 
 _STEM = re.compile(r"[^\\/]+$")

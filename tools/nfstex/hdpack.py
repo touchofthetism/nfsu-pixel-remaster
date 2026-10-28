@@ -565,9 +565,13 @@ def _find_in_game(game: pathlib.Path, relative: str) -> Optional[pathlib.Path]:
     return current
 
 
-def overlay_base(game: pathlib.Path, relative: str, bases: list) -> tuple:
-    """(path to write, bytes, where from) for a game file: the copy in the last base pack that has it (the
-    installed HD packs this one goes on top of), else the stock file."""
+def overlay_base(game: pathlib.Path, relative: str, bases: list, built: Optional[dict] = None) -> tuple:
+    """(path to write, bytes, where from) for a game file: an earlier overlay's result for it (``built``:
+    {path: (bytes, where from)}), else the copy in the last base pack that has it (the installed HD packs this
+    one goes on top of), else the stock file."""
+    for name, (data, source) in (built or {}).items():
+        if name.lower() == relative.lower():
+            return name, data, source
     for base in reversed(bases):
         with zipfile.ZipFile(base) as zf:
             for name in zf.namelist():
@@ -577,6 +581,47 @@ def overlay_base(game: pathlib.Path, relative: str, bases: list) -> tuple:
     if path is None:
         raise SystemExit(f"{relative}: not in the base packs and not in the game folder")
     return path.relative_to(game).as_posix(), path.read_bytes(), "stock"
+
+
+def game_mip_count(width: int, height: int) -> int:
+    """The length of the game's own mip chains for a size: halving until the smaller edge reaches 8 px
+    (256x64 -> 4 levels, 128x128 -> 5), as mip_chain_dds writes them."""
+    count = 1
+    while min(width, height) > 8:
+        width, height = max(1, width // 2), max(1, height // 2)
+        count += 1
+    return count
+
+
+def complete_mips(dds: bytes, wrap: Optional[str] = None) -> tuple:
+    """(DDS, levels added). A DDS whose mip chain is shorter than the game's own for its size gets the missing
+    levels, made from its top level with the toolkit's filter (``wrap`` as for downsample) and encoded in its
+    own format; the levels it has are kept byte for byte. Mods ship some textures without mip levels where
+    the game's have them: drawn smaller than their size (a decal on a car down the road, an icon in a grid)
+    they would sparkle. DXT1, DXT3 and A8R8G8B8; anything else (DXT5) comes back as it was."""
+    import numpy as np
+    from nfstex import dxt
+    width, height, mips, compression, pixels = tpk.parse_dds(dds)
+    want = game_mip_count(width, height)
+    if mips >= want or compression not in (tpk.COMP_DXT1, tpk.COMP_DXT3, tpk.COMP_A8R8G8B8):
+        return dds, 0
+    with Image.open(io.BytesIO(dds)) as image:        # its top level
+        source = image.convert("RGBA")
+    levels = [pixels[:sum(tpk.mip_sizes(width, height, mips, compression))]]
+    w, h = width, height
+    for level in range(want):
+        if level >= mips:
+            rgba = np.array(downsample(source, (w, h), wrap).convert("RGBA"))
+            if compression == tpk.COMP_A8R8G8B8:
+                levels.append(np.ascontiguousarray(rgba[..., [2, 1, 0, 3]]).tobytes())
+            else:
+                levels.append(dxt.encode_dxt1(rgba) if compression == tpk.COMP_DXT1 else dxt.encode_dxt3(rgba))
+        w, h = max(1, w // 2), max(1, h // 2)
+    header = bytearray(dds[:128])
+    struct.pack_into("<I", header, 8, struct.unpack_from("<I", header, 8)[0] | 0x20000)        # DDSD_MIPMAPCOUNT
+    struct.pack_into("<I", header, 28, want)
+    struct.pack_into("<I", header, 108, struct.unpack_from("<I", header, 108)[0] | 0x400008)   # COMPLEX | MIPMAP
+    return bytes(header) + b"".join(levels), want - mips
 
 
 def overlay_target(stem: str, hashes) -> str:
@@ -598,7 +643,8 @@ def overlay_file(label: str, data: bytes, bindings: list, conditionals: list, lo
             # The HD User Interface's repairs of a TexEd-damaged pack named DEFAULT: never true for the stock
             # files or this toolkit's packs, and nothing here would know how to do them.
             raise SystemExit(f"{label}: has a texture pack named {condition.collection}, which the mod repairs first; not supported")
-    report = {"replaced": 0, "aliased": [], "bytes_in": 0, "bytes_out": 0}
+    report = {"replaced": 0, "aliased": [], "bytes_in": 0, "bytes_out": 0, "mips_completed": 0, "mips_short": []}
+    landed = {}                                     # DDS path -> the DDS as it went in
     for binding in bindings:
         pack = by_collection.get(binding.collection)
         if pack is None:
@@ -614,10 +660,20 @@ def overlay_file(label: str, data: bytes, bindings: list, conditionals: list, lo
             if name != dds_path.stem:
                 report["aliased"].append(f"{dds_path.stem} -> {name}")
             before = len(texture.pixels)
+            dds = dds_path.read_bytes()
             try:
-                texture.replace_with_dds(dds_path.read_bytes())
+                if texture.mips > 1:
+                    # The game mipmaps this texture: a replacement without its lower levels gets them.
+                    wrap = ("x" if texture.tilable_uv & 1 else "") + ("y" if texture.tilable_uv & 2 else "")
+                    dds, added = complete_mips(dds, wrap or None)
+                    if added:
+                        report["mips_completed"] += 1
+                    elif tpk.parse_dds(dds)[2] < game_mip_count(*tpk.parse_dds(dds)[:2]):
+                        report["mips_short"].append(dds_path.stem)        # a format complete_mips leaves alone
+                texture.replace_with_dds(dds)
             except ValueError as error:
                 raise SystemExit(f"{label} {binding.collection} {dds_path.name}: {error}")
+            landed[dds_path] = dds
             report["replaced"] += 1
             report["bytes_in"] += before
             report["bytes_out"] += len(texture.pixels)
@@ -633,48 +689,60 @@ def overlay_file(label: str, data: bytes, bindings: list, conditionals: list, lo
     for binding in bindings:
         for dds_path in (p for p in binding.folder.iterdir() if p.suffix.lower() == ".dds"):
             texture = check[binding.collection][tpk.bin_hash(overlay_target(dds_path.stem, check[binding.collection]))]
-            width, height, mips, compression, pixels = tpk.parse_dds(dds_path.read_bytes())
+            width, height, mips, compression, pixels = tpk.parse_dds(landed[dds_path])
             if (texture.width, texture.height, texture.mips, texture.compression) != (width, height, mips, compression) \
-                    or texture.pixels != pixels[:len(texture.pixels)]:
+                    or texture.pixels != pixels[:len(texture.pixels)] or not dds_path.read_bytes()[128:].startswith(
+                        texture.pixels[:sum(tpk.mip_sizes(width, height, tpk.parse_dds(dds_path.read_bytes())[2], compression))]):
                 raise SystemExit(f"{label}: {dds_path.name} did not land in {binding.collection}")
     return out, report
 
 
-def overlay_pack(game: pathlib.Path, script_path: str, bases: list, log) -> tuple:
-    """({game path: bytes}, minimum versionCode, the parsed script) for a Binarius texture mod laid over the base
-    packs (or the stock files where they have no copy). Bundles are written uncompressed, as every HD pack."""
-    script = endscript.parse(pathlib.Path(script_path))
-    if script.game and script.game != "Underground1":
-        raise SystemExit(f"{script_path}: made for {script.game}, not Underground 1")
+def overlay_pack(game: pathlib.Path, script_paths, bases: list, log) -> tuple:
+    """({game path: bytes}, minimum versionCode, the parsed scripts) for Binarius texture mods laid over the base
+    packs (or the stock files where they have no copy), in the order given: a mod that touches a file an earlier
+    one rewrote goes on top of that result. Bundles are written uncompressed, as every HD pack."""
+    if isinstance(script_paths, (str, os.PathLike)):
+        script_paths = [script_paths]
+    scripts = []
     min_version = 0
-    for plugin in script.plugins:
-        if plugin.lower() not in PLUGIN_BUILDS:
-            raise SystemExit(f"{script_path}: needs the PC plugin {plugin}, whose fixes this port does not have")
-        min_version = max(min_version, PLUGIN_BUILDS[plugin.lower()])
-    groups = {}
-    for binding in script.bindings:
-        groups.setdefault(_bundle_key(binding.game_file), []).append(binding)
-    files = {}
-    total = {"replaced": 0, "files": 0}
-    for key, bindings in groups.items():
-        relative = key if key in TWIN_NAMES else bindings[0].game_file      # found without case either way
-        path, data, source = overlay_base(game, relative, bases)
-        if tpk.is_jdlz(data):
-            data = tpk.jdlz_decompress(data)
-        conditionals = [c for c in script.conditionals if _bundle_key(c.game_file) == key]
-        out, report = overlay_file(path, data, bindings, conditionals, log)
-        files[path] = out
-        twin = TWIN_NAMES.get(path.lower())
-        if twin:
-            files[twin] = out
-        total["replaced"] += report["replaced"]
-        total["files"] += 1
-        log(f"{path} (from {source}): {report['replaced']} textures replaced"
-            + (f" ({'; '.join(report['aliased'])})" if report["aliased"] else "")
-            + f", texture bytes {report['bytes_in'] >> 10} KB -> {report['bytes_out'] >> 10} KB, file {len(out) >> 10} KB"
-            + (f", also as {twin}" if twin else "") + f", {report['blobs']} JDLZ blobs pass the game's decoder")
-    log(f"overlay {script.path.name}: {total['replaced']} textures in {total['files']} bundles; needs app versionCode {min_version or 'any'}")
-    return files, min_version, script
+    for script_path in script_paths:
+        script = endscript.parse(pathlib.Path(script_path))
+        if script.game and script.game != "Underground1":
+            raise SystemExit(f"{script_path}: made for {script.game}, not Underground 1")
+        for plugin in script.plugins:
+            if plugin.lower() not in PLUGIN_BUILDS:
+                raise SystemExit(f"{script_path}: needs the PC plugin {plugin}, whose fixes this port does not have")
+            min_version = max(min_version, PLUGIN_BUILDS[plugin.lower()])
+        scripts.append(script)
+    built = {}                                      # {path: (bytes, where from)}, in the order written
+    for script in scripts:
+        groups = {}
+        for binding in script.bindings:
+            groups.setdefault(_bundle_key(binding.game_file), []).append(binding)
+        total = {"replaced": 0, "files": 0}
+        for key, bindings in groups.items():
+            relative = key if key in TWIN_NAMES else bindings[0].game_file      # found without case either way
+            path, data, source = overlay_base(game, relative, bases, built)
+            if tpk.is_jdlz(data):
+                data = tpk.jdlz_decompress(data)
+            conditionals = [c for c in script.conditionals if _bundle_key(c.game_file) == key]
+            out, report = overlay_file(path, data, bindings, conditionals, log)
+            here = script.label
+            built[path] = (out, here)
+            twin = TWIN_NAMES.get(path.lower())
+            if twin:
+                built[twin] = (out, here)
+            total["replaced"] += report["replaced"]
+            total["files"] += 1
+            log(f"{path} (from {source}): {report['replaced']} textures replaced"
+                + (f" ({'; '.join(report['aliased'])})" if report["aliased"] else "")
+                + (f", {report['mips_completed']} given the mip levels they came without" if report["mips_completed"] else "")
+                + (f", {len(report['mips_short'])} left short ({', '.join(report['mips_short'][:4])})" if report["mips_short"] else "")
+                + f", texture bytes {report['bytes_in'] >> 10} KB -> {report['bytes_out'] >> 10} KB, file {len(out) >> 10} KB"
+                + (f", also as {twin}" if twin else "") + f", {report['blobs']} JDLZ blobs pass the game's decoder")
+        log(f"overlay {script.label}: {total['replaced']} textures in {total['files']} bundles")
+    log(f"{len(scripts)} overlay(s): {len(built)} files; needs app versionCode {min_version or 'any'}")
+    return {path: data for path, (data, _) in built.items()}, min_version, scripts
 
 
 def repack_file(relative: str, data: bytes, log) -> bytes:
@@ -837,19 +905,22 @@ def main() -> None:
     parser.add_argument("--fast", action="store_true", help="the compact animevideo net for colour too (packs v1-v9), for quick checks")
     parser.add_argument("--repack", metavar="PACK.zip", help="rewrite an existing HD pack with the current code instead of upscaling (no game folder or models needed)")
     parser.add_argument("--split-mb", type=int, default=0, help="also write the pack as installable parts of at most this many MB when it is larger (a chat upload limit)")
-    parser.add_argument("--overlay", metavar="SCRIPT.end", help="lay a Binarius texture mod (its launcher .end or endscript) over the --base packs or the stock files instead of upscaling")
+    parser.add_argument("--overlay", metavar="SCRIPT.end", action="append", default=[], help="lay a Binarius texture mod (its launcher .end or endscript) over the --base packs or the stock files instead of upscaling (repeatable: applied in order, each over the ones before)")
     parser.add_argument("--base", metavar="PACK.zip", action="append", default=[], help="an installed HD pack the overlay goes on top of (repeatable, later ones win)")
-    parser.add_argument("--credit", default="", help="overlay: who made the textures, for the manifest notes")
+    parser.add_argument("--credit", default="", help="overlay: who made the textures, for the manifest notes (default: the mods' watermarks)")
     args = parser.parse_args()
     if args.overlay:
         if not args.game or not args.out:
             parser.error("--overlay needs --game (the stock files) and --out")
-        files, min_version, script = overlay_pack(pathlib.Path(args.game), args.overlay, args.base, print)
+        files, min_version, scripts = overlay_pack(pathlib.Path(args.game), args.overlay, args.base, print)
         bases = ", ".join(pathlib.Path(b).name for b in args.base) or "the stock files"
-        notes = (f"{args.credit or script.watermark or script.path.name}: textures laid over {bases} with this port's toolkit "
-                 f"(the Binarius endscript's Install branch); bundles rewritten uncompressed.")
+        made = args.credit or "; ".join(s.watermark or s.label for s in scripts)
+        notes = (f"{made}: textures laid over {bases} with this port's toolkit "
+                 f"(the Binarius endscripts' Install branch); bundles rewritten uncompressed.")
         if min_version:
-            notes += f" Needs app build {min_version - 1000} or newer ({', '.join(script.plugins)} is in its runtime)."
+            plugins = sorted({plugin for s in scripts for plugin in s.plugins})
+            notes += (f" Needs app build {min_version - 1000} or newer ({', '.join(plugins)} "
+                      f"{'is' if len(plugins) == 1 else 'are'} in its runtime).")
         manifest = {"format": 1, "name": args.name or "HD interface pack", "version": args.version, "game": "nfsu1",
                     "notes": notes, "files": [{"path": p, "bytes": len(b)} for p, b in files.items()], "remove": []}
         if min_version:
