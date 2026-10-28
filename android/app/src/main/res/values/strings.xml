@@ -283,7 +283,7 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
         <item quantity="other">%d installed</item>
     </plurals>
     <string name="opt_gamegfx">Game graphics</string>
-    <string name="gamegfx_max">Maximum · reflections, streaks, blur, full detail</string>
+    <string name="gamegfx_max">Maximum to start · your changes in the game stay</string>
     <string name="gamegfx_game">As set in the game\'s own options</string>
     <string name="opt_reads">Loader reads</string>
     <string name="reads_overlapped">Overlapped · the game keeps running while files load</string>

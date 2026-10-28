@@ -8,7 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * The game's own graphics settings, kept per profile in {@code NFS Underground/<profile>.cfg} as
@@ -20,6 +22,11 @@ import java.util.Map;
  * values Speed.exe initialises its settings with before the auto-detect lowers them, and the per-setting
  * maxima the game clamps a loaded .cfg against (tier 3: ENVMAP 3, SHADOW 2, ROADREFLECTION 2, WorldLOD 3,
  * CarLOD 1, every effect on). Resolution, colour depth and sound lines are left alone.
+ *
+ * The top tier is a starting point, not a rule: Light Trails, Light Glow and Motion Blur change the look
+ * and players choose them in the game's Display Settings. So the launcher raises a profile only the first
+ * time it sees it (a new profile carries the auto-detect's tier) and remembers the graphics values it left;
+ * when a later launch finds different values, the player changed them in the game and they stay.
  */
 final class GameConfig {
     /** Tier-3 values in the order the game writes them; the file's own order is kept when rewriting. */
@@ -73,38 +80,111 @@ final class GameConfig {
         return out.toString();
     }
 
-    /** Every profile's .cfg under the game folder, raised to the maximum; returns the files that changed. */
-    static List<File> applyMaximum(File root) throws IOException {
-        List<File> changed = new ArrayList<>();
+    /**
+     * The graphics settings of a .cfg text in {@link #MAXIMUM} order as {@code KEY=value;...}: what the
+     * player can change in Display Settings. Lines the game also keeps there (resolution, colour depth,
+     * sound) are not part of it, so saving those never reads as a graphics change.
+     */
+    static String graphicsFingerprint(String text) {
+        Map<String, String> found = new java.util.HashMap<>();
+        for (String line : text.split("\n", -1)) {
+            int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+            found.put(line.substring(0, colon).trim(), line.substring(colon + 1).trim());
+        }
+        StringBuilder out = new StringBuilder();
+        for (String[] pair : MAXIMUM) {
+            String value = found.get(pair[0]);
+            if (value == null) continue;
+            if (out.length() > 0) out.append(';');
+            out.append(pair[0]).append('=').append(value);
+        }
+        return out.toString();
+    }
+
+    /** What {@link #applyMaximum(File, Map)} did, and the values to compare against at the next launch. */
+    static final class Outcome {
+        /** Profiles seen for the first time and written at the top tier. */
+        final List<File> raised = new ArrayList<>();
+        /** Profiles whose graphics changed in the game since the last launch: left as the player set them. */
+        final List<File> kept = new ArrayList<>();
+        /** Lower-case file name -> {@link #graphicsFingerprint} now on disk. Profiles that are gone drop out. */
+        final Map<String, String> seen = new TreeMap<>();
+    }
+
+    /**
+     * "Game graphics: Maximum". A profile the launcher has not seen yet is raised to the top tier; one it has
+     * seen keeps whatever values it has now, so changes made in the game's Display Settings stick.
+     *
+     * @param seen lower-case file name -> fingerprint recorded by the previous launch (empty: raise every profile)
+     */
+    static Outcome applyMaximum(File root, Map<String, String> seen) throws IOException {
+        Outcome outcome = new Outcome();
+        for (File file : profileConfigs(root)) {
+            String text = read(file);
+            String key = file.getName().toLowerCase(Locale.ROOT);
+            String before = seen.get(key);
+            if (before != null) {
+                String now = graphicsFingerprint(text);
+                if (!before.equals(now)) outcome.kept.add(file);
+                outcome.seen.put(key, now);
+                continue;
+            }
+            String updated = applyMaximum(text);
+            if (!updated.equals(text)) {
+                write(file, updated);
+                outcome.raised.add(file);
+            }
+            outcome.seen.put(key, graphicsFingerprint(updated));
+        }
+        return outcome;
+    }
+
+    /** The fingerprint of every profile as it is on disk, without changing anything (after a save restore). */
+    static Map<String, String> observe(File root) throws IOException {
+        Map<String, String> seen = new TreeMap<>();
+        for (File file : profileConfigs(root)) seen.put(file.getName().toLowerCase(Locale.ROOT), graphicsFingerprint(read(file)));
+        return seen;
+    }
+
+    /** Every profile's graphics .cfg under the game folder (other .cfg files and oversized ones are skipped). */
+    static List<File> profileConfigs(File root) throws IOException {
+        List<File> configs = new ArrayList<>();
         File folder = SaveBackup.saveFolder(root);
         File[] files = folder == null ? null : folder.listFiles();
-        if (files == null) return changed;
+        if (files == null) return configs;
+        java.util.Arrays.sort(files);
         for (File file : files) {
-            if (!file.isFile() || !file.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".cfg")) continue;
+            if (!file.isFile() || !file.getName().toLowerCase(Locale.ROOT).endsWith(".cfg")) continue;
             if (file.length() > 64 * 1024) continue;                           // not a settings file
-            byte[] bytes = new byte[(int) file.length()];
-            try (FileInputStream in = new FileInputStream(file)) {
-                int read = 0;
-                while (read < bytes.length) {
-                    int n = in.read(bytes, read, bytes.length - read);
-                    if (n < 0) break;
-                    read += n;
-                }
-            }
-            String text = new String(bytes, StandardCharsets.ISO_8859_1);
+            String text = read(file);
             if (!text.contains("ENVMAP") && !text.contains("ROADREFLECTION")) continue;   // some other .cfg
-            String updated = applyMaximum(text);
-            if (updated.equals(text)) continue;
-            File temp = new File(file.getParentFile(), file.getName() + ".tmp");
-            try (FileOutputStream outStream = new FileOutputStream(temp)) {
-                outStream.write(updated.getBytes(StandardCharsets.ISO_8859_1));
-            }
-            if (!temp.renameTo(file)) {
-                temp.delete();
-                throw new IOException("could not replace " + file.getName());
-            }
-            changed.add(file);
+            configs.add(file);
         }
-        return changed;
+        return configs;
+    }
+
+    private static String read(File file) throws IOException {
+        byte[] bytes = new byte[(int) file.length()];
+        try (FileInputStream in = new FileInputStream(file)) {
+            int read = 0;
+            while (read < bytes.length) {
+                int n = in.read(bytes, read, bytes.length - read);
+                if (n < 0) break;
+                read += n;
+            }
+            return new String(bytes, 0, read, StandardCharsets.ISO_8859_1);
+        }
+    }
+
+    private static void write(File file, String text) throws IOException {
+        File temp = new File(file.getParentFile(), file.getName() + ".tmp");
+        try (FileOutputStream outStream = new FileOutputStream(temp)) {
+            outStream.write(text.getBytes(StandardCharsets.ISO_8859_1));
+        }
+        if (!temp.renameTo(file)) {
+            temp.delete();
+            throw new IOException("could not replace " + file.getName());
+        }
     }
 }

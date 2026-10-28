@@ -271,7 +271,7 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
         <item quantity="other">%d instalados</item>
     </plurals>
     <string name="opt_gamegfx">Gráficos del juego</string>
-    <string name="gamegfx_max">Máximo · reflejos, estelas, desenfoque, detalle completo</string>
+    <string name="gamegfx_max">Máximo al empezar · tus cambios en el juego se mantienen</string>
     <string name="gamegfx_game">Como estén en las opciones del propio juego</string>
     <string name="opt_reads">Lecturas del cargador</string>
     <string name="reads_overlapped">Solapadas · el juego sigue mientras se cargan archivos</string>

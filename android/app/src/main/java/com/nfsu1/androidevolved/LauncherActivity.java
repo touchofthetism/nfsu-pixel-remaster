@@ -43,6 +43,9 @@ public final class LauncherActivity extends Activity {
     private static final int REQUEST_DRIVER_ZIP = 45, REQUEST_DRIVER_PROBE = 46, REQUEST_GAME_ZIP = 47, REQUEST_SAVE_ZIP = 48, REQUEST_MOD_ZIP = 49;
     // Launcher accent: Underground orange/red (the NFSU2 port is green).
     private static final int ACCENT = 0xFFFF7A1A;
+    // Graphics values the launcher left in each profile .cfg (GameConfig.applyMaximum): the next launch compares
+    // against them to tell a choice made in the game's Display Settings from a profile it has not seen yet.
+    private static final String GRAPHICS_SEEN = "nfsu1_graphics";
 
     private LinearLayout checksList, optionsList, sessionCard;
     private TextView status, sessionLine;
@@ -318,6 +321,21 @@ public final class LauncherActivity extends Activity {
                 }).setNegativeButton(R.string.cancel, null).show();
     }
 
+    private java.util.Map<String, String> graphicsSeen() {
+        java.util.Map<String, String> seen = new java.util.HashMap<>();
+        for (java.util.Map.Entry<String, ?> entry : getSharedPreferences(GRAPHICS_SEEN, 0).getAll().entrySet())
+            if (entry.getValue() instanceof String) seen.put(entry.getKey(), (String) entry.getValue());
+        return seen;
+    }
+
+    /** Stores the graphics fingerprints (synchronously: the game process reads and writes the .cfg files next). */
+    private void rememberGraphics(java.util.Map<String, String> seen, boolean replace) {
+        android.content.SharedPreferences.Editor edit = getSharedPreferences(GRAPHICS_SEEN, 0).edit();
+        if (replace) edit.clear();
+        for (java.util.Map.Entry<String, String> entry : seen.entrySet()) edit.putString(entry.getKey(), entry.getValue());
+        edit.commit();
+    }
+
     private void chooseOption(GameOptions.Option option) {
         String current = GameOptions.get(this, option.key);
         int checked = 0;
@@ -325,6 +343,10 @@ public final class LauncherActivity extends Activity {
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle(option.title(this))
                 .setSingleChoiceItems(option.labels(this), checked, (dialog, which) -> {
                     GameOptions.set(this, option.key, option.values[which]);
+                    // Picking Maximum, even when it is already chosen, puts every profile back at the top tier
+                    // at the next launch; after that, changes made in the game's Display Settings stay.
+                    if (option.key.equals(GameOptions.GAMEGFX) && option.values[which].equals("max"))
+                        getSharedPreferences(GRAPHICS_SEEN, 0).edit().clear().commit();
                     dialog.dismiss(); refreshOptions();
                 }).setNegativeButton(R.string.cancel, null).show();
     }
@@ -580,6 +602,10 @@ public final class LauncherActivity extends Activity {
             try (java.io.InputStream input = getContentResolver().openInputStream(zip)) {
                 if (input == null) throw new java.io.IOException(getString(R.string.saves_err_open));
                 SaveBackup.Result result = SaveBackup.restore(this, input, gameRoot());
+                // The restored profiles carry the player's own graphics choices: record them as seen so
+                // "Game graphics: Maximum" keeps them instead of treating the profiles as new.
+                try { rememberGraphics(GameConfig.observe(gameRoot()), false); }
+                catch (java.io.IOException e) { android.util.Log.w("NFSU1", "Game graphics: restored profiles not recorded: " + e); }
                 main.post(() -> { refresh(); message(getString(R.string.saves_title), getString(R.string.saves_restore_done, result.files)); });
             } catch (Exception error) {
                 main.post(() -> { refresh(); message(getString(R.string.saves_title), getString(R.string.saves_failed, error.getMessage())); });
@@ -747,11 +773,16 @@ public final class LauncherActivity extends Activity {
         android.util.Log.i("NFSU1", "Graphics cache: " + ShaderCacheSeed.seed(this));
         if (GameOptions.get(this, GameOptions.GAMEGFX).equals("max")) {
             try {
-                java.util.List<File> raised = GameConfig.applyMaximum(gameRoot());
-                android.util.Log.i("NFSU1", "Game graphics: maximum tier written to " + raised.size() + " profile(s)");
+                GameConfig.Outcome outcome = GameConfig.applyMaximum(gameRoot(), graphicsSeen());
+                rememberGraphics(outcome.seen, true);
+                android.util.Log.i("NFSU1", "Game graphics: maximum tier written to " + outcome.raised.size() + " new profile(s); "
+                        + outcome.kept.size() + " profile(s) keep the choices made in the game since the last launch");
             } catch (java.io.IOException e) {
                 android.util.Log.w("NFSU1", "Game graphics: profile .cfg not updated: " + e);
             }
+        } else {
+            // Nothing is written in this mode; choosing Maximum again raises every profile once.
+            getSharedPreferences(GRAPHICS_SEEN, 0).edit().clear().commit();
         }
         gameLaunched = true;
         DisplayMetrics metrics = new DisplayMetrics();

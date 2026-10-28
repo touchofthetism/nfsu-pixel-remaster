@@ -60,7 +60,8 @@ final class GameOptions {
                     new String[] {"0", "2", "4"},
                     new int[] {R.string.antialias_off, R.string.antialias_2, R.string.antialias_4}),
             // The game's own graphics settings (profile .cfg): its 2003 auto-detect lands the port on a low tier
-            // with reflections, light streaks and motion blur off; "max" writes the top tier before every launch.
+            // with reflections, light streaks and motion blur off. "max" raises a profile to the top tier the first
+            // time the launcher sees it; what the player then changes in Display Settings stays (GameConfig).
             new Option(GAMEGFX, R.string.opt_gamegfx,
                     new String[] {"max", "game"},
                     new int[] {R.string.gamegfx_max, R.string.gamegfx_game}),
