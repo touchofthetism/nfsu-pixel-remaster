@@ -169,15 +169,24 @@ final class GameTelemetry {
     }
 
     /** Build 12, the overlay's last line: the cores the render thread is on now, the clock they may run at (the
-     *  latest sample's caps) and how often it moved, e.g. "render cpu 5-6 (≤2688 MHz)  moved 3". Null when the
-     *  thread is not pinned (CPU option "system"). */
+     *  latest sample's caps) and how often it moved, e.g. "render cpu 5-6 (≤2688 MHz)  moved 3". Build 16: with
+     *  the clock they ran at over the last check before the cap, and the command stream's cores, e.g. "render cpu
+     *  7 (883 of ≤1305 MHz)  stream cpu 2-4  moved 3". Null when the thread is not pinned (CPU option "system"). */
     static String renderLine(JSONObject host, JSONObject sample) {
         if (host == null || !host.has("renderCpus")) return null;
         String cpus = host.optString("renderCpus");
         StringBuilder line = new StringBuilder("render cpu ").append(cpus);
         JSONArray caps = sample == null ? null : sample.optJSONArray("cpuCapMhz");
         int first = firstCpu(cpus);
-        if (caps != null && first >= 0 && first < caps.length()) line.append(String.format(Locale.US, " (≤%d MHz)", caps.optInt(first)));
+        int now = 0;
+        JSONArray clusters = host.optJSONArray("clusters"), clocks = host.optJSONArray("clocksNow");
+        for (int i = 0; clusters != null && clocks != null && i < clusters.length() && i < clocks.length(); i++) {
+            JSONObject c = clusters.optJSONObject(i);
+            if (c != null && cpus.equals(c.optString("cpus"))) now = clocks.optInt(i);
+        }
+        if (caps != null && first >= 0 && first < caps.length())
+            line.append(now > 0 ? String.format(Locale.US, " (%d of ≤%d MHz)", now, caps.optInt(first)) : String.format(Locale.US, " (≤%d MHz)", caps.optInt(first)));
+        if (host.has("streamCpus")) line.append("  stream cpu ").append(host.optString("streamCpus"));
         if (host.has("coreMoves")) line.append(String.format(Locale.US, "  moved %d", host.optLong("coreMoves")));
         return line.toString();
     }
@@ -257,6 +266,16 @@ final class GameTelemetry {
         }
         Display display = Build.VERSION.SDK_INT >= 30 ? activity.getDisplay() : activity.getWindowManager().getDefaultDisplay();
         if (display != null) sample.put("refresh", Math.round(display.getRefreshRate() * 10) / 10.0);
+        // Build 16: the clock each cluster ran at over the native side's last placement check (cpufreq stats, cluster
+        // order as in host.clusters) and each tracked thread's [cpu, % on a cpu, % waiting for one] then.
+        try {
+            String text = nativeJson.get(true);
+            JSONObject host = text == null ? null : new JSONObject(text).optJSONObject("host");
+            JSONArray clocks = host == null ? null : host.optJSONArray("clocksNow");
+            if (clocks != null && clocks.length() > 0) sample.put("clusterMhz", clocks);
+            JSONObject threads = host == null ? null : host.optJSONObject("threadsNow");
+            if (threads != null && threads.length() > 0) sample.put("threads", threads);
+        } catch (RuntimeException | JSONException ignored) { }
         return sample;
     }
 

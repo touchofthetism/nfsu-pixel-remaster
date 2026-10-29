@@ -7,6 +7,38 @@
 
 ## What's new
 
+### Build 16 — the game follows the clock it really gets, and DXVK's command stream gets a fast core
+Install the APK over build 15; nothing else changes (mod packs, saves and options stay). Built from the 23:34 diagnostics: two build‑15 sessions (21:48 and 22:25), no crash.
+- **The game follows the clock it really gets, not the one it's allowed.** The 22:25 session ran 69 minutes. The phone was warm from the second minute (thermal status *light*), and the battery fell to 4 %.
+  - From the 40th minute the X4 was allowed 1152–1420 MHz, yet while the game ran on it, it sat at 883 MHz in 72 % of the samples: 75 % of its cap on average (988 of 1323 MHz). The A725s ran at 88 % of theirs with the game on them. Once the game left, both ran at their caps.
+  - That is Pixel's PMU frequency limit. The power HAL switches it on from thermal status *light*, and it holds a core down while it runs code that stalls on memory, which this game does. The allowed clock doesn't show it.
+  - Build 15 judged the cores by the allowed clock alone and moved the game 85 times, about every 20 s, as the caps went up and down. Between those moves the game ran faster on cpu 2‑4 than on the X4 next to them in 64 of 76 cases: by 10.6 % in the median, 61.1 against 54.9 FPS on average.
+  - Now each check also reads how fast the cores really ran (the kernel's time per clock, `time_in_state`) and learns each group's share of its cap, a quarter at a time. A share is learned only while the game thread runs most of the second (75 %) and its frames come slower than the target rate; otherwise the clock reflects what the game asked for, not what the phone gave it.
+  - The first three seconds after a move don't count. A share drifts back to 1 over about five minutes, so a slow group is tried again now and then, and all shares start over when the thermal status changes. The X4 now takes the game back once it's 5 % faster (build 15: as fast).
+  - Replayed through the 29 minutes of caps that session recorded after the 40th minute: build 15's rule moves the game 79 times (the session itself moved it 78) and keeps it on the X4 59 % of the time. Build 16's rule moves it 25 times and keeps it there 8 % of the time. At the clocks the session measured, the game gets 10.4 % more CPU speed in that stretch; never leaving cpu 2‑4 would have given 11.7 %.
+- **DXVK's command stream gets a fast core of its own.** The command stream does the Vulkan half of every draw, so it holds up every frame too.
+  - The phone's scheduler kept it on the most throttled cores. Of the 9 long frames the log describes in the hot part of the session, 8 found it on cpu 5‑6, allowed 0.9–1.3 GHz, while cpu 2‑4 were allowed 1.8–2.3 GHz. In two of them the game thread was waiting for it with the GPU idle. The per‑thread figures this build records will show how often that happens.
+  - It now goes to the fastest group of cores other than the game thread's, judged by the allowed clock, with the game thread's 20 % margin for leaving the X4: three checks, at least ten after its last move. It moves at once when the game thread takes its cores, so once the game leaves the X4 it usually gets the X4. DXVK's other three threads keep build 15's placement.
+- **More in the diagnostics:**
+  - each device sample carries every group of cores' measured clock, and each game and DXVK thread's core, its time on a core and its time waiting for one;
+  - the summary's *Render thread* line gives the clock the game ran at on each group of cores against its cap;
+  - new *Command stream* and *Thread time* lines;
+  - a *Clocks measured from …* line says whether the kernel's time per clock was used and which of Pixel's PMU limit settings the app can read (the log has a `PMU frequency limit (sched_pixel): …` line too);
+  - the log gives every move with the share of its cap each group ran at;
+  - the overlay's last line shows the game's cores' clock against their cap, and where the command stream is.
+- **Time without sound is now measured right.** Build 15's summary stopped counting when the replacement stream started opening, before the 50–110 ms the open takes. It now counts until the new stream plays. Your 22:25 session lost the stream once, on the return from a 6‑minute pause (22:44), and the new one played about 80 ms later.
+- **Checked on the build machine:**
+  - The placement rule over the session's own recorded caps (`tests/data`). 19 changes to its new rules were each tried in turn, and every one made the tests fail.
+  - The whole placement end to end on a simulated Pixel with a driven clock, schedstat and time_in_state:
+    - an X4 giving 77 % of its cap left on the fifth check;
+    - the command stream going at once to the X4;
+    - home again after a thermal change;
+    - a stale time_in_state found and dropped;
+    - the JSON.
+  - All host tests again under ThreadSanitizer and AddressSanitizer; 58 JUnit tests.
+- **What to try:** a long session, whatever you like to play. The hot part is where build 16 differs. Then share diagnostics.
+- **Settings for build 16:** as for build 15. **FPS limit 60** for long sessions: it has not been tried since build 15, it should hold 60, and it keeps the phone cooler, which matters most for what this build fixes. Keep *CPU placement* on *Fastest core*.
+
 ### Build 15 — the sound comes back, the 60 FPS cap holds 60, and the game stays on the fast core
 Install the APK over build 14; nothing else changes (mod packs, saves and options stay). Built from the 18:21 diagnostics: six build‑14 sessions, no crash.
 - **The sound comes back after you leave the game.** Twice that ZIP shows the game going silent for good: after 40 seconds in the background (18:09) and after 85 minutes (16:26 to 17:51). Android's audio server had taken the game's sound stream back while it was paused. On the return, Android answered the restart with *disconnected*, every later restart with *invalid state*, and the game played on without sound until it was closed. Plugging headphones in or out, or a Bluetooth headset connecting, ends a stream the same way.

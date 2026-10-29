@@ -211,6 +211,36 @@ public class SessionSummaryTest {
         assertTrue(older, older.contains("; descriptor pools created 1, freed 0\n"));
     }
 
+    @Test public void measuredClocksCommandStreamAndThreadTime() throws Exception {
+        // Build 16: the clock the render thread ran at on each cluster, the command stream's own cluster, the threads'
+        // time on a cpu, where the clocks came from and Pixel's PMU limit, and the thermal resets.
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"host\":{\"affinity\":\"render thread on cpu 7 (follows the fastest cluster)\",\"priority\":\"nice -10\","
+                        + "\"dxvk\":\"4 of 4 DXVK threads off cpu 7, the command stream on cpu 5-6 (follows the fastest other cluster)\",\"adpf\":\"x\",\"reports\":1,"
+                        + "\"reportFailures\":0,\"placementRestored\":0,\"placementFailed\":0,\"clockSource\":\"cpufreq stats (time_in_state)\","
+                        + "\"pmu\":\"not readable (Permission denied)\",\"thermalStatus\":1,\"thermalResets\":2,\"renderCpus\":\"2-4\",\"coreMoves\":3,"
+                        + "\"clusters\":[{\"cpus\":\"0-1\",\"seconds\":0,\"streamSeconds\":0},"
+                        + "{\"cpus\":\"2-4\",\"seconds\":300,\"streamSeconds\":40,\"runMhz\":1927,\"runCapMhz\":2188,\"busy\":95},"
+                        + "{\"cpus\":\"5-6\",\"seconds\":0,\"streamSeconds\":60},"
+                        + "{\"cpus\":\"7\",\"seconds\":100,\"streamSeconds\":300,\"runMhz\":1001,\"runCapMhz\":1305,\"busy\":93}],"
+                        + "\"streamCpus\":\"7\",\"streamMoves\":4,\"moves\":[[0,\"7\"],[100,\"2-4\"]],"
+                        + "\"threads\":[{\"name\":\"render\",\"spanS\":400,\"runS\":376,\"waitS\":4,\"clusterRunS\":[0,282,0,94]},"
+                        + "{\"name\":\"dxvk-cs\",\"spanS\":400,\"runS\":220,\"waitS\":12,\"clusterRunS\":[0,22,33,165]},"
+                        + "{\"name\":\"dxvk-submit\",\"spanS\":400,\"runS\":84,\"waitS\":1,\"clusterRunS\":[40,0,44,0]}]},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "  Render thread: cpu 2-4 75% at ",
+                ", ran at 1927 of 2188 MHz (88%); cpu 7 25% at ",
+                ", ran at 1001 of 1305 MHz (77%) (moved 3 times; the thermal status changed 2 times, starting the measured clocks over)\n",
+                "  Command stream: cpu 2-4 10%, cpu 5-6 15%, cpu 7 75% (moved 4 times)\n",
+                "  Thread time on a cpu (waiting for one): render 94% (1%), dxvk-cs 55% (3%), dxvk-submit 21%\n",
+                "  Clocks measured from cpufreq stats (time_in_state); PMU frequency limit (sched_pixel): not readable (Permission denied)\n"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+        // Records before build 16 have none of these lines.
+        String old = SessionSummary.parse(RECORD).report;
+        assertTrue(!old.contains("Command stream:") && !old.contains("Thread time") && !old.contains("Clocks measured"));
+    }
+
     @Test public void renderThreadFollowsTheFastestCluster() throws Exception {
         // Build 12: the clock each cpu was allowed (two samples), and where the render thread ran as the X4 was capped.
         String record = RECORD.replace("\"cpuMhz\":[1700,2600]}", "\"cpuMhz\":[1700,2600],\"cpuCapMhz\":[2246,3782]},"
@@ -254,6 +284,10 @@ public class SessionSummaryTest {
         org.json.JSONObject sample = new org.json.JSONObject("{\"cpuCapMhz\":[2246,2246,2688,2688,2688,2688,2688,1152]}");
         assertEquals("render cpu 5-6 (≤2688 MHz)  moved 3", GameTelemetry.renderLine(
                 new org.json.JSONObject("{\"renderCpus\":\"5-6\",\"coreMoves\":3}"), sample));
+        // Build 16: the clock it ran at over the last check, and the command stream's cores.
+        assertEquals("render cpu 7 (883 of ≤1152 MHz)  stream cpu 2-4  moved 3", GameTelemetry.renderLine(new org.json.JSONObject(
+                "{\"renderCpus\":\"7\",\"coreMoves\":3,\"streamCpus\":\"2-4\",\"clusters\":[{\"cpus\":\"0-1\"},{\"cpus\":\"2-4\"},{\"cpus\":\"5-6\"},"
+                        + "{\"cpus\":\"7\"}],\"clocksNow\":[2246,2188,1075,883]}"), sample));
         // "big": pinned without moves; no sample yet; caps unreadable on this phone.
         assertEquals("render cpu 7 (≤1152 MHz)", GameTelemetry.renderLine(new org.json.JSONObject("{\"renderCpus\":\"7\"}"), sample));
         assertEquals("render cpu 7", GameTelemetry.renderLine(new org.json.JSONObject("{\"renderCpus\":\"7\"}"), null));

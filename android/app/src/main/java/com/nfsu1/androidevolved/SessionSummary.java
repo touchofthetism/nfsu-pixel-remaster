@@ -312,6 +312,14 @@ final class SessionSummary {
                     host.optString("adpf", "?"), host.optLong("reports"), host.optLong("reportFailures"), kept));
             String cores = coresLine(host, frames == null ? null : frames.optJSONArray("perSecond"));
             if (cores != null) out.append(cores);
+            String stream = streamLine(host);
+            if (stream != null) out.append(stream);
+            String threads = threadsLine(host);
+            if (threads != null) out.append(threads);
+            // Build 16: where the clocks came from, and what Pixel's PMU frequency limit showed of itself.
+            if (host.has("clockSource"))
+                out.append(String.format(Locale.US, "  Clocks measured from %s; PMU frequency limit (sched_pixel): %s\n",
+                        host.optString("clockSource", "?"), host.optString("pmu", "?")));
         }
         JSONObject calls = nat == null ? null : nat.optJSONObject("d3d9Calls");
         if (calls != null && frames != null && frames.optLong("frames") > 0) {
@@ -468,19 +476,70 @@ final class SessionSummary {
             JSONObject c = clusters.optJSONObject(i);
             if (c != null) total += Math.max(0, c.optDouble("seconds", 0));
         }
+        // Build 16: the clock the render thread ran at on each cluster against the cap of those seconds; with it the
+        // clusters are separated by semicolons.
+        boolean measured = false;
+        for (int i = 0; i < clusters.length(); i++) {
+            JSONObject c = clusters.optJSONObject(i);
+            if (c != null && c.optDouble("seconds", 0) > 0 && c.has("runMhz")) measured = true;
+        }
         StringBuilder where = new StringBuilder();
         for (int i = 0; i < clusters.length() && total > 0; i++) {
             JSONObject c = clusters.optJSONObject(i);
             double seconds = c == null ? 0 : c.optDouble("seconds", 0);
             if (!(seconds > 0)) continue;
             String cpus = c.optString("cpus", "?");
-            where.append(where.length() == 0 ? "" : ", ").append(String.format(Locale.US, "cpu %s %.0f%%", cpus, 100 * seconds / total));
+            where.append(where.length() == 0 ? "" : measured ? "; " : ", ").append(String.format(Locale.US, "cpu %s %.0f%%", cpus, 100 * seconds / total));
             long[] sum = rate.get(cpus);
             if (sum != null && sum[1] > 0) where.append(String.format(Locale.US, " at %.0f FPS", sum[0] / (double) sum[1]));
+            if (c.has("runMhz") && c.optDouble("runCapMhz", 0) > 0)
+                where.append(String.format(Locale.US, ", ran at %.0f of %.0f MHz (%.0f%%)", c.optDouble("runMhz"), c.optDouble("runCapMhz"),
+                        100 * c.optDouble("runMhz") / c.optDouble("runCapMhz")));
         }
-        long moveCount = host.optLong("coreMoves");
-        return String.format(Locale.US, "  Render thread: %s (moved %d time%s)\n", where.length() == 0 ? "no time playing yet" : where.toString(),
-                moveCount, moveCount == 1 ? "" : "s");
+        long moveCount = host.optLong("coreMoves"), resets = host.optLong("thermalResets");
+        return String.format(Locale.US, "  Render thread: %s (moved %d time%s%s)\n", where.length() == 0 ? "no time playing yet" : where.toString(),
+                moveCount, moveCount == 1 ? "" : "s",
+                resets > 0 ? String.format(Locale.US, "; the thermal status changed %d time%s, starting the measured clocks over", resets, resets == 1 ? "" : "s") : "");
+    }
+
+    /** Build 16: where DXVK's command stream ran (its own cluster, host_perf.cpp "streamSeconds" per cluster), e.g.
+     *  "  Command stream: cpu 2-4 61%, cpu 7 30%, cpu 5-6 9% (moved 12 times)". Null when it had none. */
+    static String streamLine(JSONObject host) {
+        JSONArray clusters = host.optJSONArray("clusters");
+        if (clusters == null || !host.has("streamCpus")) return null;
+        double total = 0;
+        for (int i = 0; i < clusters.length(); i++) {
+            JSONObject c = clusters.optJSONObject(i);
+            if (c != null) total += Math.max(0, c.optDouble("streamSeconds", 0));
+        }
+        StringBuilder where = new StringBuilder();
+        for (int i = 0; i < clusters.length() && total > 0; i++) {
+            JSONObject c = clusters.optJSONObject(i);
+            double seconds = c == null ? 0 : c.optDouble("streamSeconds", 0);
+            if (!(seconds > 0)) continue;
+            where.append(where.length() == 0 ? "" : ", ").append(String.format(Locale.US, "cpu %s %.0f%%", c.optString("cpus", "?"), 100 * seconds / total));
+        }
+        long moves = host.optLong("streamMoves");
+        return String.format(Locale.US, "  Command stream: %s (moved %d time%s)\n", where.length() == 0 ? "on cpu " + host.optString("streamCpus") : where.toString(),
+                moves, moves == 1 ? "" : "s");
+    }
+
+    /** Build 16: each tracked thread's share of the measured time on a cpu, and waiting for one (host_perf.cpp
+     *  "threads"), e.g. "  Thread time on a cpu (waiting for one): render 92% (1%), dxvk-cs 55% (3%), dxvk-submit
+     *  21%". Null without. */
+    static String threadsLine(JSONObject host) {
+        JSONArray threads = host.optJSONArray("threads");
+        if (threads == null || threads.length() == 0) return null;
+        StringBuilder line = new StringBuilder();
+        for (int i = 0; i < threads.length(); i++) {
+            JSONObject t = threads.optJSONObject(i);
+            double span = t == null ? 0 : t.optDouble("spanS", 0);
+            if (!(span > 0)) continue;
+            double run = 100 * t.optDouble("runS", 0) / span, wait = 100 * t.optDouble("waitS", 0) / span;
+            line.append(line.length() == 0 ? "" : ", ").append(String.format(Locale.US, "%s %.0f%%", t.optString("name", "?"), run));
+            if (wait >= 0.5) line.append(String.format(Locale.US, " (%.0f%%)", wait));
+        }
+        return line.length() == 0 ? null : "  Thread time on a cpu (waiting for one): " + line + "\n";
     }
 
     static String methodName(String key) {
