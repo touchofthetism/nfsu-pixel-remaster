@@ -282,6 +282,32 @@ int main() {
         reportTo = nullptr;
     }
 
+    // An open and a start take time (60 ms here, 95 ms on the Pixel): it counts as time without sound, and the next
+    // try after a failed one is timed from when it ended.
+    {
+        reset();
+        uint64_t clock = 1000;
+        SoundOutput::System system = simulated();
+        auto open = system.open;
+        system.open = [&clock, open] { clock += 60; return open(); };
+        system.now = [&clock] { return clock; };
+        SoundOutput output(system);
+        output.begin(clock);
+        require(clock == 1060 && current(output)->started, "the first stream, opened in 60 ms");
+        clock = 10000;
+        output.setPaused(true, clock);
+        streams[0]->stolen = true;
+        clock = 20000;
+        require(output.setPaused(false, clock) && output.service(clock) == 0 && current(output)->started && clock == 20060, "replaced");
+        require(output.silentMs(clock) == 60, "the open counted: " + std::to_string(output.silentMs(clock)));
+        require(logged("Sound output replaced: a new stream after 60 ms without sound"), lines.back());
+        failOpens = 1;
+        current(output)->disconnected = true;
+        clock = 40000;
+        uint64_t due = output.service(clock);
+        require(due == 40060 + 500, "a failed open's wait starts when it ended: " + std::to_string(due));
+    }
+
     // Before begin(): pauses are remembered, nothing is opened; begin() while paused opens at the resume.
     {
         reset();

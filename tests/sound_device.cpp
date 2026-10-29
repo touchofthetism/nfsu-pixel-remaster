@@ -104,6 +104,7 @@ int main() {
         require(eventually([&] { return world.opened == 3 && playing(2); }), "replaced after the resume");
         require(closed(1), "the stream taken back is closed");
         require(reported([](const SoundDevice::Report& r) { return r.lost == 2 && r.replaced == 2; }), "two lost, two replaced");
+        require(report.silentMs >= 80, "the 80 ms open counts as time without sound: " + std::to_string(report.silentMs));
 
         // 4. While a replacement opens (200 ms), the session figures and the game thread's service do not wait: the
         //    last figures are given meanwhile.
@@ -121,6 +122,7 @@ int main() {
         require(eventually([&] { return world.opened == 4 && playing(3); }), "replaced");
         world.openDelayMs = 0;
         require(reported([](const SoundDevice::Report& r) { return r.lost == 3 && r.replaced == 3; }), "three lost, three replaced");
+        const uint64_t silentBefore = report.silentMs;
 
         // 5. No stream for a while (four tries fail, each a low-latency open and a default one: tried at once, then
         //    after 50, 100, 200 and 400 ms): the stand-in mixes in real time, so the mix's play cursor moves as on a
@@ -140,7 +142,8 @@ int main() {
                 "the stand-in mixes in real time: " + std::to_string(moved) + " frames for " + std::to_string(expected));
         require(eventually([&] { return world.opened == 5 && playing(4); }), "a stream again once an open works");
         require(reported([](const SoundDevice::Report& r) { return r.lost == 4 && r.replaced == 4; }), "four lost, four replaced");
-        require(report.silentMs >= 600 && report.silentMs < 1500, "about 750 ms without sound: " + std::to_string(report.silentMs));
+        require(report.silentMs - silentBefore >= 600 && report.silentMs - silentBefore < 1500,
+                "about 750 ms without sound: " + std::to_string(report.silentMs - silentBefore));
         require(device.standInFrames() > 24000, "the stand-in mixed it: " + std::to_string(device.standInFrames()));
 
         // 6. Underruns grow the buffer by a burst; no new ones, no growth.

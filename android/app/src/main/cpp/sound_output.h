@@ -38,6 +38,7 @@ public:
         std::function<void(Stream)> close;          // stop and close
         std::function<void(bool warning, const std::string&)> log;   // a loss or a failure is a warning
         std::function<std::string(int)> describe;   // a result's name (AAudio_convertResultToText); optional
+        std::function<uint64_t()> now;              // the clock (ms) once an open and a start are done; optional
     };
     static constexpr unsigned kLogLines = 40;       // lines a session; after that every 100th
 
@@ -181,10 +182,13 @@ private:
             lost_.store(false, std::memory_order_release);
             stream = nullptr;
         }
+        // An open and a start take 50-110 ms on the Pixel (build 15's 20:42 resume: 95 ms), all of it without sound:
+        // the new stream plays, and the next try is timed, from when they are done.
+        uint64_t doneMs = system_.now ? std::max(system_.now(), nowMs) : nowMs;
         if (!stream) {
             ++failures_;
             if (!paused_) startSilence(nowMs);
-            retryAtMs_ = nowMs + delayMs_;
+            retryAtMs_ = doneMs + delayMs_;
             log(true, "Sound output: no stream (" + (result ? "start failed: " + name(result) : std::string("open failed"))
                 + "), attempt " + std::to_string(failures_) + ", the next in " + seconds(delayMs_));
             delayMs_ = std::min(delayMs_ * 2, timing_.lastRetryMs);
@@ -192,8 +196,8 @@ private:
         }
         stream_ = stream;
         running_ = !paused_;
-        openedAtMs_ = nowMs;
-        endSilence(nowMs);
+        openedAtMs_ = doneMs;
+        endSilence(doneMs);
         if (replacing_ || failures_) {
             if (replacing_) ++replacements_;
             log(false, std::string("Sound output ") + (replacing_ ? "replaced" : "opened") + ": a new stream after "

@@ -209,6 +209,7 @@ private:
             const char* text = AAudio_convertResultToText(aaudio_result_t(result));
             return std::string(text ? text : "");
         };
+        system.now = [] { return nowMs(); };
         return system;
     }
 

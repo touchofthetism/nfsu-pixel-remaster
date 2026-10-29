@@ -13,9 +13,11 @@
 // A thread is followed by its id and its name together, so an id the system hands to a new thread after the
 // placed one exits is never touched; a placed thread that is gone is dropped. Build 15: a thread whose name changed
 // is still the same thread while its start time (the kernel's, /proc/self/task/<tid>/stat) is, and a name that
-// cannot be read for a moment drops nothing: a 23-minute session of build 14 stopped following the render thread,
-// which went on presenting, after a 5-minute pause, and with it the placement; its log could not say which of the
-// two it was, since drops were silent. Every drop is now reported, with its reason.
+// cannot be read for a moment drops nothing. A 23-minute session of build 14 stopped following the render thread,
+// which went on presenting, after a 5-minute pause, and with it the placement. Build 15's first session showed why:
+// on the first resume after a long pause the render thread is renamed from the process's name to "Thread-5" (a
+// system library attaches it to the Java VM while the swap chain is made again), and the name check took that for
+// another thread. Every drop is now reported, with its reason.
 #include <sched.h>
 
 #include <cerrno>
