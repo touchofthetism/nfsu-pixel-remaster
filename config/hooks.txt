@@ -76,3 +76,6 @@
 0x0040A8F5  road reflection depth surface: before push this, [esp]/[esp+4] = 320/240 -> the sharper size
 0x00408557  road reflection view reset: after its 320/240 stores at [ecx+14h]/[ecx+18h]
 0x0040AAD5  road reflection view table entry: after its 320/240 stores at [esi+14h]/[esi+18h]
+# Garage (src/runtime/garage.c): register results of two PC-mod patches.
+0x004E27D8  hidden-vinyl test 0x4E2680 after its `mov al, 1`: special vinyls on -> al = 0, the vinyl is listed (Extra Options)
+0x005702F8  car renderer's brake LOD choice after `sete cl`: race brakes on -> cl = 0, the full-detail set (ARCHIE's Extended Customization)

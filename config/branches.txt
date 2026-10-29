@@ -1,0 +1,24 @@
+# Conditional jumps the host decides (RECOMP_BRANCH -> recomp_branch in src/runtime/garage.c). Each is where
+# a PC mod patches a jcc into a jmp or nops it; the decision and its feature are in src/runtime/nfs_garage.h
+# (k_nfs_branch_overrides), which tests/garage.cpp checks against this list. Speed.exe 1.4 only.
+# VA        feature: what taking / not taking the jump does
+0x004E465B  hood vinyls: vinyl menu gate 0x4E4610, option 1, the STOCK-hood jump (taken)
+0x004E46E4  vinyl layers: gate, layer 1 read as empty (taken)
+0x004E46F2  vinyl layers: gate, layer 2 read as empty (taken)
+0x004E46FE  vinyl layers: gate, layer 3 read as empty (taken)
+0x004E470A  vinyl layers: gate, layer 4 read as empty (taken)
+0x004E4791  vinyl layers: gate, option 4, layer 1 in use does not refuse (taken)
+0x004E479B  vinyl layers: gate, option 4, layer 2 (taken)
+0x004E47A5  vinyl layers: gate, option 4, layer 3 (taken)
+0x004E47AF  vinyl layers: gate, option 4, layer 4 (taken)
+0x00508AD1  hood vinyls: parts screen 0x5089B0 installing a custom hood, vinyl layer 1 as none (taken)
+0x00508ADD  hood vinyls: layer 2 as none (taken)
+0x00508AE9  hood vinyls: layer 3 as none (taken)
+0x00508AF5  hood vinyls: layer 4 as none (taken)
+0x00508B86  hood decals: installing a custom hood skips the decal removal question (taken)
+0x00508F52  hood decals: confirmed, the hood decals are not removed (taken)
+0x005104FE  hood decals: decal menu 0x5101F0 treats any hood as STOCK (taken)
+0x0051222A  all decals: decal lock test 0x511FF0 answers unlocked (taken)
+0x0057EAF6  hood decals: ride update 0x57EA80 never finds a hood's EXCLUDEDECAL (not taken)
+0x0057EB16  hood decals: second EXCLUDEDECAL search (not taken)
+0x0057EBA6  hood decals: third EXCLUDEDECAL search (not taken)

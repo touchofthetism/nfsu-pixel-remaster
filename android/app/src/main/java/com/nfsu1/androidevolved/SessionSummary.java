@@ -431,6 +431,10 @@ final class SessionSummary {
             }
             out.append(line).append('\n');
         }
+        String garage = garageLine(nat == null ? null : nat.optJSONObject("garage"));
+        if (garage != null) out.append(garage);
+        String effects = effectStatesLine(nat == null ? null : nat.optJSONObject("effectStates"), frames == null ? 0 : frames.optLong("frames"));
+        if (effects != null) out.append(effects);
         JSONArray events = record.optJSONArray("events");
         if (events != null && events.length() > 0) {
             StringBuilder line = new StringBuilder("  Events:");
@@ -444,6 +448,53 @@ final class SessionSummary {
             out.append(line).append('\n');
         }
         return out.toString();
+    }
+
+    private static final String[][] GARAGE_NAMES = {
+            {"unlock", "unlock everything"}, {"specialVinyls", "special vinyls"}, {"vinylLayers", "free vinyl layers"},
+            {"hoodVinyls", "hood vinyls"}, {"hoodDecals", "hood decals"}, {"allDecals", "all decals"}, {"raceBrakes", "race brakes"}};
+
+    /** Build 17: the Garage switches (native "garage": the NFS_GARAGE_* mask, per feature the decisions of the game it
+     *  changed, and the game's unlock-everything byte), e.g. "  Garage: all 7 on (unlock byte set); changed: special
+     *  vinyls 17, hood vinyls 4" or "  Garage: on: special vinyls; off: unlock everything, ...; no game decision
+     *  changed". Null before build 17. */
+    static String garageLine(JSONObject garage) {
+        if (garage == null || !garage.has("features")) return null;
+        int mask = garage.optInt("features") & ((1 << GARAGE_NAMES.length) - 1);
+        JSONObject changes = garage.optJSONObject("changes");
+        StringBuilder on = new StringBuilder(), off = new StringBuilder(), changed = new StringBuilder();
+        for (int i = 0; i < GARAGE_NAMES.length; i++) {
+            StringBuilder list = (mask & (1 << i)) != 0 ? on : off;
+            if (list.length() > 0) list.append(", ");
+            list.append(GARAGE_NAMES[i][1]);
+            long count = changes == null ? 0 : changes.optLong(GARAGE_NAMES[i][0]);
+            if (count > 0) changed.append(changed.length() > 0 ? ", " : "").append(GARAGE_NAMES[i][1]).append(' ').append(count);
+        }
+        StringBuilder line = new StringBuilder("  Garage: ");
+        if (off.length() == 0) line.append("all ").append(GARAGE_NAMES.length).append(" on");
+        else if (on.length() == 0) line.append("all off");
+        else line.append("on: ").append(on).append("; off: ").append(off);
+        if (garage.has("unlockByte")) line.append(garage.optInt("unlockByte") != 0 ? " (unlock byte set)" : " (unlock byte clear)");
+        if (mask != 0) line.append(changed.length() == 0 ? "; no game decision changed" : "; changed: " + changed);
+        long unknown = garage.optLong("unknownSites");
+        if (unknown > 0) line.append(String.format(Locale.US, "; %d jumps reached with no rule", unknown));
+        return line.append('\n').toString();
+    }
+
+    /** Build 17: the effects' render, sampler and texture stage states (native "effectStates", effect_states.h):
+     *  how many state applications a frame, the share the host took and the share of those already set, and the
+     *  value updates answered at once, e.g. "  Effect states (host): 21,000 applied a frame, 93% by the host (96%
+     *  of those already set, skipped); value updates 97% answered at once". Null before build 17. */
+    static String effectStatesLine(JSONObject effects, long frames) {
+        if (effects == null || !effects.has("host")) return null;
+        if (!effects.optBoolean("host")) return "  Effect states: the game's own D3DX code (launcher option)\n";
+        long calls = effects.optLong("applyCalls"), handled = effects.optLong("applyHandled");
+        long kept = effects.optLong("kept"), sent = effects.optLong("sent");
+        long evaluations = effects.optLong("evaluateCalls"), immediate = effects.optLong("evaluateHandled");
+        if (calls == 0) return "  Effect states (host): none applied\n";
+        return String.format(Locale.US, "  Effect states (host): %,.0f applied a frame, %.0f%% by the host (%.0f%% of those already set, skipped)%s; value updates %.0f%% answered at once\n",
+                frames > 0 ? (double) calls / frames : 0.0, 100.0 * handled / calls, kept + sent > 0 ? 100.0 * kept / (kept + sent) : 0.0,
+                handled < calls ? ", the rest by the game's D3DX code" : "", evaluations > 0 ? 100.0 * immediate / evaluations : 0.0);
     }
 
     /** Build 12: where the render thread ran as the phone capped its clocks (host_perf.cpp "clusters", with the

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 // Maps the owner's PE data, binds imports, tests lifted code and attempts CRT
@@ -22,6 +23,11 @@ void setGuestWidescreen(bool enabled);
 void setGuestWrongWayWarning(bool enabled);
 // Launcher "Reflections": the sharper reflection targets (true) or the game's original sizes.
 void setGuestHdReflections(bool enabled);
+// Launcher "Garage": the customization freedoms on, as NFS_GARAGE_* bits (src/runtime/nfs_garage.h). Before boot.
+void setGuestGarage(uint32_t features);
+// Launcher "Effect states": the effects' render, sampler and texture stage states applied by the host (true,
+// effect_states.h) or by the game's own D3DX code. Before boot.
+void setGuestEffectStates(bool host);
 void setGuestOnlineServer(const std::string& host);
 /** Touch as mouse: x/y as a fraction of the game view; phase 0 down, 1 move, 2 up (left button). */
 void setGuestPointer(float x,float y,int phase);

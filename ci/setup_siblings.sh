@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Puts the pinned sibling checkouts next to this repository and prepares DXVK:
 #   <parent>/nfsu2-recompiled   (DXVK recipe, libadrenotools, pcrecomp patches)
-#   <parent>/pcrecomp           (recompiler at the pinned commit + the 14 patches)
+#   <parent>/pcrecomp           (recompiler at the pinned commit + the 14 patches + ci/pcrecomp/*.patch)
 #   <parent>/dxvk-native        (DXVK native 1.9.2b source)
 #   <parent>/nfsu2-recompiled/build/dxvk-source   (prepared + shaders generated + ci/dxvk_extra.py)
 # Idempotent: existing checkouts are reset to the pins. Needs git, python3, glslangValidator, spirv-val.
@@ -29,6 +29,8 @@ clone_at "$PCRECOMP_REPO" "$parent/pcrecomp" "$PCRECOMP_COMMIT"
 git -C "$parent/pcrecomp" am --abort 2>/dev/null || true
 git -C "$parent/pcrecomp" checkout -q --force "$PCRECOMP_COMMIT"
 git -C "$parent/pcrecomp" -c user.name=ci -c user.email=ci@localhost am "$parent"/nfsu2-recompiled/patches/pcrecomp/*.patch
+# This port's own lifter changes on top (ci/pcrecomp): RECOMP_BRANCH and recomp_fastpath.
+git -C "$parent/pcrecomp" -c user.name=ci -c user.email=ci@localhost am "$here"/ci/pcrecomp/*.patch
 echo "[siblings] pcrecomp: $(git -C "$parent/pcrecomp" rev-list --count "$PCRECOMP_COMMIT"..HEAD) patches applied"
 
 clone_at "$DXVK_REPO" "$parent/dxvk-native" "$DXVK_COMMIT"

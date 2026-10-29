@@ -31,3 +31,9 @@ bool d3d9RequestsSurface();
 void acknowledgeD3D9Surface(bool available);
 uint32_t createGuestD3D9(uint32_t sdk);
 uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumentCount);
+// A render (57), texture stage (67) or sampler (69) state for the guest device `device`, from the host's effect
+// path (effect_states.h): through the same shadow as the game's own calls. False, with nothing done, when the
+// bridge cannot take it there (another or no device yet, a state block being recorded); then the game's code runs.
+bool d3d9EffectState(uint32_t device,unsigned method,uint32_t a,uint32_t b,uint32_t c,uint32_t* result);
+// Effect states this session: already the device's value, and sent to DXVK.
+void d3d9EffectStateCounts(uint64_t& kept,uint64_t& sent);

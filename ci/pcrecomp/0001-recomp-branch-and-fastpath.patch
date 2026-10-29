@@ -1,0 +1,76 @@
+From e32afeacd4553e43857ed43537c7db17d2dd606a Mon Sep 17 00:00:00 2001
+From: touchofthetism <sheftonberthold@gmail.com>
+Date: Thu, 29 Oct 2026 01:47:13 -0600
+Subject: [PATCH] lift32/recomp_types: RECOMP_BRANCH (host decides chosen
+ conditional jumps) and recomp_fastpath (host may handle a whole call)
+
+---
+ runtime/recomp32/recomp_types.h | 16 ++++++++++++++++
+ tools/lift/lift32.py            | 10 +++++++++-
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/recomp32/recomp_types.h b/runtime/recomp32/recomp_types.h
+index 5286bd3..d7820c6 100644
+--- a/runtime/recomp32/recomp_types.h
++++ b/runtime/recomp32/recomp_types.h
+@@ -1184,6 +1184,22 @@ RECOMP_WEAK uint32_t g_backedges;
+ void recomp_hook(uint32_t va);
+ #define RECOMP_HOOK(va) do { RECOMP_REGS_OUT(); recomp_hook(va); RECOMP_REGS_IN(); } while (0)
+ 
++/* Host decision for the conditional jump at `va` (Lifter branch_sites):
++ * `taken` is the lifted condition; the result is whether to jump. The host
++ * returns `taken` unchanged unless one of its features overrides that jump,
++ * the lifted equivalent of a PC mod's jcc -> jmp or jcc -> nop patch. It
++ * reads no guest registers, so none are synced around it. */
++int recomp_branch(uint32_t va, int taken);
++#define RECOMP_BRANCH(va, cond) recomp_branch((va), (cond) ? 1 : 0)
++
++/* A port may handle a whole call to the function at `va` on the host before
++ * its lifted body runs (the port's lift driver wraps the functions it lists).
++ * On entry the guest registers are in the globals and [esp] is the dummy
++ * return address; a host that handles the call sets eax and pops the return
++ * address and the arguments the function's own `ret` would, then returns 1.
++ * Returning 0 leaves every register as it was and the lifted body runs. */
++int recomp_fastpath(uint32_t va);
++
+ /* Always-callable trace dump (no-op unless RECOMP_TRACE). */
+ void recomp_dump_trace(const char* why);
+ 
+diff --git a/tools/lift/lift32.py b/tools/lift/lift32.py
+index 1cd9bf5..323c90e 100644
+--- a/tools/lift/lift32.py
++++ b/tools/lift/lift32.py
+@@ -235,7 +235,8 @@ class Lifter:
+     def __init__(self, iat_map: dict = None, func_names: dict = None,
+                  lifted: set = None, precise_sbb: bool = False,
+                  patch_sites: set = None, precise_carry: bool = False,
+-                 reloc=None, hook_sites: set = None):
++                 reloc=None, hook_sites: set = None,
++                 branch_sites: set = None):
+         """
+         iat_map: VA -> (dll, func_name) for import resolution
+         func_names: VA -> name for known function names
+@@ -269,6 +270,11 @@ class Lifter:
+         # PC mod's inline hook would, since patching x86 bytes no longer
+         # changes lifted code.
+         self.hook_sites = hook_sites or set()
++        # Conditional jumps whose outcome the host may decide (RECOMP_BRANCH):
++        # where a PC mod turns a jcc into a jmp or NOPs it. The lifted
++        # condition is still computed and handed over, so the host can keep
++        # the original outcome whenever its feature is off.
++        self.branch_sites = branch_sites or set()
+         self._patched_imm = None
+         self._patched_disp = None   # (placeholder, expr) for a patched disp32
+         self._labels = None        # block starts of the function being lifted
+@@ -1506,6 +1512,8 @@ class Lifter:
+         elif m in COND_MAP:
+             target = insn.get_branch_target()
+             cond = self._make_condition(m)
++            if insn.address in self.branch_sites:
++                cond = f"RECOMP_BRANCH(0x{insn.address:08X}u, ({cond}))"
+             if target and self._labels is not None and target not in self._labels:
+                 lines.append(f"if ({cond}) {{ RECOMP_ITAIL(0x{target:08X}u); return; }} {comment}")
+             elif target:
+-- 
+2.43.0
+

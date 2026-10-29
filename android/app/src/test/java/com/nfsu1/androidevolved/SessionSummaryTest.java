@@ -280,6 +280,46 @@ public class SessionSummaryTest {
         assertTrue(!SessionSummary.parse(RECORD).report.contains("allowed avg/min"));
     }
 
+    @Test public void garageAndEffectStatesAreReported() throws Exception {
+        // Build 17: which Garage switches were on, which of the game's decisions they changed, the unlock byte.
+        assertEquals("  Garage: all 7 on (unlock byte set); changed: special vinyls 17, hood vinyls 4\n", SessionSummary.garageLine(new org.json.JSONObject(
+                "{\"features\":127,\"changes\":{\"unlock\":0,\"specialVinyls\":17,\"vinylLayers\":0,\"hoodVinyls\":4,\"hoodDecals\":0,"
+                        + "\"allDecals\":0,\"raceBrakes\":0},\"unknownSites\":0,\"unlockByte\":1}")));
+        // 66: special vinyls (bit 1) and race brakes (bit 6).
+        assertEquals("  Garage: on: special vinyls, race brakes; off: unlock everything, free vinyl layers, hood vinyls, hood decals, all decals;"
+                + " no game decision changed\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":66,\"changes\":{},\"unknownSites\":0}")));
+        assertEquals("  Garage: all off (unlock byte clear)\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":0,\"unlockByte\":0}")));
+        // A jump the lifter wrapped with no rule in the table (config/branches.txt and nfs_garage.h out of step).
+        assertEquals("  Garage: all 7 on; no game decision changed; 3 jumps reached with no rule\n",
+                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":127,\"unknownSites\":3}")));
+        assertEquals(null, SessionSummary.garageLine(null));
+        assertEquals(null, SessionSummary.garageLine(new org.json.JSONObject("{}")));
+
+        // The effects' states: per frame, the host's share, the share of those already set, the value updates.
+        org.json.JSONObject effects = new org.json.JSONObject("{\"host\":true,\"applyCalls\":1200000,\"applyHandled\":1116000,"
+                + "\"evaluateCalls\":900000,\"evaluateHandled\":873000,\"kept\":1071360,\"sent\":44640}");
+        assertEquals("  Effect states (host): 20,000 applied a frame, 93% by the host (96% of those already set, skipped), the rest by the game's"
+                + " D3DX code; value updates 97% answered at once\n", SessionSummary.effectStatesLine(effects, 60));
+        assertEquals("  Effect states (host): none applied\n", SessionSummary.effectStatesLine(new org.json.JSONObject("{\"host\":true,\"applyCalls\":0}"), 60));
+        assertEquals("  Effect states: the game's own D3DX code (launcher option)\n",
+                SessionSummary.effectStatesLine(new org.json.JSONObject("{\"host\":false,\"applyCalls\":5}"), 60));
+        assertEquals(null, SessionSummary.effectStatesLine(null, 60));
+        assertEquals(null, SessionSummary.effectStatesLine(new org.json.JSONObject("{}"), 60));
+
+        // In the report, before the events; records before build 17 have neither line.
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"garage\":{\"features\":127,\"changes\":{\"specialVinyls\":2},\"unknownSites\":0,\"unlockByte\":1},"
+                + "\"effectStates\":{\"host\":true,\"applyCalls\":1224680000,\"applyHandled\":1224680000,\"evaluateCalls\":10,\"evaluateHandled\":10,"
+                + "\"kept\":1175692800,\"sent\":48987200},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        String garage = "  Garage: all 7 on (unlock byte set); changed: special vinyls 2\n";
+        String states = "  Effect states (host): 20,000 applied a frame, 100% by the host (96% of those already set, skipped); value updates 100%"
+                + " answered at once\n";
+        assertTrue(report, report.contains(garage + states));
+        assertTrue(report, report.indexOf(states) < report.indexOf("  Events:"));
+        String old = SessionSummary.parse(RECORD).report;
+        assertTrue(!old.contains("Garage:") && !old.contains("Effect states"));
+    }
+
     @Test public void overlayShowsTheRenderCores() throws Exception {
         org.json.JSONObject sample = new org.json.JSONObject("{\"cpuCapMhz\":[2246,2246,2688,2688,2688,2688,2688,1152]}");
         assertEquals("render cpu 5-6 (≤2688 MHz)  moved 3", GameTelemetry.renderLine(

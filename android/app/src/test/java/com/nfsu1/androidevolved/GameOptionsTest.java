@@ -93,6 +93,34 @@ public class GameOptionsTest {
         assertTrue(!GameOptions.validServer(null));
     }
 
+    @Test public void garageFeaturesAreStoredAsThoseTurnedOff() {
+        // Build 17: seven switches, the bits of the native NFS_GARAGE_* mask in the same order (tests/garage.cpp
+        // checks the native side's keys against the same list).
+        assertArrayEquals(new String[] {"unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes"},
+                GameOptions.GARAGE_KEYS);
+        assertEquals(GameOptions.GARAGE_KEYS.length, GameOptions.GARAGE_TITLES.length);
+        assertEquals(0x7F, GameOptions.GARAGE_ALL);
+        // Never chosen, or nothing turned off: all on.
+        assertEquals(0x7F, GameOptions.garageMask(null));
+        assertEquals(0x7F, GameOptions.garageMask(""));
+        assertEquals("", GameOptions.garageOffValue(0x7F));
+        // Turned off: that bit clear; a key no build knows (or a later build's feature this one lacks) is ignored.
+        assertEquals(0x7F & ~(1 << 6), GameOptions.garageMask("raceBrakes"));
+        assertEquals(0x7F & ~1 & ~(1 << 3), GameOptions.garageMask("unlock, hoodVinyls"));
+        assertEquals(0x7F & ~(1 << 2), GameOptions.garageMask("vinylLayers,rimSizes"));
+        assertEquals("unlock,hoodVinyls", GameOptions.garageOffValue(0x7F & ~1 & ~(1 << 3)));
+        // Every mask survives the round trip, all off included.
+        for (int mask = 0; mask <= 0x7F; mask++) assertEquals(mask, GameOptions.garageMask(GameOptions.garageOffValue(mask)));
+        assertEquals(String.join(",", GameOptions.GARAGE_KEYS), GameOptions.garageOffValue(0));
+        assertEquals(3, GameOptions.garageCount(0b1010100));
+        assertEquals(7, GameOptions.garageCount(-1));
+    }
+
+    @Test public void effectStatesAreTheHostsByDefault() {
+        assertEquals("native", GameOptions.defaultValue(GameOptions.EFFECTS, 16 * GB));
+        assertArrayEquals(new String[] {"native", "game"}, GameOptions.find(GameOptions.EFFECTS).values);
+    }
+
     @Test public void batterySaverHoldsTheCapToThePanel() {
         assertEquals(60, GameOptions.effectiveFrameLimit(120, true, 60f));
         assertEquals(60, GameOptions.effectiveFrameLimit(90, true, 60.0001f));

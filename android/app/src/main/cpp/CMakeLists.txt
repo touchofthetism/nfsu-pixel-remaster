@@ -100,7 +100,7 @@ endif()
 add_library(nfsu1_diagnostics SHARED gpu_probe.cpp vulkan_driver.cpp)
 target_link_libraries(nfsu1_diagnostics PRIVATE android log dl)
 target_compile_options(nfsu1_diagnostics PRIVATE -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers)
-add_library(nfsu1_android SHARED main.cpp guest_runtime.cpp d3d9_bridge.cpp host_perf.cpp vulkan_driver.cpp "${NFS_ROOT}/src/runtime/overrides.c" "${NFS_ROOT}/src/runtime/widescreen.c" "${NFS_ROOT}/src/runtime/framerate.c" "${NFS_ROOT}/src/runtime/misc_fixes.c" "${NFS_ROOT}/src/runtime/reflections.c" "${NFS_ROOT}/src/runtime/abk_code.c" $<TARGET_OBJECTS:nfs_guest>)
+add_library(nfsu1_android SHARED main.cpp guest_runtime.cpp d3d9_bridge.cpp host_perf.cpp vulkan_driver.cpp "${NFS_ROOT}/src/runtime/overrides.c" "${NFS_ROOT}/src/runtime/widescreen.c" "${NFS_ROOT}/src/runtime/framerate.c" "${NFS_ROOT}/src/runtime/misc_fixes.c" "${NFS_ROOT}/src/runtime/reflections.c" "${NFS_ROOT}/src/runtime/garage.c" "${NFS_ROOT}/src/runtime/fastpath.c" "${NFS_ROOT}/src/runtime/abk_code.c" $<TARGET_OBJECTS:nfs_guest>)
 target_include_directories(nfsu1_android SYSTEM PRIVATE "${DXVK_SOURCE}/include/native"
   "${DXVK_SOURCE}/include/native/windows" "${DXVK_SOURCE}/include/native/directx")
 target_include_directories(nfsu1_android PRIVATE "${PCRECOMP}/runtime/recomp32" "${PCRECOMP}/runtime/win32hle" "${NFS_ROOT}/src/runtime")

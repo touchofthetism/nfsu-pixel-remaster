@@ -1,0 +1,5 @@
+# Guest functions the host may handle before their lifted body runs (recomp_fastpath, src/runtime/fastpath.c;
+# scripts/run_lift.py wraps each). A handler that does not take a call leaves the game's own code to run.
+# VA        what the host takes
+0x005C97CB  D3DX effect state apply: render, texture stage and sampler states, through the bridge's shadow (android/app/src/main/cpp/effect_states.h)
+0x005CDCA7  D3DX effect state value update: the immediate S_OK for a fixed value (effect_states.h)

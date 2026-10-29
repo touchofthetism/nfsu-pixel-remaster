@@ -16,6 +16,9 @@
 #include "nfs_widescreen.h"
 #include "nfs_misc_fixes.h"
 #include "nfs_reflections.h"
+#include "nfs_garage.h"
+#include "nfs_fastpath.h"
+#include "effect_states.h"
 #endif
 #include <array>
 #include <cstdio>
@@ -212,6 +215,13 @@ bool guestWidescreen=true;
 bool guestWrongWayWarning=true;
 // Launcher "Reflections": sharper road, car and mirror reflection targets (reflections.c).
 bool guestHdReflections=true;
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+// Launcher "Garage" (nfs_garage.h): which customization freedoms the game gets, NFS_GARAGE_* bits.
+uint32_t guestGarage=NFS_GARAGE_ALL;
+#endif
+// Launcher "Effect states": the effects' render, sampler and texture stage states applied by the host
+// (effect_states.h) or by the game's own D3DX code.
+bool guestEffectStates=true;
 void* ptr(uint32_t va, uint64_t bytes);
 void applyWrongWayPatch(){
     struct Patch{uint32_t va;const char* expected;};
@@ -571,6 +581,59 @@ void d3dDispatch(){
                 frames/seconds,seconds,double(bridgeTime.count())/1e6/frames,double(presentTime.count())/1e6/frames,double(bridgeCalls)/frames);
             frames=0;since=now;bridgeTime=presentTime=std::chrono::nanoseconds{};bridgeCalls=0;}
     }ret(result,count);}
+// The launcher's Garage switches as the session log names them.
+void logGarage(){
+    std::string on,off;
+    for(unsigned i=0;i<NFS_GARAGE_FEATURE_COUNT;++i){
+        std::string& list=(guestGarage>>i)&1u?on:off;
+        if(!list.empty())list+=", ";
+        list+=nfs_garage_feature_name(i);
+    }
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Garage: on: %s; off: %s; unlock-everything byte %u",on.empty()?"none":on.c_str(),
+        off.empty()?"none":off.c_str(),unsigned(*static_cast<const uint8_t*>(ptr(NFS_GARAGE_UNLOCK_FLAG,1))));
+}
+// Garage and effect state counts for the session JSON (guestTelemetryJson).
+std::string garageJson(){
+    std::string json="{\"features\":"+std::to_string(nfs_garage_features())+",\"changes\":{";
+    for(unsigned i=0;i<NFS_GARAGE_FEATURE_COUNT;++i)
+        json+=std::string(i?",":"")+"\""+nfs_garage_feature_key(i)+"\":"+std::to_string(nfs_garage_changes(i));
+    json+="},\"unknownSites\":"+std::to_string(nfs_branch_unknown_sites());
+    // The game's own unlock-everything byte as the session ends (no guest memory before the first boot).
+    if(memory)json+=",\"unlockByte\":"+std::to_string(unsigned(*static_cast<const uint8_t*>(ptr(NFS_GARAGE_UNLOCK_FLAG,1))));
+    json+="}";
+    return json;
+}
+std::string effectStatesJson(){
+    uint64_t kept=0,sent=0;d3d9EffectStateCounts(kept,sent);
+    return "{\"host\":"+std::string(guestEffectStates?"true":"false")+
+        ",\"applyCalls\":"+std::to_string(nfs_fastpath_calls(effect_states::kApply))+
+        ",\"applyHandled\":"+std::to_string(nfs_fastpath_handled(effect_states::kApply))+
+        ",\"evaluateCalls\":"+std::to_string(nfs_fastpath_calls(effect_states::kEvaluate))+
+        ",\"evaluateHandled\":"+std::to_string(nfs_fastpath_handled(effect_states::kEvaluate))+
+        ",\"kept\":"+std::to_string(kept)+",\"sent\":"+std::to_string(sent)+"}";
+}
+// Effect states (effect_states.h), as recomp_fastpath handlers: sub_005C97CB and sub_005CDCA7 come here
+// first, with the guest registers in the globals and [esp] the dummy return address. A state this cannot
+// take (another kind, another device, a state block being recorded) returns 0 and the game's code runs.
+int applyEffectStateFast(){
+    const uint32_t esp=g_esp,effect=g_ecx;
+    auto call=effect_states::applyCall([](uint32_t va){return read32(va);},read32(esp+4),read32(esp+8));
+    if(call.method==effect_states::Method::None)return 0;
+    uint32_t hresult;
+    {RenderPlace place(GuestProfile::D3D9);
+     if(!d3d9EffectState(read32(effect+8),static_cast<unsigned>(call.method),call.a,call.b,call.c,&hresult))return 0;}
+    g_eax=effect_states::applyResult(hresult,read32(effect+0x84));
+    g_esp=esp+12;   // the return address and the two arguments: ret 8
+    return 1;
+}
+int evaluateEffectStateFast(){
+    const uint32_t esp=g_esp;
+    auto read8=[](uint32_t va){uint8_t v;std::memcpy(&v,ptr(va,1),1);return v;};
+    if(!effect_states::evaluateIsNoop([](uint32_t va){return read32(va);},read8,read32(esp+4)))return 0;
+    g_eax=0;        // S_OK, as [ebp-4] holds on that exit
+    g_esp=esp+8;    // the return address and the one argument: ret 4
+    return 1;
+}
 #endif
 // threadStart: a thread procedure may be stdcall or cdecl; Windows exits the thread right after either.
 uint32_t callGuest(uint32_t va,const uint32_t* args,size_t count,uint32_t cleanup,bool threadStart);
@@ -1041,6 +1104,16 @@ std::string connectGuestRuntime(const char* executable) {
         // performance tiers 0-1; the override it reads is set before the game runs.
         nfs_misc_fixes_boot();
         nfs_reflections_boot();   // the cube map and mirror sizes the target setup reads
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+        nfs_garage_configure(guestGarage);
+        nfs_garage_boot();        // the game's unlock-everything byte, when that switch is on
+        logGarage();
+        nfs_fastpath_register(effect_states::kApply,guestEffectStates?applyEffectStateFast:nullptr);
+        nfs_fastpath_register(effect_states::kEvaluate,guestEffectStates?evaluateEffectStateFast:nullptr);
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Effect states: %s",guestEffectStates?
+            "render, sampler and texture stage states of the game's effects applied by the host (already set ones skipped)":
+            "applied by the game's own D3DX code");
+#endif
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Sound: mixer rate override %u Hz (the game picks 22050 at performance tiers 0-1)",read32(NFS_MISC_SOUND_RATE_OVERRIDE));
         // Restore a clean CPU state before executing the real CRT entry.
         fresh.load();
@@ -1189,6 +1262,10 @@ std::string guestTelemetryJson(bool live){
         json+=",\"dxvkQueue\":"+dxvkQueueJson();
 #endif
         json+=",\"profile\":"+guestProfile.json(kProfileIntervalUs);
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+        json+=",\"garage\":"+garageJson();
+        json+=",\"effectStates\":"+effectStatesJson();
+#endif
     }
     return json+"}";
 }
@@ -1222,6 +1299,10 @@ void setGuestOnlineServer(const std::string& host){std::lock_guard<MachineMutex>
 void setGuestWidescreen(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWidescreen=enabled;}
 void setGuestWrongWayWarning(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWrongWayWarning=enabled;}
 void setGuestHdReflections(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestHdReflections=enabled;}
+void setGuestEffectStates(bool host){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestEffectStates=host;}
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+void setGuestGarage(uint32_t features){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestGarage=features&NFS_GARAGE_ALL;}
+#endif
 void setGuestLanguage(const char* language){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;
     for(const char* known:{"Spanish","English","French","German","Italian","Dutch","Swedish","Korean","Chinese"})

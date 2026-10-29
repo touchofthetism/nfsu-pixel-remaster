@@ -274,6 +274,8 @@ public final class LauncherActivity extends Activity {
         optionsList.addView(optionRow(getString(R.string.opt_probe_driver), getString(R.string.opt_probe_driver_value), () -> probeDriver(false)));
         optionsList.addView(optionRow(getString(R.string.opt_language), languageLabel(), this::chooseLanguage));
         optionsList.addView(optionRow(getString(R.string.opt_graphics_cache), getString(R.string.opt_graphics_cache_value), () -> GraphicsCache.prompt(this)));
+        int garage = GameOptions.garage(this);
+        optionsList.addView(optionRow(getString(R.string.opt_garage), garageLabel(garage), this::chooseGarage));
         for (GameOptions.Option option : GameOptions.ALL)
             optionsList.addView(optionRow(option.title(this), option.label(this, GameOptions.get(this, option.key)), () -> chooseOption(option)));
         optionsList.addView(optionRow(getString(R.string.opt_online_server), GameOptions.onlineServer(this), this::chooseOnlineServer));
@@ -349,6 +351,33 @@ public final class LauncherActivity extends Activity {
                         getSharedPreferences(GRAPHICS_SEEN, 0).edit().clear().commit();
                     dialog.dismiss(); refreshOptions();
                 }).setNegativeButton(R.string.cancel, null).show();
+    }
+
+    private String garageLabel(int mask) {
+        int on = GameOptions.garageCount(mask), all = GameOptions.GARAGE_KEYS.length;
+        return on == all ? getString(R.string.garage_all_on) : on == 0 ? getString(R.string.garage_all_off)
+                : getString(R.string.garage_some_on, on, all);
+    }
+
+    /** Garage: one checkbox per customization freedom; takes effect at the next PLAY. */
+    private void chooseGarage() {
+        String[] labels = new String[GameOptions.GARAGE_KEYS.length];
+        boolean[] checked = new boolean[labels.length];
+        int mask = GameOptions.garage(this);
+        for (int i = 0; i < labels.length; i++) {
+            labels[i] = getString(GameOptions.GARAGE_TITLES[i]);
+            checked[i] = (mask & (1 << i)) != 0;
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle(R.string.opt_garage)
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton(R.string.ok, (dialog, which) -> {
+                    int chosen = 0;
+                    for (int i = 0; i < checked.length; i++) if (checked[i]) chosen |= 1 << i;
+                    GameOptions.setGarage(this, chosen);
+                    refreshOptions();
+                })
+                .setNeutralButton(R.string.garage_about, (dialog, which) -> message(getString(R.string.opt_garage), getString(R.string.garage_about_text)))
+                .setNegativeButton(R.string.cancel, null).show();
     }
 
     private void chooseOnlineServer() {
@@ -799,6 +828,8 @@ public final class LauncherActivity extends Activity {
                 .putExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on"))
                 .putExtra("wrongWay", GameOptions.get(this, GameOptions.WRONGWAY).equals("on"))
                 .putExtra("hdReflections", GameOptions.get(this, GameOptions.REFLECTIONS).equals("sharp"))
+                .putExtra("garage", GameOptions.garage(this))
+                .putExtra("effectStates", GameOptions.get(this, GameOptions.EFFECTS).equals("native"))
                 .putExtra("cpuPlacement", GameOptions.get(this, GameOptions.CPU))
                 .putExtra("reads", GameOptions.get(this, GameOptions.READS))
                 .putExtra("cleanupThread", GameOptions.get(this, GameOptions.CLEANUP).equals("thread"))

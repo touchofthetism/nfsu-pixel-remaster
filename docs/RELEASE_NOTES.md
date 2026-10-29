@@ -7,6 +7,40 @@
 
 ## What's new
 
+### Build 17 — the Garage, and the effects' states applied by the remaster
+Install the APK over build 16; nothing else changes (mod packs, saves and options stay). Built from the 01:34 diagnostics: one build‑16 session (01:18, 15 minutes at the 60 cap and full resolution), no crash.
+- **The Garage: seven customization switches from the PC mods, rebuilt into the game's code.** A new *Garage* row sits above the options, all seven on; tap it to turn any off (*About* says where each comes from). A change takes effect at the next PLAY, and none of them writes your save.
+  - *Unlock everything*: every car, track, part, rim and vinyl. It is the game's own unlock switch, the one ExOpts Team's NFSU Extra Options sets (*Unlock all things*), set in memory for the session only. Parts you fit with it are saved on your car like any other.
+  - *Special vinyls*: the 17 vinyls the game hides from its lists, the story crew's (Samantha, Eddie, Melissa, Junkman, D‑Day), the bands', Nismo, Eastsiderz and the sponsors' (Extra Options' *Show special vinyls*).
+  - *Free vinyl layers*: a special vinyl and the other vinyl layers together. The game refuses the layers while a special vinyl is on, and the special vinyls while any layer is on (Extra Options' *No Restrictions*).
+  - *Vinyls on custom hoods* and *Decals on custom hoods*: kept when you fit a custom hood, and applied over one. The game removes them, asks first, or keeps the menu shut (ARCHIE's NFSU Extended Customization 1.2).
+  - *Every decal unlocked* (Extended Customization).
+  - *Full‑detail brakes in races*: the game draws the brakes with a lower‑detail model in races than in the shop (Extended Customization's *Restore brake LOD*).
+  - *How they got here.* On a PC these mods patch Speed.exe in memory: a conditional jump becomes a plain jump or is erased, a byte is set, an instruction's result is changed. In the recompiled game those jumps are C code, so a patch has nothing to write to. Instead:
+    - the recompiler, pcrecomp, now takes a list of jumps (`config/branches.txt`) and hands each one's decision to the remaster (`ci/pcrecomp`), which forces the 20 jumps the mods patch, each only while its switch is on;
+    - two hooks change the two instruction results;
+    - Unlock everything is the game's own byte.
+    ARCHIE's mod publishes no source, so its 13 sites were read from its code. Every site of both mods was checked against the game's code before it went in, each one the jump or instruction its patch meant.
+  - Two of Extra Options' special‑vinyl patches are left out on purpose. One answers yes to every "is this unique part unlocked?" in the game (27 places, among them parts, rims and vinyls), which is Unlock everything's job. The other gives every vinyl of a kind the first one's locked state.
+  - The summary's new *Garage* line names the switches that were on, how many of the game's decisions each one changed (so a session shows a switch was reached, not only that it was on), and whether the game's unlock byte was set.
+- **The effects' states are applied by the remaster.** The game draws through Microsoft's D3DX effect framework, which is built into Speed.exe. On every pass of every draw it applies all of that pass's states again, about 20,000 render, sampler and texture stage states a frame. In the 01:18 session the bridge found 96 % of them already set. The recompiled D3DX code that applied them was at least 43 % of the render thread's time in the game's code, its state function (`sub_005C97CB`) alone 17.5 %, and the two functions replaced here 15 % of all the render thread's busy time.
+  - Now those three kinds of state are read straight from the effect's records and given to the bridge's state shadow, which drops the ones already set. No recompiled D3DX code and no guest call runs for them. The value update returns at once for a fixed value, decided on the host too.
+  - Everything else keeps the game's own code: lights, materials, transforms, shaders, textures, values computed from parameters, any other device, and a state block being recorded.
+  - It decides what the game's code would, step for step: the stage from the record when the caller passes −1, a record that points at another, and the same result, including when the effect is told to ignore failures. All of it was read from the code (`effect_states.h`, tested on a simulated effect in `tests/effect_states.cpp`).
+  - The new **Effect states** option (*Native*, the default, or *Game*) runs the game's own code instead, to compare. The summary's new *Effect states* line gives the states a frame, the share the remaster applied and how many of those were already set. The *D3D9 calls per frame* line no longer counts them, so it now shows only the states the game sets itself.
+  - The frame rate it brings is for your next diagnostics to say: build 16 was at 52 FPS under the 60 cap, with the phone warm (thermal status *light*) from the first second.
+- **Checked on the build machine:**
+  - the Garage's decision table against `config/branches.txt` and `config/hooks.txt`, each switch's forced jumps, and the two hook results (`tests/garage.cpp`);
+  - the remaster's handling of the listed functions (`tests/fastpath.cpp`);
+  - the effect state decoding (`tests/effect_states.cpp`);
+  - the recompiler patch on the pinned pcrecomp, after the nfsu2 series: every listed jump and function found in the recompiled output, which the Android compiler checked;
+  - 61 JUnit tests, new among them the Garage choices stored and read back (a switch a later build adds starts on) and the summary lines.
+- **What to try:**
+  - a race with *Effect states* on *Native* (the default), then share diagnostics: the summary's new line says how much of the effects' work the remaster did;
+  - the Garage in the career's shop: the special vinyls in the vinyl lists, a custom hood with a vinyl and decals, the decals all open;
+  - if you like, a race with *Effect states* on *Game*, to compare.
+- **Settings for build 17:** as for build 16. Leave the Garage all on and *Effect states* on *Native*.
+
 ### Build 16 — the game follows the clock it really gets, and DXVK's command stream gets a fast core
 Install the APK over build 15; nothing else changes (mod packs, saves and options stay). Built from the 23:34 diagnostics: two build‑15 sessions (21:48 and 22:25), no crash.
 - **The game follows the clock it really gets, not the one it's allowed.** The 22:25 session ran 69 minutes. The phone was warm from the second minute (thermal status *light*), and the battery fell to 4 %.

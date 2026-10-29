@@ -139,6 +139,22 @@ def read_va_list(path):
     return out
 
 
+def fastpath_wrapper(a, reason, code):
+    """sub_<VA> asks the host first (recomp_fastpath, src/runtime) and runs the lifted body,
+    renamed sub_<VA>_lifted, only when the host did not handle the call. On entry the guest
+    registers are in the globals and [esp] holds the dummy return address (RECOMP_CALL), so a
+    host that handles the call sets eax and pops what the function's own `ret` would."""
+    head = f"void sub_{a:08X}(void) {{"
+    if code.count(head) != 1:
+        raise ValueError(f"fast path 0x{a:08X}: lifted body not found")
+    # sub_<VA>_lifted is declared in recomp_funcs.h, so the two may land in different files when
+    # scripts/split_android_sources.py splits a unit (it cuts before each `void sub_<VA>(void) {`).
+    body = code.replace(head, f"void sub_{a:08X}_lifted(void) {{", 1)
+    return (f"/* FAST PATH: {reason} */\n"
+            f"void sub_{a:08X}(void) {{ if (recomp_fastpath(0x{a:08X}u)) return; sub_{a:08X}_lifted(); }}\n\n"
+            + body)
+
+
 def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
     import pefile
     from lift32 import Lifter
@@ -158,10 +174,14 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
     overrides = read_va_list(os.path.join(cfg, "overrides.txt"))
     excluded = read_va_list(os.path.join(cfg, "exclude.txt"))
     hooks = read_va_list(os.path.join(cfg, "hooks.txt"))
+    # Speed.exe only (the sound-bank module has its own addresses): conditional jumps the host
+    # decides (RECOMP_BRANCH) and functions the host may handle before their lifted body runs.
+    branches = read_va_list(os.path.join(cfg, "branches.txt")) if not prefix else {}
+    fastpaths = read_va_list(os.path.join(cfg, "fastpaths.txt")) if not prefix else {}
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     md.detail = True
     lifter = Lifter(iat_map=iat, func_names={}, lifted=lifted, precise_carry=True,
-                    hook_sites=set(hooks))
+                    hook_sites=set(hooks), branch_sites=set(branches))
     os.makedirs(outdir, exist_ok=True)
     for fn in os.listdir(outdir):
         if fn.startswith(prefix + "recomp_") and fn.endswith((".c", ".h")):
@@ -204,6 +224,9 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
             else:
                 f = rebuild(md, img, base, fd)
                 code = lifter.lift_function(f)
+                if a in fastpaths:
+                    code = fastpath_wrapper(a, fastpaths[a], code)
+                    stats["fastpaths"] += 1
         except Exception as ex:  # noqa: BLE001
             failed.append((a, repr(ex)))
             code = (f"/* LIFT FAILED: {ex!r} */\n"
@@ -230,6 +253,8 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
         fh.write("/* AUTO-GENERATED. DO NOT EDIT. */\n#pragma once\n#include <stdint.h>\n")
         for a in entries:
             fh.write(f"void sub_{a:08X}(void);\n")
+        for a in sorted(set(entries) & set(fastpaths)):
+            fh.write(f"void sub_{a:08X}_lifted(void);  /* the game's own body behind the fast path */\n")
     with open(os.path.join(outdir, f"{prefix}recomp_dispatch.c"), "w", newline="\n") as fh:
         fh.write(f'/* AUTO-GENERATED. DO NOT EDIT. */\n#include "recomp_types.h"\n#include "{prefix}recomp_funcs.h"\n\n')
         fh.write(f"const recomp_dispatch_entry_t {prefix}recomp_dispatch_table[] = {{\n")
@@ -251,6 +276,7 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
            "unimplemented": dict(unimpl.most_common()),
            "unimplemented_sites": dict(unimpl_sites),
            "overridden": stats["overridden"], "excluded": stats["excluded"],
+           "fastpaths": stats["fastpaths"], "branch_sites": len(branches),
            "icall_sites": stats["icall_sites"], "itail_sites": stats["itail_sites"],
            "seconds": round(time.time() - t0)}
     json.dump(out, open(os.path.join(outdir, f"{prefix}lift_stats.json"), "w"), indent=1)

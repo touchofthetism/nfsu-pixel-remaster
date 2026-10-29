@@ -166,6 +166,8 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeWidescreen(boolean enabled);
     private static native void nativeWrongWayWarning(boolean enabled);
     private static native void nativeHdReflections(boolean enabled);
+    private static native void nativeGarage(int features);
+    private static native void nativeEffectStates(boolean host);
     private static native void nativeCpuPlacement(int placement);
     private static native void nativeReadHandover(boolean overlapped);
     /** Launcher "GPU cleanup": DXVK resets finished command lists on a thread of its own; before Direct3D starts. */
@@ -260,6 +262,8 @@ public final class GameActivity extends NativeActivity {
         nativeWidescreen(launch.getBooleanExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on")));
         nativeWrongWayWarning(launch.getBooleanExtra("wrongWay", GameOptions.get(this, GameOptions.WRONGWAY).equals("on")));
         nativeHdReflections(launch.getBooleanExtra("hdReflections", GameOptions.get(this, GameOptions.REFLECTIONS).equals("sharp")));
+        nativeGarage(launch.getIntExtra("garage", GameOptions.garage(this)));
+        nativeEffectStates(launch.getBooleanExtra("effectStates", GameOptions.get(this, GameOptions.EFFECTS).equals("native")));
         String server = launch.getStringExtra("onlineServer");
         nativeOnlineServer(GameOptions.validServer(server) ? server : GameOptions.onlineServer(this));
         nativeMinimapTop(launch.getBooleanExtra("minimapTop", GameOptions.get(this, GameOptions.MINIMAP).equals("top")));

@@ -44,7 +44,7 @@ final class GameOptions {
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
             ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu",
-            GAMEGFX = "gamegfx", READS = "reads", REFLECTIONS = "reflections", CLEANUP = "cleanup";
+            GAMEGFX = "gamegfx", READS = "reads", REFLECTIONS = "reflections", CLEANUP = "cleanup", EFFECTS = "effects";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -99,6 +99,12 @@ final class GameOptions {
             new Option(CLEANUP, R.string.opt_cleanup,
                     new String[] {"thread", "queue"},
                     new int[] {R.string.cleanup_thread, R.string.cleanup_queue}),
+            // The effects' render, sampler and texture stage states (build 17, effect_states.h): the host applies
+            // them and skips the ones already set, instead of the game's D3DX code re-applying all of them on every
+            // draw (43 % of the render thread's game time in build 16). "game" runs the game's own code, to compare.
+            new Option(EFFECTS, R.string.opt_effects,
+                    new String[] {"native", "game"},
+                    new int[] {R.string.effects_native, R.string.effects_game}),
             new Option(LATENCY, R.string.opt_latency,
                     new String[] {"2", "1"},
                     new int[] {R.string.latency_performance, R.string.latency_low}),
@@ -179,6 +185,7 @@ final class GameOptions {
             case REFLECTIONS: return "sharp";
             case CPU: return "fast";
             case CLEANUP: return "thread";
+            case EFFECTS: return "native";
             case GFXLOG: return "info";
             default: throw new IllegalArgumentException(key);
         }
@@ -215,6 +222,50 @@ final class GameOptions {
     }
 
     static int intValue(Context context, String key) { return Integer.parseInt(get(context, key)); }
+
+    /**
+     * Garage: customization freedoms, each a bit of the native NFS_GARAGE_* mask (src/runtime/nfs_garage.h, same
+     * order). All on by default. None of them writes the save: Unlock everything is the game's own switch, set
+     * in memory for the session; the parts installed with it are saved like any other.
+     *
+     * The preference lists the features turned off, not those on, so a feature a later build adds starts on for
+     * everyone, as all of them do on a first launch, and a feature turned off stays off.
+     */
+    static final String GARAGE_OFF = "garage_off";
+    static final String[] GARAGE_KEYS = {
+            "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes"};
+    static final int[] GARAGE_TITLES = {
+            R.string.garage_unlock, R.string.garage_special_vinyls, R.string.garage_vinyl_layers, R.string.garage_hood_vinyls,
+            R.string.garage_hood_decals, R.string.garage_all_decals, R.string.garage_race_brakes};
+    static final int GARAGE_ALL = (1 << GARAGE_KEYS.length) - 1;
+
+    /** The enabled Garage features as the native mask. */
+    static int garage(Context context) { return garageMask(prefs(context).getString(GARAGE_OFF, null)); }
+
+    static void setGarage(Context context, int mask) { prefs(context).edit().putString(GARAGE_OFF, garageOffValue(mask)).apply(); }
+
+    /** The stored value (comma-separated keys of the features off) as the mask of those on; null (never chosen)
+     *  or empty is all of them, and a key no build knows is ignored. */
+    static int garageMask(String off) {
+        int mask = GARAGE_ALL;
+        if (off == null) return mask;
+        for (String key : off.split(","))
+            for (int i = 0; i < GARAGE_KEYS.length; i++) if (GARAGE_KEYS[i].equals(key.trim())) mask &= ~(1 << i);
+        return mask;
+    }
+
+    /** The value stored for a mask: the keys of the features it leaves off. */
+    static String garageOffValue(int mask) {
+        StringBuilder value = new StringBuilder();
+        for (int i = 0; i < GARAGE_KEYS.length; i++) {
+            if ((mask & (1 << i)) != 0) continue;
+            if (value.length() > 0) value.append(',');
+            value.append(GARAGE_KEYS[i]);
+        }
+        return value.toString();
+    }
+
+    static int garageCount(int mask) { return Integer.bitCount(mask & GARAGE_ALL); }
 
     /** DXVK_HUD for the full overlay: FPS, frame-time graph, draw calls, pipelines, memory, GPU load, compiler. */
     static final String DXVK_HUD_FULL = "fps,frametimes,drawcalls,pipelines,memory,gpuload,compiler,scale=2.5";

@@ -66,6 +66,28 @@ bool recordingStateBlock=false;
 void forgetStateShadow(){
     std::memset(renderStateKnown,0,sizeof renderStateKnown);std::memset(samplerKnown,0,sizeof samplerKnown);std::memset(stageKnown,0,sizeof stageKnown);
 }
+// One render (57), texture stage (67) or sampler (69) state for the cached device: dropped here when the
+// shadow says it is already the device's value, forwarded (and remembered) otherwise. A slot outside the
+// shadow is always forwarded. The caller has checked the device and that no state block is being recorded.
+HRESULT setShadowedState(unsigned method,uint32_t a,uint32_t b,uint32_t c){
+    switch(method){
+    case 57:{uint32_t state=a,value=b;
+        if(state<kRenderStates){if(renderStateKnown[state]&&renderStateShadow[state]==value){++statesFiltered;return D3D_OK;}renderStateShadow[state]=value;renderStateKnown[state]=true;}
+        ++statesForwarded;return cachedDevice->SetRenderState(static_cast<D3DRENDERSTATETYPE>(state),static_cast<DWORD>(value));}
+    case 69:{uint32_t sampler=a,state=b,value=c;
+        // D3DDMAPSAMPLER and the vertex texture samplers (257..260) map to 16..19.
+        unsigned slot=sampler<16?sampler:sampler==256?16:sampler>=257&&sampler<=259?sampler-257+17:kSamplers;
+        if(slot<kSamplers&&state<kSamplerStates){if(samplerKnown[slot][state]&&samplerShadow[slot][state]==value){++statesFiltered;return D3D_OK;}samplerShadow[slot][state]=value;samplerKnown[slot][state]=true;}
+        ++statesForwarded;return cachedDevice->SetSamplerState(static_cast<DWORD>(sampler),static_cast<D3DSAMPLERSTATETYPE>(state),static_cast<DWORD>(value));}
+    case 67:{uint32_t stage=a,state=b,value=c;
+        if(stage<kStages&&state<kStageStates){if(stageKnown[stage][state]&&stageShadow[stage][state]==value){++statesFiltered;return D3D_OK;}stageShadow[stage][state]=value;stageKnown[stage][state]=true;}
+        ++statesForwarded;return cachedDevice->SetTextureStageState(static_cast<DWORD>(stage),static_cast<D3DTEXTURESTAGESTATETYPE>(state),static_cast<DWORD>(value));}
+    default:return D3DERR_INVALIDCALL;
+    }
+}
+// Effect states applied by the host instead of the game's D3DX code (effect_states.h): already the
+// device's value, and sent to DXVK. Under the guest machine lock, like every call here.
+uint64_t effectStatesKept=0,effectStatesSent=0;
 void* pointer(uint32_t address){return address?static_cast<uint8_t*>(guestBase)+address:nullptr;}
 void write(uint32_t address,uint32_t value){if(!address)throw std::runtime_error("Null D3D9 output");std::memcpy(pointer(address),&value,4);}
 uint32_t wrap(IUnknown* native,Kind kind){
@@ -287,7 +309,9 @@ void shutdownD3D9Bridge(){
     cachedDeviceHandle=0;cachedDevice=nullptr;recordingStateBlock=false;forgetStateShadow();lookups.forgetAll();
     if(statesFiltered||statesForwarded)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","D3D9 state calls this session: %llu repeated the current value (dropped here), %llu forwarded",
         static_cast<unsigned long long>(statesFiltered),static_cast<unsigned long long>(statesForwarded));
-    statesFiltered=statesForwarded=0;
+    if(effectStatesKept||effectStatesSent)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Effect states applied by the host this session: %llu already set, %llu sent to DXVK",
+        static_cast<unsigned long long>(effectStatesKept),static_cast<unsigned long long>(effectStatesSent));
+    statesFiltered=statesForwarded=0;effectStatesKept=effectStatesSent=0;
 #ifndef __ANDROID__
     if(std::getenv("NFS_D3D9_TEST_DISPLAY")){auto window=hostWindow.load();setD3D9HostWindow(nullptr);dxvkDestroyTestWindow(window);}
 #endif
@@ -295,6 +319,15 @@ void shutdownD3D9Bridge(){
 void setD3D9HostWindow(ANativeWindow* window){hostWindow=window;dxvkAndroidSetWindow(window);}
 bool d3d9RequestsSurface(){return surfaceRequested;}
 void acknowledgeD3D9Surface(bool available){surfaceAvailable=available;}
+bool d3d9EffectState(uint32_t device,unsigned method,uint32_t a,uint32_t b,uint32_t c,uint32_t* result){
+    if(device!=cachedDeviceHandle||!device||!cachedDevice||recordingStateBlock)return false;
+    if(method!=57&&method!=67&&method!=69)return false;
+    uint64_t filtered=statesFiltered;
+    *result=static_cast<uint32_t>(setShadowedState(method,a,b,c));
+    if(statesFiltered!=filtered)++effectStatesKept;else ++effectStatesSent;
+    return true;
+}
+void d3d9EffectStateCounts(uint64_t& kept,uint64_t& sent){kept=effectStatesKept;sent=effectStatesSent;}
 uint32_t createGuestD3D9(uint32_t sdk){
     {   // Same thread that creates the interface: DXVK reads DXVK_CONFIG_FILE inside Direct3DCreate9.
         std::lock_guard<std::mutex> lock(qualityMutex);
@@ -345,17 +378,9 @@ uint32_t dispatchGuestD3D9(uint32_t token,const uint32_t* args,uint32_t* argumen
     // Device state setters: the hot path. Resolved without the map and filtered against the shadow.
     if(kind==2&&args[0]==cachedDeviceHandle&&cachedDevice&&!recordingStateBlock){
         switch(method){
-        case 57:{*argumentCount=3;uint32_t state=args[1],value=args[2];
-            if(state<kRenderStates){if(renderStateKnown[state]&&renderStateShadow[state]==value){++statesFiltered;return D3D_OK;}renderStateShadow[state]=value;renderStateKnown[state]=true;}
-            ++statesForwarded;return cachedDevice->SetRenderState(static_cast<D3DRENDERSTATETYPE>(state),static_cast<DWORD>(value));}
-        case 69:{*argumentCount=4;uint32_t sampler=args[1],state=args[2],value=args[3];
-            // D3DDMAPSAMPLER and the vertex texture samplers (257..260) map to 16..19.
-            unsigned slot=sampler<16?sampler:sampler==256?16:sampler>=257&&sampler<=259?sampler-257+17:kSamplers;
-            if(slot<kSamplers&&state<kSamplerStates){if(samplerKnown[slot][state]&&samplerShadow[slot][state]==value){++statesFiltered;return D3D_OK;}samplerShadow[slot][state]=value;samplerKnown[slot][state]=true;}
-            ++statesForwarded;return cachedDevice->SetSamplerState(static_cast<DWORD>(sampler),static_cast<D3DSAMPLERSTATETYPE>(state),static_cast<DWORD>(value));}
-        case 67:{*argumentCount=4;uint32_t stage=args[1],state=args[2],value=args[3];
-            if(stage<kStages&&state<kStageStates){if(stageKnown[stage][state]&&stageShadow[stage][state]==value){++statesFiltered;return D3D_OK;}stageShadow[stage][state]=value;stageKnown[stage][state]=true;}
-            ++statesForwarded;return cachedDevice->SetTextureStageState(static_cast<DWORD>(stage),static_cast<D3DTEXTURESTAGESTATETYPE>(state),static_cast<DWORD>(value));}
+        case 57:*argumentCount=3;return setShadowedState(57,args[1],args[2],0);
+        case 69:*argumentCount=4;return setShadowedState(69,args[1],args[2],args[3]);
+        case 67:*argumentCount=4;return setShadowedState(67,args[1],args[2],args[3]);
         default:break;
         }
     }
