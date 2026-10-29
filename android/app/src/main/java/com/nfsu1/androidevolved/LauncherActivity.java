@@ -827,6 +827,7 @@ public final class LauncherActivity extends Activity {
                 .putExtra("antialias", GameOptions.intValue(this, GameOptions.ANTIALIAS))
                 .putExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on"))
                 .putExtra("wrongWay", GameOptions.get(this, GameOptions.WRONGWAY).equals("on"))
+                .putExtra("freeRoam", GameOptions.get(this, GameOptions.FREEROAM).equals("on"))
                 .putExtra("hdReflections", GameOptions.get(this, GameOptions.REFLECTIONS).equals("sharp"))
                 .putExtra("garage", GameOptions.garage(this))
                 .putExtra("effectStates", GameOptions.get(this, GameOptions.EFFECTS).equals("native"))

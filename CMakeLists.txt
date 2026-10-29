@@ -54,7 +54,7 @@ add_executable(NFSU-Recompiled
   src/host/profiler.c
   src/runtime/nfs_runtime.c
   src/runtime/overrides.c src/runtime/widescreen.c src/runtime/framerate.c src/runtime/misc_fixes.c src/runtime/reflections.c
-  src/runtime/garage.c src/runtime/fastpath.c
+  src/runtime/garage.c src/runtime/freeroam.c src/runtime/fastpath.c
   src/runtime/abk_code.c
   src/runtime/d3d9_trace.c
   src/runtime/dinput_trace.c
@@ -70,7 +70,7 @@ target_compile_definitions(NFSU-Recompiled PRIVATE ${COMMON_DEFS})
 target_include_directories(NFSU-Recompiled PRIVATE ${COMMON_INC})
 target_compile_options(NFSU-Recompiled PRIVATE /W3 /Zi)
 set_source_files_properties(src/host/main.c src/runtime/nfs_runtime.c src/runtime/overrides.c src/runtime/widescreen.c src/runtime/framerate.c src/runtime/misc_fixes.c src/runtime/reflections.c
-  src/runtime/garage.c src/runtime/fastpath.c
+  src/runtime/garage.c src/runtime/freeroam.c src/runtime/fastpath.c
   src/shims/win32_shims.c src/platform/nfs_log.c PROPERTIES COMPILE_OPTIONS /O2)
 # Base away from the guest image (0x400000-0x7A0000), no ASLR for a stable
 # layout, a large stack because every guest call is a host call.

@@ -20,6 +20,10 @@ struct InputFormatObject {uint32_t offset,type,bytes=1,user=UINT32_MAX;};
 struct InputKeyEvent {uint64_t sequence;uint32_t scan,data,time;};
 struct InputBufferedEvent {uint32_t offset,data,time,sequence,user;};
 std::deque<InputKeyEvent> inputKeyEvents;uint64_t inputSequence=0;
+// The newest key event a buffered keyboard read (not a peek) has handed the game. The Linux test host releases a
+// tapped key only once the game has read its press: a frame slower than the tap would read both at once, and the
+// front end acts on neither.
+std::atomic<uint64_t> inputKeysDelivered{0};
 void recordInputKey(unsigned scan,bool down){
     uint32_t time=uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     inputKeyEvents.push_back({++inputSequence,scan,down?0x80u:0u,time});if(inputKeyEvents.size()>4096)inputKeyEvents.pop_front();
@@ -427,7 +431,9 @@ void inputDispatch(){
         if(out&&!memory->writable(out,uint64_t(amount)*bytes)){ret(diInvalid,5);return;}
         if(out)for(uint32_t i=0;i<amount;++i)std::memcpy(ptr(out+i*bytes,bytes),&object.pending[i],bytes);
         uint32_t status=object.overflow?1:0;write32(count,amount);
-        if(!(flags&1)){for(uint32_t i=0;i<amount;++i)object.pending.pop_front();object.overflow=false;}
+        if(!(flags&1)){for(uint32_t i=0;i<amount;++i)object.pending.pop_front();object.overflow=false;
+            const uint64_t through=object.pending.empty()?object.sequence:uint64_t(object.pending.front().sequence)-1;
+            if(amount&&through>inputKeysDelivered.load(std::memory_order_relaxed))inputKeysDelivered.store(through,std::memory_order_relaxed);}
         if(amount)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Keyboard buffered input delivered %u events peek=%u from=%08x",amount,flags&1,g_cur_func);ret(status,5);return;}
     case 11:{uint32_t format=arg(1);if(object.acquired){ret(0x800700aa,2);return;}
         if(!format||read32(format)!=24||read32(format+4)!=16){ret(diInvalid,2);return;}

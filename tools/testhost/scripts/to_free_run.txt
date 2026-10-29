@@ -1,0 +1,33 @@
+# From a cold start to Quick Race > Free Run's track list, on a profile that loads with ENTER (the test game's).
+# The intro movies, the title and the profile each take an ENTER; the main menu opens on QUICK RACE. Each step
+# waits for the file the game opens for its screen (the runtime logs every file the game opens), so the script
+# follows the game at whatever speed it loads (an HD pack's textures take longer on a software GPU).
+10.5 wait 90 na_boot.mad
+12 key ENTER tap
+15 key ENTER tap
+16.5 wait 60 PSA.mad
+18 key ENTER tap
+19.5 wait 60 e3_title.mad
+21 key ENTER tap
+22.5 wait 60 STRM_Music_UG0_MB.ast
+24 key ENTER tap
+27 key ENTER tap
+29.5 wait 60 VINYLS.BIN
+31 key ENTER tap
+36 wait 60 Display settings
+37 log main menu
+38 key ENTER tap
+41 key DOWN tap
+42.5 key DOWN tap
+44 key DOWN tap
+45.5 key DOWN tap
+47 key DOWN tap
+48.5 shot mode
+49 key ENTER tap
+52.5 wait 60 TEXTURES.BIN
+53 log car select
+54 key ENTER tap
+58 log transmission
+58.5 key ENTER tap
+60.5 wait 60 DYNTEX.BIN
+62 shot tracks

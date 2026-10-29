@@ -350,6 +350,10 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     const char* text=directory?env->GetStringUTFChars(directory,nullptr):nullptr;std::string value=text?text:"";if(text)env->ReleaseStringUTFChars(directory,text);
     setGuestGeneratedDir(value);
 }
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeFreeRoamDir(JNIEnv* env,jclass,jstring directory){
+    const char* text=directory?env->GetStringUTFChars(directory,nullptr):nullptr;std::string value=text?text:"";if(text)env->ReleaseStringUTFChars(directory,text);
+    setGuestFreeRoamDir(value);
+}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeEffectStates(JNIEnv*,jclass,jboolean host){setGuestEffectStates(host==JNI_TRUE);}
 // Minimap at the top-left: the bottom-left corner sits under the steering thumb.
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeOnlineServer(JNIEnv* env,jclass,jstring host){

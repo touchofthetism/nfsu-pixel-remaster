@@ -44,7 +44,8 @@ final class GameOptions {
     static final String RESOLUTION = "resolution", FPS = "fps", WIDESCREEN = "widescreen", LATENCY = "latency",
             TEXTURES = "textures", MINIMAP = "minimap", LANGUAGE = "language", GAMEPAD = "gamepad",
             ANISOTROPY = "anisotropy", ANTIALIAS = "antialias", OVERLAY = "overlay", GFXLOG = "gfxlog", WRONGWAY = "wrongway", CPU = "cpu",
-            GAMEGFX = "gamegfx", READS = "reads", REFLECTIONS = "reflections", CLEANUP = "cleanup", EFFECTS = "effects";
+            GAMEGFX = "gamegfx", READS = "reads", REFLECTIONS = "reflections", CLEANUP = "cleanup", EFFECTS = "effects",
+            FREEROAM = "freeroam";
 
     static final Option[] ALL = {
             new Option(RESOLUTION, R.string.opt_resolution,
@@ -73,7 +74,13 @@ final class GameOptions {
             new Option(WIDESCREEN, R.string.opt_widescreen,
                     new String[] {"on", "off"},
                     new int[] {R.string.widescreen_on, R.string.widescreen_off}),
-            // Free roam (mod pack): the HUD's wrong-way warning and countdown make no sense off the circuit.
+            // Free roam (build 19, free_roam.h and freeroam.c): Olympic City and the two drift districts as Free Run
+            // tracks, made from the Free Roam Mod Beta 2.0's track bundles the APK carries and the player's own game
+            // files, with a map of the district on the minimap, no wrong way and resets to where the car was driving.
+            new Option(FREEROAM, R.string.opt_freeroam,
+                    new String[] {"on", "off"},
+                    new int[] {R.string.freeroam_on, R.string.freeroam_off}),
+            // The HUD's wrong-way warning and countdown everywhere (the free roam tracks never warn, whatever this says).
             new Option(WRONGWAY, R.string.opt_wrongway,
                     new String[] {"on", "off"},
                     new int[] {R.string.wrongway_on, R.string.wrongway_off}),
@@ -180,6 +187,7 @@ final class GameOptions {
             case GAMEPAD: return "keys";
             case OVERLAY: return "off";
             case WRONGWAY: return "on";
+            case FREEROAM: return "on";
             case GAMEGFX: return "max";
             case READS: return "overlapped";
             case REFLECTIONS: return "sharp";

@@ -1,7 +1,17 @@
 #include "audio_mixer.h"
 #include "audio_limiter.h"
-#ifdef __ANDROID__
+#if defined(__ANDROID__)
 #include "sound_device.h"
+#elif defined(NFS_TESTHOST)
+// The Linux test host (tools/testhost): the phone's sound device on the tests' simulated AAudio, whose stream
+// pulls the mix in real time as a real one does (the game's movies and streams wait on that), into nothing.
+#include "fake_aaudio.h"
+#define NFS_FAKE_AAUDIO 1
+#include "sound_device.h"
+#define NFS_SOUND_DEVICE 1
+#endif
+#if defined(__ANDROID__) && !defined(NFS_SOUND_DEVICE)
+#define NFS_SOUND_DEVICE 1
 #endif
 constexpr uint32_t soundMethodBase=0x7c000000;
 constexpr uint32_t soundBadFormat=0x88780064;
@@ -17,7 +27,7 @@ struct SoundObject {
 std::map<uint32_t,SoundObject> soundObjects;
 std::map<uint32_t,uint32_t> soundMethodCalls;
 uint32_t soundToken{};
-#ifdef __ANDROID__
+#ifdef NFS_SOUND_DEVICE
 // The AAudio output, its keeper and its stand-in (sound_device.h).
 SoundDevice soundDevice(soundMixer);
 bool startSoundStream(){soundDevice.start();return true;}   // the game keeps its device either way
@@ -50,7 +60,7 @@ bool startSoundStream(){return true;} // Host tests inspect the mixer; no physic
 void pauseGuestSound(bool){}
 #endif
 void shutdownGuestSound(){
-#ifdef __ANDROID__
+#ifdef NFS_SOUND_DEVICE
     soundDevice.stop();   // its final counters stay: the session record is written after the stream is gone
 #endif
     for(auto& item:soundObjects){auto& object=item.second;if(object.voice)soundMixer.remove(object.voice);

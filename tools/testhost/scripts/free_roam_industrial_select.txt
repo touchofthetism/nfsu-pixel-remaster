@@ -1,0 +1,38 @@
+# Industrial Drift selected: Free Run's track list from its first entry (LEFT until it stops), 9 to the right
+# (the eight circuits come first), its mode options accepted. The race loads from about 95 s.
+include to_free_run.txt
+63.0 key LEFT tap
+63.6 key LEFT tap
+64.2 key LEFT tap
+64.8 key LEFT tap
+65.4 key LEFT tap
+66.0 key LEFT tap
+66.6 key LEFT tap
+67.2 key LEFT tap
+67.8 key LEFT tap
+68.4 key LEFT tap
+69.0 key LEFT tap
+69.6 key LEFT tap
+70.2 key LEFT tap
+70.8 key LEFT tap
+71.4 key LEFT tap
+72.0 key LEFT tap
+72.6 key LEFT tap
+73.2 key LEFT tap
+73.8 key LEFT tap
+74.4 key LEFT tap
+75.0 key LEFT tap
+75.6 key LEFT tap
+77.2 key RIGHT tap
+78.0 key RIGHT tap
+78.8 key RIGHT tap
+79.6 key RIGHT tap
+80.4 key RIGHT tap
+81.2 key RIGHT tap
+82.0 key RIGHT tap
+82.8 key RIGHT tap
+83.6 key RIGHT tap
+89.4 shot selected
+89.9 key ENTER tap
+92.4 shot mode_options
+92.9 key ENTER tap

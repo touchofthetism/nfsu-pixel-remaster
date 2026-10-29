@@ -30,6 +30,7 @@
 #include "nfs_misc_fixes.h"
 #include "nfs_reflections.h"
 #include "nfs_garage.h"
+#include "nfs_freeroam.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -170,9 +171,10 @@ int nfs_framerate_hook(uint32_t va);
 
 void recomp_hook(uint32_t va) {
     /* Frame pacing (framerate.c), the other PC-community fixes (misc_fixes.c),
-     * the reflection sizes (reflections.c) and the garage freedoms (garage.c)
-     * apply whatever the display aspect. */
-    if (nfs_framerate_hook(va) || nfs_misc_hook(va) || nfs_reflections_hook(va) || nfs_garage_hook(va)) return;
+     * the reflection sizes (reflections.c), the garage freedoms (garage.c) and
+     * free roam's tracks and names (freeroam.c) apply whatever the display aspect. */
+    if (nfs_framerate_hook(va) || nfs_misc_hook(va) || nfs_reflections_hook(va) || nfs_garage_hook(va) ||
+        nfs_freeroam_hook(va)) return;
     /* Arrow draw calls: X/Y loaded, about to be pushed for sub_004F3030. */
     /* Arrow draw calls: superseded (the touch cursor is already in FE units);
      * the lifted code still calls here, so they stay accepted and inert. */

@@ -333,6 +333,28 @@ public class SessionSummaryTest {
         assertTrue(!old.contains("Garage:") && !old.contains("Effect states"));
     }
 
+    @Test public void freeRoamIsReported() throws Exception {
+        org.json.JSONObject played = new org.json.JSONObject("{\"on\":true,\"offered\":3,\"ms\":41,\"tracks\":["
+                + "{\"number\":1000,\"offered\":true,\"cache\":\"hit\",\"ms\":0,\"mapSize\":2048,\"tiles\":21,\"quads\":57869},"
+                + "{\"number\":1300,\"offered\":true,\"cache\":\"hit\",\"ms\":0,\"mapSize\":512,\"tiles\":4,\"quads\":9000},"
+                + "{\"number\":1400,\"offered\":true,\"cache\":\"hit\",\"ms\":0,\"mapSize\":512,\"tiles\":4,\"quads\":8000}],"
+                + "\"tracksAdded\":3,\"namesAdded\":6,\"races\":1,\"wrongWayCalls\":9000,\"wrongWayCleared\":3,\"updates\":9000,"
+                + "\"crumbs\":640,\"resets\":5,\"resetsPlaced\":4,\"resetsLeft\":1}");
+        assertEquals("  Free roam: 3 tracks in Free Run (made earlier, checked in 41 ms; maps 2048, 512, 512); 1 session, 640 breadcrumbs;"
+                + " resets: 4 to a breadcrumb, 1 by the game; wrong way cleared 3 times\n", SessionSummary.freeRoamLine(played));
+        org.json.JSONObject partly = new org.json.JSONObject("{\"on\":true,\"offered\":2,\"ms\":1830,\"tracks\":["
+                + "{\"number\":1000,\"offered\":true,\"cache\":\"built\",\"ms\":1500,\"mapSize\":2048},"
+                + "{\"number\":1300,\"offered\":false,\"cache\":\"failed\",\"error\":\"section 3 is not the same section\"},"
+                + "{\"number\":1400,\"offered\":true,\"cache\":\"built\",\"mapSize\":0,\"mapError\":\"a streaming texture pack\"}],"
+                + "\"races\":0}");
+        assertEquals("  Free roam: 2 tracks in Free Run (made in 1830 ms; maps 2048); 1300 not offered (section 3 is not the same section);"
+                + " 1400 without a map (a streaming texture pack)\n", SessionSummary.freeRoamLine(partly));
+        assertEquals("  Free roam: no tracks (Global/GlobalB.lzc unreadable)\n", SessionSummary.freeRoamLine(new org.json.JSONObject(
+                "{\"on\":true,\"offered\":0,\"error\":\"Global/GlobalB.lzc unreadable\",\"tracks\":[]}")));
+        assertEquals(null, SessionSummary.freeRoamLine(new org.json.JSONObject("{\"on\":false,\"offered\":0,\"tracks\":[]}")));
+        assertEquals(null, SessionSummary.freeRoamLine(null));
+    }
+
     @Test public void rimSizesAreReported() throws Exception {
         // Build 18: the wheel pack served with every rim size on, from the app's folder, and what the game side did.
         org.json.JSONObject on = new org.json.JSONObject("{\"on\":true,\"served\":true,\"reason\":\"on\",\"cache\":\"hit\",\"ms\":3,"

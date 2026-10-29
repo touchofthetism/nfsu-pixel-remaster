@@ -84,3 +84,8 @@
 0x0050DB35  rim browser built, its entry to open on picked (edx = this): every rim size on -> entries by style, smallest size first; opens on the car's own rim
 0x0050DDBB  rim browser entry 0x50DD40 at its call 0x4F8730 (the entry's thumbnail; ebx = items, ecx = style): every rim size on -> a style's later sizes share the first one's
 0x0050E046  rim browser info 0x50DF60 after `sete bl` (the selected style is the car's): every rim size on -> bl = the selected rim is the car's
+# Free roam (src/runtime/freeroam.c, nfs_freeroam.h): the game's tables, right after they load, and SELECT LOCATION's list.
+0x0044206E  TrackInfo loader 0x442040 after its table and count stores: the free roam tracks' records added (Free Run only)
+0x0059FD2E  language loader 0x59FCE0 after its string pointers are relocated: TRACK_NAME_<n> of the free roam tracks merged in
+0x004BA2FA  track list entry setup 0x4BA100 after BinHash("TRACK_<n>_ICON") returns: a free roam track's entry gets a stock race's icon
+0x004BA207  select location list 0x4BA100, reversed entries, before "test al, 8" on the record's race types (eax): a free roam track gets 8, so no reversed entry (as the drift races)

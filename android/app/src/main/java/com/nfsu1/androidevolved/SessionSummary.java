@@ -435,6 +435,8 @@ final class SessionSummary {
         if (garage != null) out.append(garage);
         String rims = rimSizesLine(nat == null ? null : nat.optJSONObject("rimSizes"));
         if (rims != null) out.append(rims);
+        String freeRoam = freeRoamLine(nat == null ? null : nat.optJSONObject("freeRoam"));
+        if (freeRoam != null) out.append(freeRoam);
         String effects = effectStatesLine(nat == null ? null : nat.optJSONObject("effectStates"), frames == null ? 0 : frames.optLong("frames"));
         if (effects != null) out.append(effects);
         JSONArray events = record.optJSONArray("events");
@@ -515,6 +517,51 @@ final class SessionSummary {
         line.append(String.format(Locale.US, "; parts lookups by the host %,d (%,d found an added size)", rims.optLong("lookups"), rims.optLong("later")));
         if (on) line.append(String.format(Locale.US, "; rim browser: %,d thumbnails shared, %,d lists in size order, %,d opened on the car's rim",
                 rims.optLong("shared"), rims.optLong("sorted"), rims.optLong("opened")));
+        return line.append('\n').toString();
+    }
+
+    /** Build 19: free roam (native "freeRoam": free_roam.h serves the tracks, freeroam.c is the game side): the tracks
+     *  offered in Free Run, made at this boot or made earlier and checked, their maps; then the free roam sessions,
+     *  breadcrumbs, resets placed at one (and left to the game: no breadcrumb yet) and wrong-way warnings cleared,
+     *  e.g. "  Free roam: 3 tracks in Free Run (made earlier, checked in 41 ms; maps 2048, 512, 512); 1 session,
+     *  640 breadcrumbs; resets: 4 to a breadcrumb, 1 by the game; wrong way cleared 3 times". A track that could not
+     *  be offered is named with why. Null when the option was off, and before build 19. */
+    static String freeRoamLine(JSONObject roam) {
+        if (roam == null || !roam.optBoolean("on")) return null;
+        String error = roam.optString("error", "");
+        if (!error.isEmpty()) return "  Free roam: no tracks (" + error + ")\n";
+        JSONArray tracks = roam.optJSONArray("tracks");
+        int offered = roam.optInt("offered");
+        boolean allHit = true;
+        double ms = roam.optDouble("ms");
+        StringBuilder maps = new StringBuilder(), missing = new StringBuilder(), noMap = new StringBuilder();
+        for (int i = 0; tracks != null && i < tracks.length(); i++) {
+            JSONObject t = tracks.optJSONObject(i);
+            if (t == null) continue;
+            if (!t.optBoolean("offered")) {
+                missing.append(String.format(Locale.US, "; %d not offered (%s)", t.optInt("number"), t.optString("error", "no reason given")));
+                continue;
+            }
+            if (!"hit".equals(t.optString("cache"))) allHit = false;
+            int size = t.optInt("mapSize");
+            if (size > 0) maps.append(maps.length() > 0 ? ", " : "").append(size);
+            else noMap.append(String.format(Locale.US, "; %d without a map (%s)", t.optInt("number"), t.optString("mapError", "no reason given")));
+        }
+        StringBuilder line = new StringBuilder(String.format(Locale.US, "  Free roam: %d %s in Free Run", offered, offered == 1 ? "track" : "tracks"));
+        if (offered > 0) {
+            line.append(String.format(Locale.US, " (%s in %.0f ms", allHit ? "made earlier, checked" : "made", ms));
+            if (maps.length() > 0) line.append("; maps ").append(maps);
+            line.append(')');
+        }
+        line.append(missing).append(noMap);
+        long sessions = roam.optLong("races");
+        if (sessions > 0) {
+            line.append(String.format(Locale.US, "; %,d %s, %,d breadcrumbs", sessions, sessions == 1 ? "session" : "sessions", roam.optLong("crumbs")));
+            long placed = roam.optLong("resetsPlaced"), left = roam.optLong("resetsLeft");
+            if (placed + left > 0) line.append(String.format(Locale.US, "; resets: %,d to a breadcrumb, %,d by the game", placed, left));
+            long cleared = roam.optLong("wrongWayCleared");
+            if (cleared > 0) line.append(String.format(Locale.US, "; wrong way cleared %,d %s", cleared, cleared == 1 ? "time" : "times"));
+        }
         return line.append('\n').toString();
     }
 

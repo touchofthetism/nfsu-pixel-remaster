@@ -170,6 +170,8 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeGarage(int features);
     /** The app's folder for data made from the game's files (every rim size's wheel pack), outside the game folder. */
     private static native void nativeGeneratedDir(String directory);
+    /** Free roam: the folder with Beta 2.0's track bundles (FreeRoamData), "" = off; before the game boots. */
+    private static native void nativeFreeRoamDir(String directory);
     private static native void nativeEffectStates(boolean host);
     private static native void nativeCpuPlacement(int placement);
     private static native void nativeReadHandover(boolean overlapped);
@@ -267,6 +269,9 @@ public final class GameActivity extends NativeActivity {
         nativeHdReflections(launch.getBooleanExtra("hdReflections", GameOptions.get(this, GameOptions.REFLECTIONS).equals("sharp")));
         nativeGarage(launch.getIntExtra("garage", GameOptions.garage(this)));
         nativeGeneratedDir(new File(getFilesDir(), "generated").getAbsolutePath());
+        File freeRoam = launch.getBooleanExtra("freeRoam", GameOptions.get(this, GameOptions.FREEROAM).equals("on"))
+                ? FreeRoamData.install(this) : null;
+        nativeFreeRoamDir(freeRoam != null ? freeRoam.getAbsolutePath() : "");
         nativeEffectStates(launch.getBooleanExtra("effectStates", GameOptions.get(this, GameOptions.EFFECTS).equals("native")));
         String server = launch.getStringExtra("onlineServer");
         nativeOnlineServer(GameOptions.validServer(server) ? server : GameOptions.onlineServer(this));

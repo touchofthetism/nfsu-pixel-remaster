@@ -10,6 +10,11 @@ void setGuestPaused(bool paused);
 void setGuestDisplaySize(unsigned width,unsigned height);
 void setGuestKey(unsigned scan,bool down);
 void clearGuestInput();
+// Key events so far, and the newest one a buffered keyboard read has handed the game (the test host's taps).
+uint64_t guestKeySequence();
+uint64_t guestKeysDelivered();
+// The test host's look into guest memory (its scripts' "peek"): false where nothing is mapped.
+bool guestPeek(uint32_t va,void* out,size_t bytes);
 bool guestDrivingControls();
 // Physical gamepad seen by the game as a DirectInput joystick: axes X, Y, Z
 // (triggers), Rx, Ry, Rz in -1..1; buttons A B X Y LB RB Back Start LS RS as bits.
@@ -28,6 +33,8 @@ void setGuestGarage(uint32_t features);
 // The app's folder for data the host makes from the game's (every rim size's wheel pack), outside the game
 // folder. Before boot.
 void setGuestGeneratedDir(const std::string& directory);
+// Launcher "Free roam": the folder with Beta 2.0's track bundles (TRACKB1000/1300/1400.lzc); empty = off. Before boot.
+void setGuestFreeRoamDir(const std::string& directory);
 // Launcher "Effect states": the effects' render, sampler and texture stage states applied by the host (true,
 // effect_states.h) or by the game's own D3DX code. Before boot.
 void setGuestEffectStates(bool host);

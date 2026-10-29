@@ -299,7 +299,10 @@ Comparte el ZIP a Drive para tener una copia fuera del teléfono.</string>
     <string name="effects_game">Juego · el código de efectos del propio juego, para comparar</string>
     <string name="opt_wrongway">Aviso de sentido contrario</string>
     <string name="wrongway_on">Activado · como el juego</string>
-    <string name="wrongway_off">Desactivado · para free roam</string>
+    <string name="wrongway_off">Desactivado · en todas partes</string>
+    <string name="opt_freeroam">Free roam</string>
+    <string name="freeroam_on">Activado · Olympic City y los dos distritos de drift en Free Run</string>
+    <string name="freeroam_off">Desactivado</string>
     <string name="opt_cpu">Ubicación en la CPU</string>
     <string name="cpu_fast">Núcleo más rápido · cambia cuando el teléfono limita la frecuencia de un núcleo (versión 12)</string>
     <string name="cpu_big">Solo el núcleo más grande, como las versiones 3–11</string>

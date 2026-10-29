@@ -21,6 +21,8 @@
 #include "nfs_fastpath.h"
 #include "effect_states.h"
 #include "rim_sizes.h"
+#include "free_roam.h"
+#include "nfs_freeroam.h"
 #endif
 #include <array>
 #include <cstdio>
@@ -41,6 +43,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <filesystem>
+#include <future>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
@@ -227,8 +230,13 @@ bool guestEffectStates=true;
 // The app's folder for data the host makes from the game's (GameActivity: files/generated), outside the game
 // folder. Before boot.
 std::string generatedDataDir;
-// Game files the host serves another file for, by the path gamePath resolves them to (every rim size: the
-// wheel pack for Cars/WHEELS/GEOMETRY.BIN). Filled before the guest boots, only read afterwards.
+// Launcher "Free roam" (free_roam.h; src/runtime/freeroam.c is the game side): the folder holding Beta 2.0's three
+// track bundles, which the APK carries and GameActivity copies out (files/freeroam); empty: off. Before boot.
+std::string freeRoamDir;
+// Game files the host serves another file for, by the lowercased path gamePath resolves them to (the game names
+// its files in any case, and free roam's do not exist in the game folder): every rim size's wheel pack for
+// Cars/WHEELS/GEOMETRY.BIN, free roam's track bundles, texture packs and race streams. Filled before the guest
+// boots, only read afterwards.
 std::map<std::string,std::filesystem::path> servedFiles;
 // Every rim size at boot (prepareRimSizes): whether the wheel pack is served, why, and where it came from.
 struct RimSizesBoot{
@@ -774,7 +782,6 @@ void prepareRimSizes(){
     rimSizesBoot=RimSizesBoot{};
     rimSizesBoot.on=(guestGarage&NFS_GARAGE_ALL_RIM_SIZES)!=0;
     nfs_garage_set_rim_sizes_served(0);
-    servedFiles.clear();
     const auto start=std::chrono::steady_clock::now();
     try{
         const auto wheelsPath=gamePath("C:\\nfsu1\\Cars\\WHEELS\\GEOMETRY.BIN"),globalPath=gamePath("C:\\nfsu1\\Global\\GlobalB.lzc");
@@ -818,7 +825,7 @@ void prepareRimSizes(){
             if(!writeFileAtomically(keyPath,text.data(),text.size()))throw std::runtime_error("cannot write "+keyPath.string());
             rimSizesBoot.cache="built";rimSizesBoot.bytes=result.file.size();rimSizesBoot.parts=result.parts;rimSizesBoot.solids=result.solids;
         }
-        servedFiles[wheelsPath.string()]=pack;
+        servedFiles[servedKey(wheelsPath)]=pack;
         rimSizesBoot.served=true;
         nfs_garage_set_rim_sizes_served(1);
     }catch(const std::exception& e){rimSizesBoot.error=e.what();}
@@ -830,6 +837,257 @@ void prepareRimSizes(){
     else if(rimSizesBoot.on||!rimSizesBoot.error.empty())
         NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Rim sizes: the wheel pack is not served (%s); the rim browser offers the sizes the game has",
             rimSizesBoot.error.empty()?"unknown":rimSizesBoot.error.c_str());
+}
+// --- Free roam: Beta 2.0's tracks served from the player's own game files (free_roam.h; freeroam.c the game side) --
+struct FreeRoamTrackBoot{
+    unsigned number=0;
+    bool offered=false;
+    std::string cache="none";   // "hit": made earlier from these files, checked; "built" now; "failed"
+    std::string error,mapError; // error: not offered; mapError: offered without its map (the minimap stays off)
+    uint32_t mapSize=0;
+    uint64_t quads=0,tiles=0;
+    float mapX=0,mapY=0,mapWidth=0;
+    double ms=0;
+};
+// The select screen's pictures: the dynamic texture pack served with the offered tracks' (free_roam.h makePicturePack).
+struct FreeRoamPicturesBoot{std::string cache="none",error;unsigned tracks=0,textures=0;uint64_t bytes=0;double ms=0;std::vector<std::string> skipped;};
+struct FreeRoamBoot{bool on=false;std::string error;std::vector<FreeRoamTrackBoot> tracks;FreeRoamPicturesBoot pictures;double ms=0;};
+FreeRoamBoot freeRoamBoot;
+// A game function called from the free roam fast paths (registers as freeroam.c set them). No exception crosses
+// freeroam.c (C): a failure is 0, and the game's own code then runs.
+int freeRoamCall(uint32_t va,const uint32_t* args,unsigned count,uint32_t cleanup,uint32_t* result){
+    try{const uint32_t value=callGuest(va,args,count,cleanup,false);if(result)*result=value;return 1;}
+    catch(const std::exception& e){NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Free roam: the game's function %08x failed (%s)",va,e.what());return 0;}
+}
+// One free roam track to serve: where it comes from, where it goes, and the key that says what it was made from.
+struct FreeRoamJob{
+    const free_roam::Track* track=nullptr;
+    FreeRoamTrackBoot boot;
+    std::filesystem::path bundle,base,tex,stream,outTrack,outTex,keyPath;
+    std::vector<std::pair<free_roam::TrackRecord,std::filesystem::path>> maps;   // the stock races' maps under its map
+    std::string key;
+    bool made=false,hasMap=false;
+};
+// Makes a track's files (in parallel with the others: none of this touches the guest or a shared table).
+void buildFreeRoamTrack(FreeRoamJob& job){
+    const auto begin=std::chrono::steady_clock::now();
+    try{
+        job.boot.cache="failed";
+        std::vector<uint8_t> bundle,raw,base,tex;
+        if(!readWholeFile(job.bundle,bundle))throw std::runtime_error(job.bundle.filename().string()+" unreadable");
+        {std::vector<uint8_t> unpacked;if(rim_sizes::jdlzDecompress(bundle,unpacked))bundle=std::move(unpacked);}   // Beta 2.0 stores them raw
+        if(!readWholeFile(job.base,raw))throw std::runtime_error("Tracks/"+job.base.filename().string()+" unreadable");
+        if(!rim_sizes::jdlzDecompress(raw,base))base=std::move(raw);
+        if(!readWholeFile(job.tex,tex))tex.clear();   // the map needs it; the track does not
+        std::vector<free_roam::MapTile> tiles;
+        for(const auto& source:job.maps){
+            std::vector<uint8_t> file;free_roam::TexturePack pack;free_roam::MapTile tile;
+            if(!readWholeFile(source.second,file)||!free_roam::parsePack(file,pack).empty())continue;
+            if(!free_roam::mapImage(pack,free_roam::mapName(source.first.number),tile.image))continue;
+            tile.place={source.first.mapX,source.first.mapY,source.first.mapWidth};
+            tiles.push_back(std::move(tile));
+        }
+        free_roam::MadeTrack made=free_roam::makeTrack(*job.track,std::move(bundle),base,tex,tiles);
+        if(!made.error.empty())throw std::runtime_error(made.error);
+        ::unlink(job.keyPath.c_str());   // no key names files being replaced
+        if(!writeFileAtomically(job.outTrack,made.track.data(),made.track.size()))throw std::runtime_error("cannot write "+job.outTrack.string());
+        if(!made.tex.empty()&&!writeFileAtomically(job.outTex,made.tex.data(),made.tex.size()))throw std::runtime_error("cannot write "+job.outTex.string());
+        char line[256];
+        std::snprintf(line,sizeof line,"made %llu %llu %u %a %a %a %llu %llu\n",static_cast<unsigned long long>(made.track.size()),
+            static_cast<unsigned long long>(made.tex.size()),made.mapSize,double(made.place.offX),double(made.place.offY),double(made.place.width),
+            static_cast<unsigned long long>(made.quads),static_cast<unsigned long long>(made.tiles));
+        std::string text=job.key+line;
+        if(!made.mapError.empty())text+="no map: "+made.mapError+"\n";
+        if(!writeFileAtomically(job.keyPath,text.data(),text.size()))throw std::runtime_error("cannot write "+job.keyPath.string());
+        job.made=true;job.hasMap=!made.tex.empty();
+        job.boot.cache="built";job.boot.mapError=made.mapError;job.boot.mapSize=job.hasMap?made.mapSize:0;
+        job.boot.quads=made.quads;job.boot.tiles=made.tiles;
+        if(job.hasMap){job.boot.mapX=made.place.offX;job.boot.mapY=made.place.offY;job.boot.mapWidth=made.place.width;}
+    }catch(const std::exception& e){job.boot.error=e.what();}
+    job.boot.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+}
+// The offered tracks' select screen pictures: the installed Global/DYNTEX.BIN with their backgrounds and routes
+// added (free_roam.h makePicturePack: each route drawn from the served bundle's roads at its background's
+// resolution), from the app's folder when made from these files, made now otherwise (a few hundred ms, once).
+// Without it their SELECT LOCATION picture stays black; nothing else changes.
+void prepareFreeRoamPictures(const std::filesystem::path& directory,const std::vector<FreeRoamJob>& jobs){
+    auto& boot=freeRoamBoot.pictures;
+    const auto start=std::chrono::steady_clock::now();
+    try{
+        const auto dyntexPath=gamePath("C:\\nfsu1\\Global\\DYNTEX.BIN");
+        const std::filesystem::path out=directory/"DYNTEX.BIN",keyPath=directory/"pictures.txt";
+        std::ostringstream key;
+        key<<"free roam "<<free_roam::kGeneratorVersion<<" pictures\ndyntex "<<fileStamp(dyntexPath)<<"\n";
+        unsigned pictures=0;
+        for(const auto& job:jobs)if(job.made){key<<"track "<<job.track->number<<" "<<fileStamp(job.outTrack)<<"\n";++pictures;}
+        if(!pictures)return;
+        std::vector<uint8_t> stored;
+        if(readWholeFile(keyPath,stored,65536)){
+            const std::string text(stored.begin(),stored.end());unsigned long long bytes=0;unsigned tracks=0,textures=0;struct stat status{};
+            if(text.rfind(key.str(),0)==0&&std::sscanf(text.c_str()+key.str().size(),"made %llu %u %u",&bytes,&tracks,&textures)==3&&
+               !::stat(out.c_str(),&status)&&uint64_t(status.st_size)==bytes){boot.cache="hit";boot.bytes=bytes;boot.tracks=tracks;boot.textures=textures;}
+        }
+        if(boot.cache!="hit"){
+            boot.cache="failed";
+            std::vector<uint8_t> dyntex;
+            if(!readWholeFile(dyntexPath,dyntex))throw std::runtime_error("Global/DYNTEX.BIN unreadable");
+            std::vector<free_roam::Picture> made;
+            for(const auto& job:jobs){
+                if(!job.made)continue;
+                std::vector<uint8_t> bundle;
+                if(!readWholeFile(job.outTrack,bundle))throw std::runtime_error(job.outTrack.filename().string()+" unreadable");
+                free_roam::Picture picture;picture.number=job.track->number;picture.quads=free_roam::roadQuads(bundle);
+                made.push_back(std::move(picture));
+            }
+            free_roam::PictureReport report;
+            const std::vector<uint8_t> file=free_roam::makePicturePack(dyntex,made,report);
+            if(!report.error.empty())throw std::runtime_error("Global/DYNTEX.BIN: "+report.error);
+            boot.skipped=report.skipped;
+            ::unlink(keyPath.c_str());   // no key names a pack being replaced
+            if(!writeFileAtomically(out,file.data(),file.size()))throw std::runtime_error("cannot write "+out.string());
+            const std::string text=key.str()+"made "+std::to_string(file.size())+" "+std::to_string(report.tracks)+" "+std::to_string(report.textures)+"\n";
+            if(!writeFileAtomically(keyPath,text.data(),text.size()))throw std::runtime_error("cannot write "+keyPath.string());
+            boot.cache="built";boot.bytes=file.size();boot.tracks=report.tracks;boot.textures=report.textures;
+        }
+        servedFiles[servedKey(dyntexPath)]=out;
+    }catch(const std::exception& e){boot.error=e.what();}
+    boot.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+}
+// Before the guest boots, with free roam on: each track's bundle (Beta 2.0's, with the installed base race's
+// section table) and texture pack (the installed base race's, with a map of the district made from its races'
+// maps and the track's roads) from the app's folder when they were made from these game files, made now
+// otherwise (a few hundred ms a track, once); served with the base race's stream under the track's name.
+// freeroam.c then adds the offered tracks to the Free Run list.
+void prepareFreeRoam(){
+    freeRoamBoot=FreeRoamBoot{};
+    nfs_freeroam_configure(nullptr,0,nullptr);
+    if(freeRoamDir.empty())return;
+    freeRoamBoot.on=true;
+    const auto start=std::chrono::steady_clock::now();
+    static nfs_freeroam_track offered[NFS_FREEROAM_MAX_TRACKS];
+    unsigned count=0;
+    try{
+        if(generatedDataDir.empty())throw std::runtime_error("no folder for generated data");
+        const std::filesystem::path directory=std::filesystem::path(generatedDataDir)/"free_roam";
+        std::error_code error;std::filesystem::create_directories(directory,error);
+        if(error)throw std::runtime_error("cannot make "+directory.string()+": "+error.message());
+        const auto globalPath=gamePath("C:\\nfsu1\\Global\\GlobalB.lzc");
+        std::vector<uint8_t> global,globalb;
+        if(!readWholeFile(globalPath,global))throw std::runtime_error("Global/GlobalB.lzc unreadable");
+        if(!rim_sizes::jdlzDecompress(global,globalb))globalb=std::move(global);   // a mod's may be stored unpacked
+        const auto records=free_roam::trackRecords(globalb);
+        if(records.empty())throw std::runtime_error("Global/GlobalB.lzc has no track records");
+        auto tracksPath=[](const std::string& name){return gamePath("C:\\nfsu1\\Tracks\\"+name);};
+        std::vector<FreeRoamJob> jobs;
+        for(const auto& track:free_roam::kTracks){
+            FreeRoamJob job;job.track=&track;job.boot.number=track.number;
+            job.bundle=std::filesystem::path(freeRoamDir)/free_roam::trackFile(track.number);
+            job.base=tracksPath("TRACKB"+std::to_string(track.base)+".LZC");
+            job.tex=tracksPath(free_roam::texFile(track.base));
+            job.stream=tracksPath(free_roam::raceStream(track.region,track.base));
+            job.outTrack=directory/("TRACKB"+std::to_string(track.number)+".LZC");
+            job.outTex=directory/free_roam::texFile(track.number);
+            job.keyPath=directory/("track"+std::to_string(track.number)+".txt");
+            for(const auto& record:free_roam::mapSources(records,track))job.maps.emplace_back(record,tracksPath(free_roam::texFile(record.number)));
+            // The key names the generator and every file the track is made from; then "made ..." says what was made.
+            std::ostringstream key;
+            key<<"free roam "<<free_roam::kGeneratorVersion<<" track "<<track.number<<"\nbundle "<<fileStamp(job.bundle)<<"\nbase "<<fileStamp(job.base)
+               <<"\ntex "<<fileStamp(job.tex)<<"\nglobal "<<fileStamp(globalPath)<<"\n";
+            for(const auto& source:job.maps)key<<"map "<<source.first.number<<" "<<fileStamp(source.second)<<"\n";
+            job.key=key.str();
+            if(fileStamp(job.bundle)=="missing"){job.boot.error="not in the free roam folder";jobs.push_back(std::move(job));continue;}
+            const auto checking=std::chrono::steady_clock::now();
+            std::vector<uint8_t> stored;
+            if(readWholeFile(job.keyPath,stored,65536)){
+                const std::string text(stored.begin(),stored.end());
+                unsigned long long trackBytes=0,texBytes=0,quads=0,tiles=0;unsigned size=0;float x=0,y=0,width=0;
+                struct stat status{};
+                if(text.rfind(job.key,0)==0&&
+                   std::sscanf(text.c_str()+job.key.size(),"made %llu %llu %u %a %a %a %llu %llu",&trackBytes,&texBytes,&size,&x,&y,&width,&quads,&tiles)==8&&
+                   !::stat(job.outTrack.c_str(),&status)&&uint64_t(status.st_size)==trackBytes&&
+                   (!texBytes||(!::stat(job.outTex.c_str(),&status)&&uint64_t(status.st_size)==texBytes))){
+                    job.made=true;job.hasMap=texBytes!=0;job.boot.cache="hit";
+                    job.boot.quads=quads;job.boot.tiles=tiles;
+                    if(job.hasMap){job.boot.mapSize=size;job.boot.mapX=x;job.boot.mapY=y;job.boot.mapWidth=width;}
+                    const size_t noMap=text.find("no map: ");
+                    if(noMap!=std::string::npos)job.boot.mapError=text.substr(noMap+8,text.find('\n',noMap)-noMap-8);
+                }
+            }
+            job.boot.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-checking).count();
+            jobs.push_back(std::move(job));
+        }
+        std::vector<std::future<void>> building;
+        for(auto& job:jobs)if(!job.made&&job.boot.error.empty())building.push_back(std::async(std::launch::async,[&job]{buildFreeRoamTrack(job);}));
+        for(auto& done:building)done.get();
+        for(auto& job:jobs){
+            const free_roam::Track& track=*job.track;
+            if(job.made){
+                servedFiles[servedKey(tracksPath(free_roam::trackFile(track.number)))]=job.outTrack;
+                servedFiles[servedKey(tracksPath(free_roam::texFile(track.number)))]=job.hasMap?job.outTex:job.tex;
+                if(fileStamp(job.stream)!="missing")servedFiles[servedKey(tracksPath(free_roam::raceStream(track.region,track.number)))]=job.stream;
+                nfs_freeroam_track& out=offered[count++];
+                out=nfs_freeroam_track{};
+                out.number=track.number;out.base=track.recordBase;out.icon=track.icon;
+                std::snprintf(out.region,sizeof out.region,"%s",track.region);
+                std::snprintf(out.region_directory,sizeof out.region_directory,"%s",track.regionDirectory);
+                std::snprintf(out.name,sizeof out.name,"%s",track.name);
+                out.map_x=job.boot.mapX;out.map_y=job.boot.mapY;out.map_width=job.hasMap?job.boot.mapWidth:0;
+                job.boot.offered=true;
+            }
+            freeRoamBoot.tracks.push_back(job.boot);
+        }
+        prepareFreeRoamPictures(directory,jobs);
+    }catch(const std::exception& e){freeRoamBoot.error=e.what();count=0;}
+    static const nfs_freeroam_host host={gameMalloc,freeRoamCall};
+    nfs_freeroam_configure(offered,count,&host);
+    freeRoamBoot.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+    if(!freeRoamBoot.error.empty()){
+        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Free roam: no tracks (%s)",freeRoamBoot.error.c_str());
+        return;
+    }
+    for(const auto& track:freeRoamBoot.tracks){
+        const char* name="?";for(const auto& t:free_roam::kTracks)if(t.number==track.number)name=t.name;
+        if(!track.offered)NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Free roam: %s (%u) not offered: %s",name,track.number,track.error.c_str());
+        else if(track.mapSize)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Free roam: %s (%u) in Free Run, %s in %.0f ms; map %ux%u over %.0f m from %llu race maps and %llu road polygons",
+            name,track.number,track.cache=="hit"?"made earlier, checked":"made",track.ms,track.mapSize,track.mapSize,double(track.mapWidth),
+            static_cast<unsigned long long>(track.tiles),static_cast<unsigned long long>(track.quads));
+        else NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Free roam: %s (%u) in Free Run, %s in %.0f ms; no map (%s): the minimap stays off",
+            name,track.number,track.cache=="hit"?"made earlier, checked":"made",track.ms,track.mapError.c_str());
+    }
+    const auto& pictures=freeRoamBoot.pictures;
+    if(pictures.cache=="hit"||pictures.cache=="built")
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Free roam: SELECT LOCATION pictures for %u tracks (%u textures added) served for Global/DYNTEX.BIN, %s in %.0f ms",
+            pictures.tracks,pictures.textures,pictures.cache=="hit"?"made earlier, checked":"made",pictures.ms);
+    else if(!pictures.error.empty())
+        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Free roam: no SELECT LOCATION pictures (%s): the free roam tracks' map there stays black",pictures.error.c_str());
+    for(const auto& skipped:pictures.skipped)NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Free roam: no SELECT LOCATION picture for %s",skipped.c_str());
+}
+// For the session JSON: what was offered and what the game side did (nfs_freeroam_get_stats).
+std::string freeRoamJson(){
+    auto quoted=[](const std::string& text){std::string out="\"";for(char c:text){if(c=='"'||c=='\\')out+='\\';if(uint8_t(c)>=0x20)out+=c;}return out+"\"";};
+    const nfs_freeroam_stats stats=nfs_freeroam_get_stats();
+    std::ostringstream json;
+    json<<"{\"on\":"<<(freeRoamBoot.on?"true":"false")<<",\"offered\":"<<nfs_freeroam_track_count()<<",\"ms\":"<<std::fixed<<std::setprecision(0)<<freeRoamBoot.ms;
+    if(!freeRoamBoot.error.empty())json<<",\"error\":"<<quoted(freeRoamBoot.error);
+    json<<",\"tracks\":[";
+    for(size_t i=0;i<freeRoamBoot.tracks.size();++i){
+        const auto& t=freeRoamBoot.tracks[i];
+        json<<(i?",":"")<<"{\"number\":"<<t.number<<",\"offered\":"<<(t.offered?"true":"false")<<",\"cache\":"<<quoted(t.cache)
+            <<",\"ms\":"<<t.ms<<",\"mapSize\":"<<t.mapSize<<",\"tiles\":"<<t.tiles<<",\"quads\":"<<t.quads;
+        if(!t.error.empty())json<<",\"error\":"<<quoted(t.error);
+        if(!t.mapError.empty())json<<",\"mapError\":"<<quoted(t.mapError);
+        json<<"}";
+    }
+    const auto& pictures=freeRoamBoot.pictures;
+    json<<"],\"pictures\":{\"cache\":"<<quoted(pictures.cache)<<",\"tracks\":"<<pictures.tracks<<",\"textures\":"<<pictures.textures
+        <<",\"bytes\":"<<pictures.bytes<<",\"ms\":"<<pictures.ms;
+    if(!pictures.error.empty())json<<",\"error\":"<<quoted(pictures.error);
+    json<<"}";
+    json<<",\"tracksAdded\":"<<stats.tracks_added<<",\"namesAdded\":"<<stats.names_added<<",\"races\":"<<stats.races
+        <<",\"wrongWayCalls\":"<<stats.wrong_way_calls<<",\"wrongWayCleared\":"<<stats.wrong_way_cleared<<",\"updates\":"<<stats.updates
+        <<",\"crumbs\":"<<stats.crumbs<<",\"resets\":"<<stats.resets<<",\"resetsPlaced\":"<<stats.resets_placed<<",\"resetsLeft\":"<<stats.resets_left
+        <<",\"reverseEntriesLeftOut\":"<<stats.reverse_entries_left_out<<"}";
+    return json.str();
 }
 // For the session JSON: the boot's outcome and what the game side did with it (nfs_garage_rim_stats).
 std::string rimSizesJson(){
@@ -1254,9 +1512,17 @@ std::string connectGuestRuntime(const char* executable) {
         logGarage();
         // Every rim size: the wheel pack (its parts are a second database, which the parts lookup reaches
         // through the host), and the rim browser's thumbnails shared by a style's sizes.
+        servedFiles.clear();
         prepareRimSizes();
         nfs_fastpath_register(NFS_PARTS_LOOKUP,rimSizesBoot.served?nfs_garage_parts_lookup_fast:nullptr);
         nfs_fastpath_register(NFS_BROWSER_ADD_ITEM,rimSizesBoot.on?nfs_garage_browser_item_fast:nullptr);
+        // Free roam: the tracks served (their records and names follow from freeroam.c's hooks), no wrong way on
+        // them, and resets to where the car was driving.
+        prepareFreeRoam();
+        const bool freeRoam=nfs_freeroam_track_count()>0;
+        nfs_fastpath_register(NFS_WRONG_WAY_TEST,freeRoam?nfs_freeroam_wrong_way_fast:nullptr);
+        nfs_fastpath_register(NFS_PLAYER_UPDATE,freeRoam?nfs_freeroam_update_fast:nullptr);
+        nfs_fastpath_register(NFS_PLAYER_RESET,freeRoam?nfs_freeroam_reset_fast:nullptr);
         nfs_fastpath_register(effect_states::kApply,guestEffectStates?applyEffectStateFast:nullptr);
         nfs_fastpath_register(effect_states::kEvaluate,guestEffectStates?evaluateEffectStateFast:nullptr);
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Effect states: %s",guestEffectStates?
@@ -1414,6 +1680,7 @@ std::string guestTelemetryJson(bool live){
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
         json+=",\"garage\":"+garageJson();
         json+=",\"rimSizes\":"+rimSizesJson();
+        json+=",\"freeRoam\":"+freeRoamJson();
         json+=",\"effectStates\":"+effectStatesJson();
 #endif
     }
@@ -1438,6 +1705,9 @@ void setGuestFrameLimit(unsigned framesPerSecond){
         frameLimit.load()?"the launcher sleeps to the cap (the game's own busy-wait off)":"the game's own busy-wait paces it");
 }
 void setGuestKey(unsigned scan,bool down){if(scan>=256)return;std::lock_guard<std::mutex> lock(inputMutex);if(bool(inputKeys[scan])==down)return;inputKeys[scan]=down?0x80:0;recordInputKey(scan,down);enqueueGuestKey(scan,down);}
+uint64_t guestKeySequence(){std::lock_guard<std::mutex> lock(inputMutex);return inputSequence;}
+uint64_t guestKeysDelivered(){return inputKeysDelivered.load(std::memory_order_relaxed);}
+bool guestPeek(uint32_t va,void* out,size_t bytes){if(!memory||!bytes||!memory->readable(va,bytes))return false;std::memcpy(out,ptr(va,bytes),bytes);return true;}
 void clearGuestInput(){std::lock_guard<std::mutex> lock(inputMutex);for(unsigned scan=0;scan<256;++scan)if(inputKeys[scan]){recordInputKey(scan,false);enqueueGuestKey(scan,false);}inputKeys.fill(0);inputMouseButtons.fill(0);inputMouseX=inputMouseY=inputMouseZ=0;touchButtons.clear();touchMoved=false;}
 void setGuestPointer(float x,float y,int phase){
     guestPointerX=std::clamp(x,0.f,1.f);guestPointerY=std::clamp(y,0.f,1.f);
@@ -1453,6 +1723,7 @@ void setGuestEffectStates(bool host){std::lock_guard<MachineMutex> lock(machine)
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 void setGuestGarage(uint32_t features){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestGarage=features&NFS_GARAGE_ALL;}
 void setGuestGeneratedDir(const std::string& directory){std::lock_guard<MachineMutex> lock(machine);if(!memory)generatedDataDir=directory;}
+void setGuestFreeRoamDir(const std::string& directory){std::lock_guard<MachineMutex> lock(machine);if(!memory)freeRoamDir=directory;}
 #endif
 void setGuestLanguage(const char* language){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;

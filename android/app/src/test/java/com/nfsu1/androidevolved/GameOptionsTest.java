@@ -27,6 +27,7 @@ public class GameOptionsTest {
         assertEquals("on", GameOptions.defaultValue(GameOptions.WIDESCREEN, 16 * GB));
         assertEquals("overlapped", GameOptions.defaultValue(GameOptions.READS, 16 * GB));   // build 7: reads hand the machine over again
         assertEquals("thread", GameOptions.defaultValue(GameOptions.CLEANUP, 16 * GB));     // build 11: DXVK's resets off its queue thread
+        assertEquals("on", GameOptions.defaultValue(GameOptions.FREEROAM, 16 * GB));        // build 19: the free roam tracks in Free Run
     }
 
     @Test public void everyOptionHasADefaultAmongItsValues() {

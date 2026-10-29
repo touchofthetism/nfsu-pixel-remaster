@@ -19,10 +19,13 @@ std::filesystem::path gamePath(std::string guest){
 }
 std::map<uint32_t,int> fileHandles;uint32_t nextFileHandle=0xf0060000;
 // The file read in place of a game file the host serves another one for (servedFiles: every rim size's wheel
-// pack): opens for reading, sizes, attributes and directory listings see it; a write would go to the game's.
+// pack, free roam's tracks): opens for reading, sizes, attributes and directory listings see it; a write would
+// go to the game's. Keys are the resolved paths lowercased: the game asks for TRACKS\TRACKB1000.LZC, a file
+// that is not in the folder, whose resolved name keeps the game's spelling.
+std::string servedKey(const std::filesystem::path& path){return lower(path.string());}
 const std::filesystem::path& servedPath(const std::filesystem::path& path){
     if(servedFiles.empty())return path;
-    auto served=servedFiles.find(path.string());
+    auto served=servedFiles.find(servedKey(path));
     return served==servedFiles.end()?path:served->second;
 }
 // The game skips its CD-drive check when the game folder holds a file named

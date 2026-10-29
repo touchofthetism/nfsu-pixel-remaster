@@ -311,7 +311,10 @@ Share the ZIP to Drive to keep a copy off the phone.</string>
     <string name="effects_game">Game · the game\'s own effect code, for comparison</string>
     <string name="opt_wrongway">Wrong-way warning</string>
     <string name="wrongway_on">On · game default</string>
-    <string name="wrongway_off">Off · for free roam</string>
+    <string name="wrongway_off">Off · everywhere</string>
+    <string name="opt_freeroam">Free roam</string>
+    <string name="freeroam_on">On · Olympic City and both drift districts in Free Run</string>
+    <string name="freeroam_off">Off</string>
     <string name="opt_cpu">CPU placement</string>
     <string name="cpu_fast">Fastest core · moves when the phone limits a core\'s clock (build 12)</string>
     <string name="cpu_big">Biggest core only, as builds 3–11 did</string>

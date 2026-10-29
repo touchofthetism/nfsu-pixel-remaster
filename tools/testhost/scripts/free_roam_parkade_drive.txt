@@ -1,0 +1,31 @@
+# Parkade Drift driven: selected (free_roam_parkade_select.txt), the race start, half a minute of driving with two
+# turns, a reset (R) where the car stands, and driving on. The log's [freeroam] lines give the car once a second.
+include free_roam_parkade_select.txt
+114 wait 120 STREAML1R
+115 shot loading
+126 shot intro
+134 shot start
+135 peek race_record [0x736174]+0x6C 1
+135.1 peek minimap_index 0x78A3F4 2
+136 key UP down
+139 shot drive1
+142 shot drive2
+144 key LEFT down
+145.5 key LEFT up
+147 shot drive3
+150 shot drive4
+154 key RIGHT down
+155 key RIGHT up
+157 shot drive5
+160 shot drive6
+164 shot drive7
+168 key UP up
+170 shot stopped
+171 key R tap
+173 shot reset1
+176 shot reset2
+179 key UP down
+183 shot after_reset1
+188 shot after_reset2
+190 key UP up
+192 quit

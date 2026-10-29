@@ -1,5 +1,7 @@
 # Everything derived from the game binary stays local (never commit).
 work/
+# Free roam's track bundles: the private build copies them into the APK (its mods/free-roam-beta-2.0).
+android/app/src/main/assets/freeroam/
 src/recomp/gen/
 src/recomp/gen_*/
 build/
