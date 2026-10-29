@@ -282,16 +282,27 @@ public class SessionSummaryTest {
 
     @Test public void garageAndEffectStatesAreReported() throws Exception {
         // Build 17: which Garage switches were on, which of the game's decisions they changed, the unlock byte.
+        // A build-17 record names seven switches: all seven on, and more paints (build 18) not called off.
+        String seven = "\"unlock\":0,\"specialVinyls\":17,\"vinylLayers\":0,\"hoodVinyls\":4,\"hoodDecals\":0,\"allDecals\":0,\"raceBrakes\":0";
         assertEquals("  Garage: all 7 on (unlock byte set); changed: special vinyls 17, hood vinyls 4\n", SessionSummary.garageLine(new org.json.JSONObject(
-                "{\"features\":127,\"changes\":{\"unlock\":0,\"specialVinyls\":17,\"vinylLayers\":0,\"hoodVinyls\":4,\"hoodDecals\":0,"
-                        + "\"allDecals\":0,\"raceBrakes\":0},\"unknownSites\":0,\"unlockByte\":1}")));
-        // 66: special vinyls (bit 1) and race brakes (bit 6).
-        assertEquals("  Garage: on: special vinyls, race brakes; off: unlock everything, free vinyl layers, hood vinyls, hood decals, all decals;"
-                + " no game decision changed\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":66,\"changes\":{},\"unknownSites\":0}")));
+                "{\"features\":127,\"changes\":{" + seven + "},\"unknownSites\":0,\"unlockByte\":1}")));
+        // Build 18 says how many switches it has.
+        assertEquals("  Garage: all 8 on (unlock byte set); changed: special vinyls 17, hood vinyls 4, more paints 3\n",
+                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":255,\"switches\":8,\"changes\":{" + seven
+                        + ",\"morePaints\":3},\"unlockByte\":1}")));
+        assertEquals("  Garage: on: unlock everything, special vinyls, free vinyl layers, hood vinyls, hood decals, all decals, race brakes;"
+                + " off: more paints (unlock byte set); changed: special vinyls 17, hood vinyls 4\n", SessionSummary.garageLine(new org.json.JSONObject(
+                "{\"features\":127,\"switches\":8,\"changes\":{" + seven + ",\"morePaints\":0},\"unlockByte\":1}")));
+        // A later build's switch this one doesn't know is left out, not misnamed.
+        assertEquals("  Garage: all 8 on; no game decision changed\n",
+                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":511,\"switches\":9}")));
+        // 66: special vinyls (bit 1) and race brakes (bit 6); nothing in the record says how many: every switch counts.
+        assertEquals("  Garage: on: special vinyls, race brakes; off: unlock everything, free vinyl layers, hood vinyls, hood decals, all decals,"
+                + " more paints; no game decision changed\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":66,\"changes\":{},\"unknownSites\":0}")));
         assertEquals("  Garage: all off (unlock byte clear)\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":0,\"unlockByte\":0}")));
         // A jump the lifter wrapped with no rule in the table (config/branches.txt and nfs_garage.h out of step).
-        assertEquals("  Garage: all 7 on; no game decision changed; 3 jumps reached with no rule\n",
-                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":127,\"unknownSites\":3}")));
+        assertEquals("  Garage: all 8 on; no game decision changed; 3 jumps reached with no rule\n",
+                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":255,\"unknownSites\":3}")));
         assertEquals(null, SessionSummary.garageLine(null));
         assertEquals(null, SessionSummary.garageLine(new org.json.JSONObject("{}")));
 
@@ -307,11 +318,11 @@ public class SessionSummaryTest {
         assertEquals(null, SessionSummary.effectStatesLine(new org.json.JSONObject("{}"), 60));
 
         // In the report, before the events; records before build 17 have neither line.
-        String record = RECORD.replace("\"d3d9Calls\":{", "\"garage\":{\"features\":127,\"changes\":{\"specialVinyls\":2},\"unknownSites\":0,\"unlockByte\":1},"
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"garage\":{\"features\":255,\"switches\":8,\"changes\":{\"specialVinyls\":2},\"unknownSites\":0,\"unlockByte\":1},"
                 + "\"effectStates\":{\"host\":true,\"applyCalls\":1224680000,\"applyHandled\":1224680000,\"evaluateCalls\":10,\"evaluateHandled\":10,"
                 + "\"kept\":1175692800,\"sent\":48987200},\"d3d9Calls\":{");
         String report = SessionSummary.parse(record).report;
-        String garage = "  Garage: all 7 on (unlock byte set); changed: special vinyls 2\n";
+        String garage = "  Garage: all 8 on (unlock byte set); changed: special vinyls 2\n";
         String states = "  Effect states (host): 20,000 applied a frame, 100% by the host (96% of those already set, skipped); value updates 100%"
                 + " answered at once\n";
         assertTrue(report, report.contains(garage + states));

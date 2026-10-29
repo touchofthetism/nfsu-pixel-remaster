@@ -39,19 +39,21 @@ extern "C" {
 #define NFS_GARAGE_HOOD_DECALS      (1u << 4)  /* hood decals stay on, and go on, a custom hood */
 #define NFS_GARAGE_ALL_DECALS       (1u << 5)  /* every decal unlocked */
 #define NFS_GARAGE_RACE_BRAKES      (1u << 6)  /* brakes keep their full detail in races */
-#define NFS_GARAGE_ALL              0x7Fu
-#define NFS_GARAGE_FEATURE_COUNT    7u
+#define NFS_GARAGE_MORE_PAINTS      (1u << 7)  /* body, spoiler, rims and exhaust tips in more paint types */
+#define NFS_GARAGE_ALL              0xFFu
+#define NFS_GARAGE_FEATURE_COUNT    8u
 
 /* Short names (telemetry keys, the Java side's GameOptions.GARAGE_KEYS) and log wording, by bit index. */
 static inline const char* nfs_garage_feature_key(unsigned index) {
     static const char* const keys[NFS_GARAGE_FEATURE_COUNT] = {
-        "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes"};
+        "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints"};
     return index < NFS_GARAGE_FEATURE_COUNT ? keys[index] : "?";
 }
 static inline const char* nfs_garage_feature_name(unsigned index) {
     static const char* const names[NFS_GARAGE_FEATURE_COUNT] = {
         "everything unlocked", "special vinyls listed", "special vinyls with other layers",
-        "vinyls on custom hoods", "decals on custom hoods", "every decal unlocked", "full-detail brakes in races"};
+        "vinyls on custom hoods", "decals on custom hoods", "every decal unlocked", "full-detail brakes in races",
+        "more paint types"};
     return index < NFS_GARAGE_FEATURE_COUNT ? names[index] : "?";
 }
 
@@ -70,6 +72,71 @@ static inline const char* nfs_garage_feature_name(unsigned index) {
  * 0x5702F1-0x5702F7 picks the second set when [esp+0A8h] is 0 (in a race), then `lea ecx, [ecx+ecx*2]`.
  * ARCHIE's mod writes `xor cl, cl` over the sete; the hook on the lea clears cl. */
 #define NFS_GARAGE_HOOK_BRAKE_LOD    0x005702F8u
+/* The paint shop's paint types (ARCHIE's ShowMoreColors). 0x4D7B70 (stdcall, the paint target in edi, a list
+ * head in esi) empties the list and fills it with the paint types the target is offered, then returns their
+ * count: a circular list of 12-byte nodes {next, prev, type} from the game's malloc (0x67121A), freed by the
+ * next call (0x671102). The targets are the GaragePaintModScreen's PAINT_MOD_BASE, _RIMS, _BRAKE_CALIPERS,
+ * _SPOILER, the vinyl's colours, _ENGINE_ACCENT and _MUFFLER_TIP (0-6); a type is a palette, the paint parts
+ * of one kind in the parts database: 0 gloss, 1 metallic, 2 pearl, 3 vinyl, 4 calipers, 5 rims, 6 engine
+ * accents, 7 muffler tips. The game offers the base and the spoiler gloss, metallic and pearl (as the career
+ * allows), every other target its own palette. ARCHIE's mod rebuilds the list; here a hook on 0x4D7D74,
+ * where every path meets before the count, adds what his lists have and the game's lacks, so the count the
+ * caller takes (one type: no type picker) includes them. */
+#define NFS_GARAGE_HOOK_PAINT_TYPES  0x004D7D74u
+#define NFS_GARAGE_GAME_MALLOC       0x0067121Au
+#define NFS_PAINT_TARGETS            7u
+#define NFS_PAINT_NODE_BYTES         12u
+
+/* ARCHIE's lists by target (the order a type takes in the picker); the targets not listed keep the game's. */
+static inline unsigned nfs_garage_paint_types(uint32_t target, const uint8_t** types) {
+    static const uint8_t base[] = {0, 1, 2, 4, 5, 7};     /* base paint and spoiler */
+    static const uint8_t rims[] = {5, 0, 1, 2, 4};
+    static const uint8_t mufflers[] = {7, 0, 1, 2, 4, 5};
+    switch (target) {
+    case 0: case 3: *types = base; return sizeof base;
+    case 1: *types = rims; return sizeof rims;
+    case 6: *types = mufflers; return sizeof mufflers;
+    default: *types = 0; return 0;
+    }
+}
+
+/* Guest memory as the hook sees it (the host runtime's accessors; tests use a fake). alloc is the game's own
+ * malloc, so the game frees the nodes as its own; 0 when it fails. */
+typedef struct nfs_guest_memory {
+    uint32_t (*read32)(void* ctx, uint32_t va);
+    void (*write32)(void* ctx, uint32_t va, uint32_t value);
+    uint32_t (*alloc)(void* ctx, uint32_t bytes);
+    void* ctx;
+} nfs_guest_memory;
+
+/* Appends each of `types` the circular list at `head` lacks, in order, linked at the tail exactly as
+ * 0x4D7B70 links its own nodes. Returns how many were added; stops at an allocation failure. A list longer
+ * than 64 nodes, or broken (a null link), is left alone. */
+static inline unsigned nfs_garage_append_paint_types(const nfs_guest_memory* m, uint32_t head, const uint8_t* types,
+                                                     unsigned count) {
+    uint8_t present[8] = {0};
+    unsigned nodes = 0;
+    for (uint32_t node = m->read32(m->ctx, head); node != head; node = m->read32(m->ctx, node)) {
+        if (!node || ++nodes > 64) return 0;
+        uint32_t type = m->read32(m->ctx, node + 8);
+        if (type < 8) present[type] = 1;
+    }
+    unsigned added = 0;
+    for (unsigned i = 0; i < count; i++) {
+        if (types[i] >= 8 || present[types[i]]) continue;
+        uint32_t node = m->alloc(m->ctx, NFS_PAINT_NODE_BYTES);
+        if (!node) break;
+        uint32_t tail = m->read32(m->ctx, head + 4);
+        m->write32(m->ctx, node + 8, types[i]);
+        m->write32(m->ctx, tail, node);          /* tail->next */
+        m->write32(m->ctx, head + 4, node);      /* head->prev */
+        m->write32(m->ctx, node + 4, tail);      /* node->prev */
+        m->write32(m->ctx, node, head);          /* node->next */
+        present[types[i]] = 1;
+        added++;
+    }
+    return added;
+}
 
 typedef struct nfs_branch_override {
     uint32_t va;       /* the conditional jump */
@@ -153,6 +220,9 @@ void nfs_garage_configure(uint32_t features);
 uint32_t nfs_garage_features(void);
 /* Once, after the image is mapped and before the game's entry point runs. */
 void nfs_garage_boot(void);
+/* The game's malloc for nodes the Garage adds to the game's lists (the host calls 0x67121A); none: no node is
+ * added. Before boot. */
+void nfs_garage_set_allocator(uint32_t (*alloc)(uint32_t bytes));
 /* recomp_hook dispatch: 1 when `va` was one of these features' sites. */
 int nfs_garage_hook(uint32_t va);
 /* Decisions an enabled feature changed so far, by feature bit index (diagnostics), and the RECOMP_BRANCH

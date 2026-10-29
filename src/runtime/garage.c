@@ -19,6 +19,13 @@
 static uint32_t s_features;
 static uint64_t s_changes[NFS_GARAGE_FEATURE_COUNT];
 static uint64_t s_unknown_sites;
+static uint32_t (*s_alloc)(uint32_t bytes);
+
+void nfs_garage_set_allocator(uint32_t (*alloc)(uint32_t bytes)) { s_alloc = alloc; }
+
+static uint32_t guest_read32(void* ctx, uint32_t va) { (void)ctx; return MEM32(va); }
+static void guest_write32(void* ctx, uint32_t va, uint32_t value) { (void)ctx; MEM32(va) = value; }
+static uint32_t guest_alloc(void* ctx, uint32_t bytes) { (void)ctx; return s_alloc ? s_alloc(bytes) : 0; }
 
 void nfs_garage_configure(uint32_t features) {
     s_features = features & NFS_GARAGE_ALL;
@@ -56,6 +63,15 @@ int nfs_garage_hook(uint32_t va) {
     case NFS_GARAGE_HOOK_BRAKE_LOD: {
         uint32_t ecx = nfs_garage_brake_lod_ecx(s_features, g_ecx);
         if (ecx != g_ecx) { g_ecx = ecx; count_change(NFS_GARAGE_RACE_BRAKES); }
+        return 1;
+    }
+    case NFS_GARAGE_HOOK_PAINT_TYPES: {
+        const uint8_t* types;
+        unsigned count = nfs_garage_paint_types(g_edi, &types);
+        if (!(s_features & NFS_GARAGE_MORE_PAINTS) || !count || !s_alloc) return 1;
+        /* The registers are the guest's own here; the allocator's guest call saves and restores them. */
+        const nfs_guest_memory memory = {guest_read32, guest_write32, guest_alloc, 0};
+        if (nfs_garage_append_paint_types(&memory, g_esi, types, count)) count_change(NFS_GARAGE_MORE_PAINTS);
         return 1;
     }
     default:

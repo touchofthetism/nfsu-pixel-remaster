@@ -594,7 +594,7 @@ void logGarage(){
 }
 // Garage and effect state counts for the session JSON (guestTelemetryJson).
 std::string garageJson(){
-    std::string json="{\"features\":"+std::to_string(nfs_garage_features())+",\"changes\":{";
+    std::string json="{\"features\":"+std::to_string(nfs_garage_features())+",\"switches\":"+std::to_string(NFS_GARAGE_FEATURE_COUNT)+",\"changes\":{";
     for(unsigned i=0;i<NFS_GARAGE_FEATURE_COUNT;++i)
         json+=std::string(i?",":"")+"\""+nfs_garage_feature_key(i)+"\":"+std::to_string(nfs_garage_changes(i));
     json+="},\"unknownSites\":"+std::to_string(nfs_branch_unknown_sites());
@@ -641,6 +641,13 @@ uint32_t callGuest(uint32_t va,const uint32_t* args,size_t count,uint32_t cleanu
 // frame and a std::vector per call cost a malloc/free pair.
 inline uint32_t callGuest(uint32_t va,std::initializer_list<uint32_t> args,uint32_t cleanup=0,bool threadStart=false){return callGuest(va,args.begin(),args.size(),cleanup,threadStart);}
 inline uint32_t callGuest(uint32_t va,const std::vector<uint32_t>& args,uint32_t cleanup=0,bool threadStart=false){return callGuest(va,args.data(),args.size(),cleanup,threadStart);}
+// The game's own malloc (cdecl, 0x67121A) for nodes the Garage adds to the game's lists, which the game later
+// frees as its own. Called from a hook inside lifted code: callGuest keeps the guest registers as they were.
+// No exception crosses garage.c (C): a failure is a null pointer, and the Garage then adds nothing.
+uint32_t gameMalloc(uint32_t bytes){
+    try{return callGuest(NFS_GARAGE_GAME_MALLOC,{bytes},4);}
+    catch(const std::exception& e){NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Garage: the game's malloc failed (%s)",e.what());return 0;}
+}
 // Underground keeps its options (graphics detail, audio, controls) in the
 // profile's .opt file and writes it only when the game is saved, so options
 // changed in the menu were lost when the app was closed, which on Android is
@@ -1106,6 +1113,7 @@ std::string connectGuestRuntime(const char* executable) {
         nfs_reflections_boot();   // the cube map and mirror sizes the target setup reads
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
         nfs_garage_configure(guestGarage);
+        nfs_garage_set_allocator(gameMalloc);
         nfs_garage_boot();        // the game's unlock-everything byte, when that switch is on
         logGarage();
         nfs_fastpath_register(effect_states::kApply,guestEffectStates?applyEffectStateFast:nullptr);

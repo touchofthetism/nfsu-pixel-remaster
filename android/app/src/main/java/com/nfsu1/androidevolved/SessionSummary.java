@@ -452,30 +452,39 @@ final class SessionSummary {
 
     private static final String[][] GARAGE_NAMES = {
             {"unlock", "unlock everything"}, {"specialVinyls", "special vinyls"}, {"vinylLayers", "free vinyl layers"},
-            {"hoodVinyls", "hood vinyls"}, {"hoodDecals", "hood decals"}, {"allDecals", "all decals"}, {"raceBrakes", "race brakes"}};
+            {"hoodVinyls", "hood vinyls"}, {"hoodDecals", "hood decals"}, {"allDecals", "all decals"}, {"raceBrakes", "race brakes"},
+            {"morePaints", "more paints"}};
 
     /** Build 17: the Garage switches (native "garage": the NFS_GARAGE_* mask, per feature the decisions of the game it
-     *  changed, and the game's unlock-everything byte), e.g. "  Garage: all 7 on (unlock byte set); changed: special
+     *  changed, and the game's unlock-everything byte), e.g. "  Garage: all 8 on (unlock byte set); changed: special
      *  vinyls 17, hood vinyls 4" or "  Garage: on: special vinyls; off: unlock everything, ...; no game decision
-     *  changed". Null before build 17. */
+     *  changed". The switches are bits in launcher order, a later build's appended: a record's "switches" says how
+     *  many its build had (build 18 on), a build-17 record names its seven in "changes", so an older session is
+     *  not shown with a switch off that it never had. Null before build 17. */
     static String garageLine(JSONObject garage) {
         if (garage == null || !garage.has("features")) return null;
-        int mask = garage.optInt("features") & ((1 << GARAGE_NAMES.length) - 1);
+        int mask = garage.optInt("features");
         JSONObject changes = garage.optJSONObject("changes");
+        int known = garage.has("switches") ? garage.optInt("switches")
+                : changes != null && changes.length() > 0 ? changes.length() : GARAGE_NAMES.length;
+        known = Math.max(0, Math.min(known, GARAGE_NAMES.length));
         StringBuilder on = new StringBuilder(), off = new StringBuilder(), changed = new StringBuilder();
-        for (int i = 0; i < GARAGE_NAMES.length; i++) {
-            StringBuilder list = (mask & (1 << i)) != 0 ? on : off;
+        int onCount = 0;
+        for (int i = 0; i < known; i++) {
+            boolean enabled = (mask & (1 << i)) != 0;
+            if (enabled) onCount++;
+            StringBuilder list = enabled ? on : off;
             if (list.length() > 0) list.append(", ");
             list.append(GARAGE_NAMES[i][1]);
             long count = changes == null ? 0 : changes.optLong(GARAGE_NAMES[i][0]);
             if (count > 0) changed.append(changed.length() > 0 ? ", " : "").append(GARAGE_NAMES[i][1]).append(' ').append(count);
         }
         StringBuilder line = new StringBuilder("  Garage: ");
-        if (off.length() == 0) line.append("all ").append(GARAGE_NAMES.length).append(" on");
+        if (off.length() == 0) line.append("all ").append(known).append(" on");
         else if (on.length() == 0) line.append("all off");
         else line.append("on: ").append(on).append("; off: ").append(off);
         if (garage.has("unlockByte")) line.append(garage.optInt("unlockByte") != 0 ? " (unlock byte set)" : " (unlock byte clear)");
-        if (mask != 0) line.append(changed.length() == 0 ? "; no game decision changed" : "; changed: " + changed);
+        if (onCount > 0) line.append(changed.length() == 0 ? "; no game decision changed" : "; changed: " + changed);
         long unknown = garage.optLong("unknownSites");
         if (unknown > 0) line.append(String.format(Locale.US, "; %d jumps reached with no rule", unknown));
         return line.append('\n').toString();

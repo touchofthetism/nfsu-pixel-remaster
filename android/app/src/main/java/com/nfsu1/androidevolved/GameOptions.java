@@ -233,10 +233,10 @@ final class GameOptions {
      */
     static final String GARAGE_OFF = "garage_off";
     static final String[] GARAGE_KEYS = {
-            "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes"};
+            "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints"};
     static final int[] GARAGE_TITLES = {
             R.string.garage_unlock, R.string.garage_special_vinyls, R.string.garage_vinyl_layers, R.string.garage_hood_vinyls,
-            R.string.garage_hood_decals, R.string.garage_all_decals, R.string.garage_race_brakes};
+            R.string.garage_hood_decals, R.string.garage_all_decals, R.string.garage_race_brakes, R.string.garage_more_paints};
     static final int GARAGE_ALL = (1 << GARAGE_KEYS.length) - 1;
 
     /** The enabled Garage features as the native mask. */

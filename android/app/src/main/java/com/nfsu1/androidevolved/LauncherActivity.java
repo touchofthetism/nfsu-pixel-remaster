@@ -355,7 +355,7 @@ public final class LauncherActivity extends Activity {
 
     private String garageLabel(int mask) {
         int on = GameOptions.garageCount(mask), all = GameOptions.GARAGE_KEYS.length;
-        return on == all ? getString(R.string.garage_all_on) : on == 0 ? getString(R.string.garage_all_off)
+        return on == all ? getString(R.string.garage_all_on, all) : on == 0 ? getString(R.string.garage_all_off)
                 : getString(R.string.garage_some_on, on, all);
     }
 
