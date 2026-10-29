@@ -163,6 +163,9 @@ void realMachine() {
     // The command stream's own cluster (build 16): the fastest besides the render thread's (ties: the higher cpus).
     const std::vector<int> streamHome = n >= 4 ? range(2, big - 1) : n == 3 ? std::vector<int>{1} : std::vector<int>{0};
     const std::vector<int> streamAway = n >= 4 ? std::vector<int>{1} : home.cpus;   // the X4-like core when it is the only other
+    // Back home: with two or three cpus the stream left the big core at once; with four or more it stays on cpu 1,
+    // as fast as the other mid cluster (it moves for 20 % more, not for a tie).
+    const std::vector<int> streamBack = n >= 4 ? streamAway : streamHome;
 
     // The clusters as the kernel describes them.
     {
@@ -219,7 +222,8 @@ void realMachine() {
         writeCap(home, home.maxKhz);
         int checks = checksUntil(render.tid(), home.cpus, 20);
         require(checks >= 5, "home after " + std::to_string(checks) + " checks");
-        require(affinity(submit.tid()) == helpersHome && affinity(dxvk.tid()) == streamHome, "DXVK back: " + list(affinity(submit.tid())));
+        require(affinity(submit.tid()) == helpersHome, "DXVK back: " + list(affinity(submit.tid())));
+        require(affinity(dxvk.tid()) == streamBack, "the command stream on " + list(streamBack) + ": " + list(affinity(dxvk.tid())));
         json = host_perf::statusJson(true);
         require(has(json, "\"coreMoves\":2") && has(json, "\"renderCpus\":\"" + homeList + "\""), json);
         host_perf::release();
