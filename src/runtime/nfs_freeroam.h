@@ -57,6 +57,9 @@ extern "C" {
  * Free Run's list (race type 3, read from the game in its track list) shows the circuits, which have 0x71. */
 #define NFS_TRACK_MODE_FREE_RUN   0x10u
 #define NFS_TRACK_MODE_DRIFT      0x08u     /* SELECT LOCATION offers no reversed entry for a record with it */
+/* +0x7C/+0x80: the track's best lap, forward and reversed (float ms): the stock default until the profile's own
+ * replaces it, shown by SELECT LOCATION as Best Time (0x4BADAA). A free roam track has no laps: 0, "0:00.00". */
+#define NFS_TRACK_LAP_TIMES       0x7Cu
 
 #define NFS_TRACKINFO_LOADED      0x0044206Eu   /* hook: 0x442040 set the table and count */
 #define NFS_TRACKINFO_TABLE       0x00736168u
@@ -113,8 +116,8 @@ typedef struct {
 static inline uint32_t nfs_freeroam_icon_hash(unsigned number);
 
 /* A free roam record from its base: name (+0x00, +0xDC), directory (+0x20), region (+0x40, +0x48), number
- * (+0x6C, +0x6E), Free Run only (+0x74), the map's placement (+0x8C..+0x98). The rest is the base's, as in
- * Beta 2.0's records. */
+ * (+0x6C, +0x6E), Free Run only (+0x74), no lap times (+0x7C/+0x80, below), the map's placement (+0x8C..+0x98).
+ * The rest is the base's, as in Beta 2.0's records. */
 static inline void nfs_freeroam_record(uint8_t* out, const uint8_t* base, const nfs_freeroam_track* t) {
     char directory[32];
     unsigned n = t->number, i, digits = 0;
@@ -131,6 +134,7 @@ static inline void nfs_freeroam_record(uint8_t* out, const uint8_t* base, const 
     out[0x6C] = (uint8_t)(t->number & 0xFF); out[0x6D] = (uint8_t)(t->number >> 8);
     out[0x6E] = out[0x6C]; out[0x6F] = out[0x6D];
     out[0x74] = (uint8_t)NFS_TRACK_MODE_FREE_RUN; out[0x75] = out[0x76] = out[0x77] = 0;
+    memset(out + NFS_TRACK_LAP_TIMES, 0, 8);
     if (t->map_width > 0) {
         memcpy(out + 0x8C, &t->map_x, 4); memcpy(out + 0x90, &t->map_y, 4); memcpy(out + 0x94, &t->map_width, 4);
         out[0x98] = out[0x99] = 0;   /* no rotation */

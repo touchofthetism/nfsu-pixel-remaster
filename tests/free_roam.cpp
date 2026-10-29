@@ -67,7 +67,8 @@ static void stockRecord(uint8_t* r, unsigned number, const char* name, const cha
     for (unsigned i = 0; i < NFS_TRACK_RECORD_BYTES; ++i) r[i] = uint8_t(number * 7 + i);
     std::memset(r, 0, 0x20); std::memcpy(r, name, std::strlen(name));
     std::memset(r + 0x40, 0, 8); std::memcpy(r + 0x40, region, std::strlen(region));
-    r[0x68] = 1; r[0x69] = 0; r[0x6A] = 2; r[0x6B] = 0;   /* valid, a loop, offered reversed too (a circuit's) */
+    r[0x68] = 1; r[0x69] = 0; r[0x6A] = 2; r[0x6B] = 0;   /* as the stock races have them */
+    const float laps[2] = {71600.0f, 78380.0f}; std::memcpy(r + 0x7C, laps, 8);   /* 1001's default best laps (ms) */
     r[0x6C] = uint8_t(number); r[0x6D] = uint8_t(number >> 8);
     r[0x6E] = r[0x6C]; r[0x6F] = r[0x6D];
     const uint32_t modes = 0x71; std::memcpy(r + 0x74, &modes, 4);
@@ -86,11 +87,15 @@ static void testRecord() {
     uint32_t modes; std::memcpy(&modes, out + 0x74, 4);
     require(modes == NFS_TRACK_MODE_FREE_RUN && modes == 0x10, "record: offered in Free Run (race type 3, bit 0x10) only");
     require(out[0x6A] == 2 && out[0x68] == 1, "record: the base's other fields kept, as in Beta 2.0's records");
+    float lapForward = 1, lapReverse = 1;
+    std::memcpy(&lapForward, out + 0x7C, 4); std::memcpy(&lapReverse, out + 0x80, 4);
+    require(lapForward == 0 && lapReverse == 0, "record: no lap times (SELECT LOCATION shows the base race's otherwise)");
     require(out[0x68] == base[0x68] && out[0x69] == base[0x69], "record: valid and looping as the base");
     float place[3]; std::memcpy(place, out + 0x8C, 12);
     require(place[0] == 100.0f && place[1] == 900.0f && place[2] == 3000.0f && out[0x98] == 0 && out[0x99] == 0, "record: the made map's placement, no rotation");
     require(std::string(reinterpret_cast<char*>(out + 0xDC)) == "Olympic City", "record: the second name");
-    for (unsigned i = 0x78; i < 0x8C; ++i) require(out[i] == base[i], "record: the base's lengths, times and scores kept");
+    for (unsigned i = 0x78; i < 0x8C; ++i)
+        if (i < 0x7C || i >= 0x84) require(out[i] == base[i], "record: the base's other lengths and scores kept");
     for (unsigned i = 0x9A; i < 0xDC; ++i) require(out[i] == base[i], "record: the base's camera, difficulty and traffic kept");
     nfs_freeroam_record(out, base, &kTracks[1]);   // width 0: the base's map placement stays
     std::memcpy(place, out + 0x8C, 12);
