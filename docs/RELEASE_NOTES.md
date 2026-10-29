@@ -27,7 +27,7 @@ Install the APK over build 14; nothing else changes (mod packs, saves and option
   - if the game thread is dropped anyway, it is followed again from its own next frame, and moves go on.
   The summary counts drops and re‑follows on its *Threads* line.
 - **Checked on the build machine:**
-  - The sound output against a simulated AAudio: build 14's case (taken back in the background), disconnects reported and unreported, failed pauses, starts and opens, the waits, devices that drop every stream, and reports arriving from streams already closed. Every rule is checked by mutation: tests fail when it is removed.
+  - The sound output against a simulated AAudio: build 14's case (taken back in the background), disconnects reported and unreported, failed pauses, starts and opens, the waits, devices that drop every stream, and reports arriving from streams already closed. 13 of its rules were each taken out in turn, and the tests failed every time.
   - The whole sound device on a simulated AAudio with its own callback threads, under ThreadSanitizer and AddressSanitizer: the replacements, a resume that doesn't wait for a slow open, figures that don't wait either, the stand‑in mixing in real time, buffer growth after underruns, and a clean stop.
   - The frame pacer: work varying 6–14 ms under a 60 cap gives frames exactly 16.67 ms apart, where build 14's order varied by 12 ms or more.
   - The placement: the X4's per‑clock factor against the phone's own kernel figures, build 14's moves of 18:07 and 18:08 no longer made, the deep‑cap moves still made, a game thread renamed or lost and followed again end to end, and the hint targets.
