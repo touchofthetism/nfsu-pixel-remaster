@@ -94,29 +94,29 @@ public class GameOptionsTest {
     }
 
     @Test public void garageFeaturesAreStoredAsThoseTurnedOff() {
-        // Build 17: seven switches, build 18 more paints; the bits of the native NFS_GARAGE_* mask in the same order
-        // (tests/garage.cpp checks the native side's keys against the same list).
+        // Build 17: seven switches, build 18 more paints and every rim size; the bits of the native NFS_GARAGE_* mask
+        // in the same order (tests/garage.cpp checks the native side's keys against the same list).
         assertArrayEquals(new String[] {"unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes",
-                "morePaints"}, GameOptions.GARAGE_KEYS);
+                "morePaints", "allRimSizes"}, GameOptions.GARAGE_KEYS);
         assertEquals(GameOptions.GARAGE_KEYS.length, GameOptions.GARAGE_TITLES.length);
-        assertEquals(0xFF, GameOptions.GARAGE_ALL);
+        assertEquals(0x1FF, GameOptions.GARAGE_ALL);
         // Never chosen, or nothing turned off: all on.
-        assertEquals(0xFF, GameOptions.garageMask(null));
-        assertEquals(0xFF, GameOptions.garageMask(""));
-        assertEquals("", GameOptions.garageOffValue(0xFF));
+        assertEquals(0x1FF, GameOptions.garageMask(null));
+        assertEquals(0x1FF, GameOptions.garageMask(""));
+        assertEquals("", GameOptions.garageOffValue(0x1FF));
         // Turned off: that bit clear; a key no build knows (or a later build's feature this one lacks) is ignored.
-        assertEquals(0xFF & ~(1 << 6), GameOptions.garageMask("raceBrakes"));
-        assertEquals(0xFF & ~1 & ~(1 << 3), GameOptions.garageMask("unlock, hoodVinyls"));
-        assertEquals(0xFF & ~(1 << 2), GameOptions.garageMask("vinylLayers,rimSizes"));
-        assertEquals("unlock,hoodVinyls", GameOptions.garageOffValue(0xFF & ~1 & ~(1 << 3)));
-        // What build 17 stored for "race brakes off" turns build 18's new switch on, as for everyone.
-        assertEquals(0xFF & ~(1 << 6), GameOptions.garageMask("raceBrakes"));
-        assertEquals(0x80, GameOptions.garageMask("unlock,specialVinyls,vinylLayers,hoodVinyls,hoodDecals,allDecals,raceBrakes"));
+        assertEquals(0x1FF & ~(1 << 6), GameOptions.garageMask("raceBrakes"));
+        assertEquals(0x1FF & ~1 & ~(1 << 3), GameOptions.garageMask("unlock, hoodVinyls"));
+        assertEquals(0x1FF & ~(1 << 2), GameOptions.garageMask("vinylLayers,laterSwitch"));
+        assertEquals(0x1FF & ~(1 << 8), GameOptions.garageMask("allRimSizes"));
+        assertEquals("unlock,hoodVinyls", GameOptions.garageOffValue(0x1FF & ~1 & ~(1 << 3)));
+        // What build 17 stored for "everything off" leaves build 18's two new switches on, as for everyone.
+        assertEquals(0x180, GameOptions.garageMask("unlock,specialVinyls,vinylLayers,hoodVinyls,hoodDecals,allDecals,raceBrakes"));
         // Every mask survives the round trip, all off included.
-        for (int mask = 0; mask <= 0xFF; mask++) assertEquals(mask, GameOptions.garageMask(GameOptions.garageOffValue(mask)));
+        for (int mask = 0; mask <= 0x1FF; mask++) assertEquals(mask, GameOptions.garageMask(GameOptions.garageOffValue(mask)));
         assertEquals(String.join(",", GameOptions.GARAGE_KEYS), GameOptions.garageOffValue(0));
         assertEquals(3, GameOptions.garageCount(0b1010100));
-        assertEquals(8, GameOptions.garageCount(-1));
+        assertEquals(9, GameOptions.garageCount(-1));
     }
 
     @Test public void effectStatesAreTheHostsByDefault() {

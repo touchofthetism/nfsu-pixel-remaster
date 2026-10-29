@@ -7,6 +7,32 @@
 
 ## What's new
 
+### Build 18 — every rim size on every car, and more paint types
+Install the APK over build 17; nothing else changes (mod packs, saves and options stay). The Garage gains two switches, both on.
+- **Every rim size.** In the game a car's tyre size is fixed (23 to 26 inches across), and the rim shop offers each rim style in one inner size: the one the style's tier gives your car (tier 1 the smallest). Of the 24 pairs of inner size (15–20″) and tyre size the game has 12, so a style comes in at most three sizes on any car. Now every style comes in all six, 15″ to 20″, on your car's own tyre: a 15″ rim gets a thick sidewall, a 20″ one a thin band.
+  - *In the shop:* each style keeps its one picture; moving right steps through its sizes, smallest first, before the next style. The panel shows the size, and the car in the shop wears each one as you go. The shop opens on the rim your car has, and *installed* marks that exact size only.
+  - *The missing sizes are made from the game's own wheels,* on the phone, the first time you press PLAY with the switch on: 1,476 wheel models (492 rims, each in three detail levels), about 42 MB in the app's own storage, made once and kept (the log says how long it took). Each comes from the same rim in its nearest tyre size: the rim itself is untouched, the tyre is stretched between its bead and the new tread, and the dark disc behind the wheel scales with the tyre. Measured against the sizes the game does have, this puts the tread exactly where the game's own are. They wear the same textures and paints as the rim they come from.
+  - *How the game gets them.* The wheels file is one the game streams: it reads a list of models at boot and loads each model when a car wears it. The remaster serves the game, in place of `Cars/WHEELS/GEOMETRY.BIN`, the same file with the new models in that list. The new rims' entries go in the file's resident part, which the game loads at boot as it does each car's, so the game links them as a second parts list next to its own.
+  - The game's own part search was written for one list, so it never looks past the first. It now runs in the remaster (a fast path, as build 17's effect states), and goes on into the second list:
+    - always, for a part asked for by name: a saved rim is found wherever it is;
+    - for the lists the shop steps through, only with the switch on.
+  - With one list it answers exactly as the game's own does, record for record (checked against a line‑by‑line transcription of the game's code on random lists).
+  - The shop's two tests (the tier's size, and one entry per style) are off while the switch is on: six jumps in the shop's code, the ones ARCHIE's *AllRimSizes* removes. His mod also removes the tyre‑size test, so a car can wear any of the twelve pairs, tyres that don't fit it included; here that test stays and each car gets all six inner sizes on its own tyre.
+  - The shop's screen has 20 picture slots and ENKEI alone has 10 styles, 60 sizes on a car: a style's later sizes share its first picture, so every brand still fits.
+  - *Your save.* A rim you fit is saved as the game saves any part, by name. If you turn the switch off later while a save wears one of the added sizes, the game still gets the new wheels file (the log says so), so the car loads with its rim. Otherwise, with the switch off, the game's own file is used, untouched.
+- **More paint types.** The paint shop offers the body and the spoiler also in the rim, caliper and exhaust paints, and the rims and exhaust tips also in gloss, metallic and pearl (ARCHIE's *ShowMoreColors*). The game builds the list of paint types for each part when the menu opens; the remaster adds the ones his lists have and the game's lacks, with list entries from the game's own memory, so the game frees them as its own.
+- **Checked on the build machine:**
+  - the generator on a wheel file and parts list built in the test, with no game data: every missing size made, the layout the game's streamer reads, the game's models carried over byte for byte, each new model's rim, bead, sidewall, tread and disc, the parts list, refusals of other files (`tests/rim_sizes.cpp`);
+  - on the real game files, by a separate checker: all 1,476 of the game's models identical, the new ones' tread on the inch (0.0000 mm off), no rim vertex moved, the parts list as the game's records are;
+  - the part search against the game's own on 300 random sets of lists, 60,000 searches; the shop's list sorted and its picture sharing; JDLZ (the game's compression) against the game's own GlobalB;
+  - the tests were tried against 24 deliberate faults in the new code, and every one made them fail;
+  - every new jump, hook and fast path found in the recompiled code; the Android compiler on the host code; 62 JUnit tests.
+- **What to try:**
+  - the rim shop with a car you know, browsing a brand's sizes, and a 15″ and a 20″ fitted, then a race;
+  - the paint shop: the rims in pearl, the body in a rim paint;
+  - then share diagnostics: the summary's new *Rim sizes* line says the pack was served and what the shop did with it.
+- **Settings for build 18:** as for build 17, the Garage all on.
+
 ### Build 17 — the Garage, and the effects' states applied by the remaster
 Install the APK over build 16; nothing else changes (mod packs, saves and options stay). Built from the 01:34 diagnostics: one build‑16 session (01:18, 15 minutes at the 60 cap and full resolution), no crash.
 - **The Garage: seven customization switches from the PC mods, rebuilt into the game's code.** A new *Garage* row sits above the options, all seven on; tap it to turn any off (*About* says where each comes from). A change takes effect at the next PLAY, and none of them writes your save.

@@ -226,17 +226,21 @@ final class GameOptions {
     /**
      * Garage: customization freedoms, each a bit of the native NFS_GARAGE_* mask (src/runtime/nfs_garage.h, same
      * order). All on by default. None of them writes the save: Unlock everything is the game's own switch, set
-     * in memory for the session; the parts installed with it are saved like any other.
+     * in memory for the session; the parts installed with it are saved like any other. A rim size the game lacks
+     * (allRimSizes) is saved by its part hash like the others; the game keeps getting it while a save wears one,
+     * with the switch off too.
      *
      * The preference lists the features turned off, not those on, so a feature a later build adds starts on for
      * everyone, as all of them do on a first launch, and a feature turned off stays off.
      */
     static final String GARAGE_OFF = "garage_off";
     static final String[] GARAGE_KEYS = {
-            "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints"};
+            "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints",
+            "allRimSizes"};
     static final int[] GARAGE_TITLES = {
             R.string.garage_unlock, R.string.garage_special_vinyls, R.string.garage_vinyl_layers, R.string.garage_hood_vinyls,
-            R.string.garage_hood_decals, R.string.garage_all_decals, R.string.garage_race_brakes, R.string.garage_more_paints};
+            R.string.garage_hood_decals, R.string.garage_all_decals, R.string.garage_race_brakes, R.string.garage_more_paints,
+            R.string.garage_all_rim_sizes};
     static final int GARAGE_ALL = (1 << GARAGE_KEYS.length) - 1;
 
     /** The enabled Garage features as the native mask. */

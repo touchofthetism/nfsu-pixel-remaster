@@ -1,6 +1,8 @@
 // The Garage decisions (src/runtime/nfs_garage.h): the branch override table against config/branches.txt and
-// config/hooks.txt, each feature's forced outcomes, and the two register results the hooks leave.
+// config/hooks.txt, each feature's forced outcomes, and the two register results the hooks leave. The rim
+// sizes' own logic is in tests/rim_sizes.cpp; here its sites against the lists the lifter reads.
 #include "../src/runtime/nfs_garage.h"
+#include "../src/runtime/nfs_rims.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,7 +34,7 @@ static std::set<uint32_t> configList(const char* name) {
 int main() {
     // The table: sorted, unique, one known feature each, so the binary search and the counters hold.
     const unsigned count = NFS_BRANCH_OVERRIDE_COUNT;
-    require(count == 20, "twenty overridden jumps");
+    require(count == 26, "twenty-six overridden jumps");
     std::set<uint32_t> table;
     for (unsigned i = 0; i < count; ++i) {
         const nfs_branch_override& site = k_nfs_branch_overrides[i];
@@ -41,6 +43,7 @@ int main() {
                 "one feature bit each");
         require(site.feature != NFS_GARAGE_UNLOCK_ALL && site.feature != NFS_GARAGE_SPECIAL_VINYLS && site.feature != NFS_GARAGE_RACE_BRAKES &&
                 site.feature != NFS_GARAGE_MORE_PAINTS, "unlock everything is a byte, special vinyls, race brakes and more paints are hooks");
+        require(site.va < 0x0050D000u || site.va >= 0x0050E000u || site.feature == NFS_GARAGE_ALL_RIM_SIZES, "the rim browser's jumps are every rim size's");
         require(site.take == 0 || site.take == 1, "a jump is forced one way");
         require(site.va >= 0x00401000u && site.va < 0x00690000u, "inside Speed.exe's code");
         require(nfs_branch_override_index(site.va) == int(i), "found by its VA");
@@ -52,6 +55,11 @@ int main() {
     std::set<uint32_t> hooks = configList("hooks.txt");
     require(hooks.count(NFS_GARAGE_HOOK_HIDDEN_VINYL) && hooks.count(NFS_GARAGE_HOOK_BRAKE_LOD) && hooks.count(NFS_GARAGE_HOOK_PAINT_TYPES),
             "the three hooks are in config/hooks.txt");
+    require(hooks.count(NFS_RIM_HOOK_LIST_BUILT) && hooks.count(NFS_RIM_HOOK_NEW_ITEM) && hooks.count(NFS_RIM_HOOK_INSTALLED),
+            "the rim browser's three hooks are in config/hooks.txt");
+    std::set<uint32_t> fastpaths = configList("fastpaths.txt");
+    require(fastpaths.count(NFS_PARTS_LOOKUP) && fastpaths.count(NFS_BROWSER_ADD_ITEM), "the parts lookup and the browser's add are fast paths");
+    for (uint32_t va : fastpaths) require(!hooks.count(va) && !table.count(va), "a fast path is a function, not a hook or a jump");
     for (uint32_t va : table) require(!hooks.count(va), "no site is both a hook and a branch");
 
     // Off, every jump keeps its lifted outcome; on, the feature's jumps take the table's way, the others not.
@@ -84,6 +92,9 @@ int main() {
                 {0x00508B86u, 1}, {0x00508F52u, 1}, {0x005104FEu, 1}, {0x0057EAF6u, 0}, {0x0057EB16u, 0}, {0x0057EBA6u, 0}},
             "hood decals: no question, no removal, the decal menu open, EXCLUDEDECAL never found");
     require(forced(NFS_GARAGE_ALL_DECALS) == std::set<std::pair<uint32_t, int>>{{0x0051222Au, 1}}, "all decals: one jump");
+    require(forced(NFS_GARAGE_ALL_RIM_SIZES) == std::set<std::pair<uint32_t, int>>{
+                {0x0050D7E1u, 0}, {0x0050D877u, 0}, {0x0050D8C8u, 0}, {0x0050D977u, 0}, {0x0050D9ECu, 0}, {0x0050DA46u, 0}},
+            "every rim size: the rim browser keeps every inner size and each size of a style (ARCHIE's AllRimSizes sites, not the tyre's)");
 
     // Hooks: special vinyls clear al (the hidden test's answer), race brakes clear cl (the LOD set); the rest stays.
     require(nfs_garage_hidden_vinyl_eax(NFS_GARAGE_SPECIAL_VINYLS, 0x12345601u) == 0x12345600u, "special vinyls: not hidden");
@@ -164,9 +175,10 @@ int main() {
             "the hook before the count, the game's malloc, its node size");
 
     // The bits match the launcher (GameOptions.GARAGE_KEYS, same order) and the telemetry keys.
-    const char* keys[] = {"unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints"};
+    const char* keys[] = {"unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints",
+                          "allRimSizes"};
     require(sizeof keys / sizeof keys[0] == NFS_GARAGE_FEATURE_COUNT && NFS_GARAGE_ALL == (1u << NFS_GARAGE_FEATURE_COUNT) - 1,
-            "eight features, all bits");
+            "nine features, all bits");
     for (unsigned i = 0; i < NFS_GARAGE_FEATURE_COUNT; ++i) {
         require(std::strcmp(nfs_garage_feature_key(i), keys[i]) == 0, "telemetry key in launcher order");
         require(std::strlen(nfs_garage_feature_name(i)) > 8, "a readable name for the log");

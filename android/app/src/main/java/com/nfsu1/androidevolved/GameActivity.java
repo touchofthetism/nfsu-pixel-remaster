@@ -23,6 +23,7 @@ import android.text.InputFilter;
 import android.text.InputType;
 import android.view.inputmethod.EditorInfo;
 import android.util.DisplayMetrics;
+import java.io.File;
 
 /** Storage permission gateway for the fixed Internal storage/nfsu1 directory. */
 public final class GameActivity extends NativeActivity {
@@ -167,6 +168,8 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeWrongWayWarning(boolean enabled);
     private static native void nativeHdReflections(boolean enabled);
     private static native void nativeGarage(int features);
+    /** The app's folder for data made from the game's files (every rim size's wheel pack), outside the game folder. */
+    private static native void nativeGeneratedDir(String directory);
     private static native void nativeEffectStates(boolean host);
     private static native void nativeCpuPlacement(int placement);
     private static native void nativeReadHandover(boolean overlapped);
@@ -263,6 +266,7 @@ public final class GameActivity extends NativeActivity {
         nativeWrongWayWarning(launch.getBooleanExtra("wrongWay", GameOptions.get(this, GameOptions.WRONGWAY).equals("on")));
         nativeHdReflections(launch.getBooleanExtra("hdReflections", GameOptions.get(this, GameOptions.REFLECTIONS).equals("sharp")));
         nativeGarage(launch.getIntExtra("garage", GameOptions.garage(this)));
+        nativeGeneratedDir(new File(getFilesDir(), "generated").getAbsolutePath());
         nativeEffectStates(launch.getBooleanExtra("effectStates", GameOptions.get(this, GameOptions.EFFECTS).equals("native")));
         String server = launch.getStringExtra("onlineServer");
         nativeOnlineServer(GameOptions.validServer(server) ? server : GameOptions.onlineServer(this));

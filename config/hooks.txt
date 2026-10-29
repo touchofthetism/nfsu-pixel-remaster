@@ -80,3 +80,7 @@
 0x004E27D8  hidden-vinyl test 0x4E2680 after its `mov al, 1`: special vinyls on -> al = 0, the vinyl is listed (Extra Options)
 0x005702F8  car renderer's brake LOD choice after `sete cl`: race brakes on -> cl = 0, the full-detail set (ARCHIE's Extended Customization)
 0x004D7D74  paint type list 0x4D7B70 complete, before its count: more paints on -> the paint types ARCHIE's ShowMoreColors offers appended
+# Every rim size (src/runtime/nfs_rims.h): the rim browser 0x50D420 (MU_GarageRimsBrowser.fng).
+0x0050DB35  rim browser built, its entry to open on picked (edx = this): every rim size on -> entries by style, smallest size first; opens on the car's own rim
+0x0050DDBB  rim browser entry 0x50DD40 at its call 0x4F8730 (the entry's thumbnail; ebx = items, ecx = style): every rim size on -> a style's later sizes share the first one's
+0x0050E046  rim browser info 0x50DF60 after `sete bl` (the selected style is the car's): every rim size on -> bl = the selected rim is the car's

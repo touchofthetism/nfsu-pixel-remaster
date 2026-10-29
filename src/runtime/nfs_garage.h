@@ -18,7 +18,10 @@
  *     entry's state.
  *   ARCHIE's NFSU Extended Customization 1.2 (scripts/NFSU_ExtendedCustomization.asi;
  *     no source published, the patch sites read from its code): Vinyls and Decals
- *     on custom hoods, Unlock all decals, Restore brake LOD in race.
+ *     on custom hoods, Unlock all decals, Restore brake LOD in race, Show more colors,
+ *     and the rim browser sites of All rim sizes (which lists all twelve sizes of a
+ *     style whatever the car's tyre; here the tyre stays the car's and the sizes it
+ *     lacks are generated, nfs_rims.h).
  * Every site was checked against the lifted catalog: a conditional jump that is
  * the first, or only, consumer of the flags its patch relied on.
  *
@@ -40,20 +43,22 @@ extern "C" {
 #define NFS_GARAGE_ALL_DECALS       (1u << 5)  /* every decal unlocked */
 #define NFS_GARAGE_RACE_BRAKES      (1u << 6)  /* brakes keep their full detail in races */
 #define NFS_GARAGE_MORE_PAINTS      (1u << 7)  /* body, spoiler, rims and exhaust tips in more paint types */
-#define NFS_GARAGE_ALL              0xFFu
-#define NFS_GARAGE_FEATURE_COUNT    8u
+#define NFS_GARAGE_ALL_RIM_SIZES    (1u << 8)  /* every rim style in every inner size on the car's tyre size (nfs_rims.h) */
+#define NFS_GARAGE_ALL              0x1FFu
+#define NFS_GARAGE_FEATURE_COUNT    9u
 
 /* Short names (telemetry keys, the Java side's GameOptions.GARAGE_KEYS) and log wording, by bit index. */
 static inline const char* nfs_garage_feature_key(unsigned index) {
     static const char* const keys[NFS_GARAGE_FEATURE_COUNT] = {
-        "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints"};
+        "unlock", "specialVinyls", "vinylLayers", "hoodVinyls", "hoodDecals", "allDecals", "raceBrakes", "morePaints",
+        "allRimSizes"};
     return index < NFS_GARAGE_FEATURE_COUNT ? keys[index] : "?";
 }
 static inline const char* nfs_garage_feature_name(unsigned index) {
     static const char* const names[NFS_GARAGE_FEATURE_COUNT] = {
         "everything unlocked", "special vinyls listed", "special vinyls with other layers",
         "vinyls on custom hoods", "decals on custom hoods", "every decal unlocked", "full-detail brakes in races",
-        "more paint types"};
+        "more paint types", "every rim size"};
     return index < NFS_GARAGE_FEATURE_COUNT ? names[index] : "?";
 }
 
@@ -173,6 +178,18 @@ static const nfs_branch_override k_nfs_branch_overrides[] = {
      * true) and, confirmed (message F0AADEBBh, slot 8), removes them (call 0x508910). */
     {0x00508B86u, NFS_GARAGE_HOOD_DECALS, 1},   /* je over the dialog, as if no decal were on */
     {0x00508F52u, NFS_GARAGE_HOOD_DECALS, 1},   /* jne over the removal call */
+    /* Every rim size (nfs_rims.h; ARCHIE's AllRimSizes nops the same tests): the rim browser 0x50D420 keeps an
+     * entry whose INNER_RADIUS is the size the style's tier gives the car ([ebp-20h], 0x50D7E1 for the small
+     * brands, 0x50D977 for one brand) or, with [0x6F88A8] clear, the car's present size ([ebp-2Ch]: 0x50D877,
+     * 0x50D9EC); not jumping keeps every size. It also drops an entry whose TEXTURE_NAME (the style) is listed
+     * already (0x50D8C8, 0x50DA46); not jumping keeps each size of a style. The OUTER_RADIUS tests stay: a
+     * car's tyre is its own. */
+    {0x0050D7E1u, NFS_GARAGE_ALL_RIM_SIZES, 0},
+    {0x0050D877u, NFS_GARAGE_ALL_RIM_SIZES, 0},
+    {0x0050D8C8u, NFS_GARAGE_ALL_RIM_SIZES, 0},
+    {0x0050D977u, NFS_GARAGE_ALL_RIM_SIZES, 0},
+    {0x0050D9ECu, NFS_GARAGE_ALL_RIM_SIZES, 0},
+    {0x0050DA46u, NFS_GARAGE_ALL_RIM_SIZES, 0},
     /* ... the decal menu 0x5101F0 refuses a non-STOCK hood (ARCHIE: cmp eax, eax at 0x5104FC). */
     {0x005104FEu, NFS_GARAGE_HOOD_DECALS, 1},
     /* All decals (ARCHIE UnlockAllDecals, mov eax, 1 at 0x512223): the decal lock test 0x511FF0 calls the
@@ -217,6 +234,20 @@ static inline uint32_t nfs_garage_brake_lod_ecx(uint32_t features, uint32_t ecx)
 
 /* Before the guest boots (the launcher's switches). */
 void nfs_garage_configure(uint32_t features);
+/* Whether the host serves the generated rim sizes (rim_sizes.h): their parts are then in a second database,
+ * which the parts lookup reaches through nfs_garage_parts_lookup_fast. Before boot. */
+void nfs_garage_set_rim_sizes_served(int served);
+int nfs_garage_rim_sizes_served(void);
+/* Fast paths (nfs_fastpath_register, Android): the parts lookup 0x57CE10 across databases (registered while
+ * the rim sizes are served), and the rim browser's thumbnail sharing at 0x4F8730 (with every rim size on). */
+int nfs_garage_parts_lookup_fast(void);
+int nfs_garage_browser_item_fast(void);
+/* Every rim size, for the session log: lookups the host answered, records found past the first database,
+ * thumbnails shared, browser lists put in size order, and browsers opened on the car's own rim. */
+typedef struct nfs_rim_stats {
+    uint64_t lookups, later, shared, sorted, opened;
+} nfs_rim_stats;
+nfs_rim_stats nfs_garage_rim_stats(void);
 uint32_t nfs_garage_features(void);
 /* Once, after the image is mapped and before the game's entry point runs. */
 void nfs_garage_boot(void);

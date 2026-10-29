@@ -433,6 +433,8 @@ final class SessionSummary {
         }
         String garage = garageLine(nat == null ? null : nat.optJSONObject("garage"));
         if (garage != null) out.append(garage);
+        String rims = rimSizesLine(nat == null ? null : nat.optJSONObject("rimSizes"));
+        if (rims != null) out.append(rims);
         String effects = effectStatesLine(nat == null ? null : nat.optJSONObject("effectStates"), frames == null ? 0 : frames.optLong("frames"));
         if (effects != null) out.append(effects);
         JSONArray events = record.optJSONArray("events");
@@ -453,7 +455,7 @@ final class SessionSummary {
     private static final String[][] GARAGE_NAMES = {
             {"unlock", "unlock everything"}, {"specialVinyls", "special vinyls"}, {"vinylLayers", "free vinyl layers"},
             {"hoodVinyls", "hood vinyls"}, {"hoodDecals", "hood decals"}, {"allDecals", "all decals"}, {"raceBrakes", "race brakes"},
-            {"morePaints", "more paints"}};
+            {"morePaints", "more paints"}, {"allRimSizes", "every rim size"}};
 
     /** Build 17: the Garage switches (native "garage": the NFS_GARAGE_* mask, per feature the decisions of the game it
      *  changed, and the game's unlock-everything byte), e.g. "  Garage: all 8 on (unlock byte set); changed: special
@@ -487,6 +489,32 @@ final class SessionSummary {
         if (onCount > 0) line.append(changed.length() == 0 ? "; no game decision changed" : "; changed: " + changed);
         long unknown = garage.optLong("unknownSites");
         if (unknown > 0) line.append(String.format(Locale.US, "; %d jumps reached with no rule", unknown));
+        return line.append('\n').toString();
+    }
+
+    /** Build 18: every rim size (native "rimSizes": rim_sizes.h makes the wheel pack, nfs_rims.h is the game side):
+     *  the pack served and why, made at this boot or made earlier and checked, then what the game side did with it:
+     *  the parts lookups the host answered and how many found an added size, and in the rim browser the thumbnails a
+     *  style's sizes shared, the lists put in size order and the browsers opened on the car's own rim, e.g. "  Rim
+     *  sizes: 492 added, made earlier, checked in 3 ms; parts lookups by the host 12,345 (37 found an added size); rim
+     *  browser: 120 thumbnails shared, 6 lists in size order, 4 opened on the car's rim". Null when the switch was off
+     *  and nothing was served, and before build 18. */
+    static String rimSizesLine(JSONObject rims) {
+        if (rims == null || !rims.has("served")) return null;
+        boolean on = rims.optBoolean("on"), served = rims.optBoolean("served");
+        String error = rims.optString("error", "");
+        if (!served) {
+            if (!on && error.isEmpty()) return null;
+            return "  Rim sizes: the wheel pack was not served (" + (error.isEmpty() ? "no reason given" : error)
+                    + "); the rim browser offered the sizes the game has\n";
+        }
+        StringBuilder line = new StringBuilder("  Rim sizes: ");
+        if ("save".equals(rims.optString("reason"))) line.append("off, the wheel pack kept for a save that wears one of its sizes; ");
+        line.append(String.format(Locale.US, "%d added, %s in %.0f ms", rims.optInt("parts"),
+                "hit".equals(rims.optString("cache")) ? "made earlier, checked" : "made", rims.optDouble("ms")));
+        line.append(String.format(Locale.US, "; parts lookups by the host %,d (%,d found an added size)", rims.optLong("lookups"), rims.optLong("later")));
+        if (on) line.append(String.format(Locale.US, "; rim browser: %,d thumbnails shared, %,d lists in size order, %,d opened on the car's rim",
+                rims.optLong("shared"), rims.optLong("sorted"), rims.optLong("opened")));
         return line.append('\n').toString();
     }
 

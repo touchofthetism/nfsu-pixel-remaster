@@ -25,6 +25,9 @@ void setGuestWrongWayWarning(bool enabled);
 void setGuestHdReflections(bool enabled);
 // Launcher "Garage": the customization freedoms on, as NFS_GARAGE_* bits (src/runtime/nfs_garage.h). Before boot.
 void setGuestGarage(uint32_t features);
+// The app's folder for data the host makes from the game's (every rim size's wheel pack), outside the game
+// folder. Before boot.
+void setGuestGeneratedDir(const std::string& directory);
 // Launcher "Effect states": the effects' render, sampler and texture stage states applied by the host (true,
 // effect_states.h) or by the game's own D3DX code. Before boot.
 void setGuestEffectStates(bool host);

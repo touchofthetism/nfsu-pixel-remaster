@@ -293,16 +293,18 @@ public class SessionSummaryTest {
         assertEquals("  Garage: on: unlock everything, special vinyls, free vinyl layers, hood vinyls, hood decals, all decals, race brakes;"
                 + " off: more paints (unlock byte set); changed: special vinyls 17, hood vinyls 4\n", SessionSummary.garageLine(new org.json.JSONObject(
                 "{\"features\":127,\"switches\":8,\"changes\":{" + seven + ",\"morePaints\":0},\"unlockByte\":1}")));
-        // A later build's switch this one doesn't know is left out, not misnamed.
-        assertEquals("  Garage: all 8 on; no game decision changed\n",
-                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":511,\"switches\":9}")));
+        // Build 18 with every rim size; a later build's switch this one doesn't know is left out, not misnamed.
+        assertEquals("  Garage: all 9 on; changed: every rim size 40\n",
+                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":511,\"switches\":9,\"changes\":{\"allRimSizes\":40}}")));
+        assertEquals("  Garage: all 9 on; no game decision changed\n",
+                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":1023,\"switches\":10}")));
         // 66: special vinyls (bit 1) and race brakes (bit 6); nothing in the record says how many: every switch counts.
         assertEquals("  Garage: on: special vinyls, race brakes; off: unlock everything, free vinyl layers, hood vinyls, hood decals, all decals,"
-                + " more paints; no game decision changed\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":66,\"changes\":{},\"unknownSites\":0}")));
+                + " more paints, every rim size; no game decision changed\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":66,\"changes\":{},\"unknownSites\":0}")));
         assertEquals("  Garage: all off (unlock byte clear)\n", SessionSummary.garageLine(new org.json.JSONObject("{\"features\":0,\"unlockByte\":0}")));
         // A jump the lifter wrapped with no rule in the table (config/branches.txt and nfs_garage.h out of step).
-        assertEquals("  Garage: all 8 on; no game decision changed; 3 jumps reached with no rule\n",
-                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":255,\"unknownSites\":3}")));
+        assertEquals("  Garage: all 9 on; no game decision changed; 3 jumps reached with no rule\n",
+                SessionSummary.garageLine(new org.json.JSONObject("{\"features\":511,\"unknownSites\":3}")));
         assertEquals(null, SessionSummary.garageLine(null));
         assertEquals(null, SessionSummary.garageLine(new org.json.JSONObject("{}")));
 
@@ -329,6 +331,35 @@ public class SessionSummaryTest {
         assertTrue(report, report.indexOf(states) < report.indexOf("  Events:"));
         String old = SessionSummary.parse(RECORD).report;
         assertTrue(!old.contains("Garage:") && !old.contains("Effect states"));
+    }
+
+    @Test public void rimSizesAreReported() throws Exception {
+        // Build 18: the wheel pack served with every rim size on, from the app's folder, and what the game side did.
+        org.json.JSONObject on = new org.json.JSONObject("{\"on\":true,\"served\":true,\"reason\":\"on\",\"cache\":\"hit\",\"ms\":3,"
+                + "\"parts\":492,\"solids\":1476,\"bytes\":41762352,\"lookups\":12345,\"later\":37,\"shared\":120,\"sorted\":6,\"opened\":4}");
+        assertEquals("  Rim sizes: 492 added, made earlier, checked in 3 ms; parts lookups by the host 12,345 (37 found an added size);"
+                + " rim browser: 120 thumbnails shared, 6 lists in size order, 4 opened on the car's rim\n", SessionSummary.rimSizesLine(on));
+        // Made at this boot.
+        assertEquals("  Rim sizes: 492 added, made in 412 ms; parts lookups by the host 0 (0 found an added size); rim browser: 0 thumbnails"
+                + " shared, 0 lists in size order, 0 opened on the car's rim\n", SessionSummary.rimSizesLine(new org.json.JSONObject(
+                "{\"on\":true,\"served\":true,\"reason\":\"on\",\"cache\":\"built\",\"ms\":412,\"parts\":492}")));
+        // Off, kept for a save that wears an added size: no browser figures.
+        assertEquals("  Rim sizes: off, the wheel pack kept for a save that wears one of its sizes; 492 added, made earlier, checked in 2 ms;"
+                + " parts lookups by the host 900 (1 found an added size)\n", SessionSummary.rimSizesLine(new org.json.JSONObject(
+                "{\"on\":false,\"served\":true,\"reason\":\"save\",\"cache\":\"hit\",\"ms\":2,\"parts\":492,\"lookups\":900,\"later\":1}")));
+        // On but not served: why.
+        assertEquals("  Rim sizes: the wheel pack was not served (the wheel file has more than one solid list); the rim browser offered the"
+                + " sizes the game has\n", SessionSummary.rimSizesLine(new org.json.JSONObject(
+                "{\"on\":true,\"served\":false,\"cache\":\"failed\",\"error\":\"the wheel file has more than one solid list\"}")));
+        // Off and nothing served, or a record before build 18: no line.
+        assertEquals(null, SessionSummary.rimSizesLine(new org.json.JSONObject("{\"on\":false,\"served\":false,\"reason\":\"off\"}")));
+        assertEquals(null, SessionSummary.rimSizesLine(null));
+        assertEquals(null, SessionSummary.rimSizesLine(new org.json.JSONObject("{}")));
+        // In the report, right after the Garage line.
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"garage\":{\"features\":511,\"switches\":9,\"changes\":{},\"unknownSites\":0},"
+                + "\"rimSizes\":" + on + ",\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        assertTrue(report, report.contains("  Garage: all 9 on; no game decision changed\n  Rim sizes: 492 added"));
     }
 
     @Test public void overlayShowsTheRenderCores() throws Exception {

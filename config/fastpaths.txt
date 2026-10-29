@@ -3,3 +3,5 @@
 # VA        what the host takes
 0x005C97CB  D3DX effect state apply: render, texture stage and sampler states, through the bridge's shadow (android/app/src/main/cpp/effect_states.h)
 0x005CDCA7  D3DX effect state value update: the immediate S_OK for a fixed value (effect_states.h)
+0x0057CE10  parts lookup: the same search across the parts databases, the served rim sizes' among them (src/runtime/nfs_rims.h)
+0x004F8730  horizontal browser add item: none for a rim style's later sizes, which share its first one's thumbnail (nfs_rims.h)

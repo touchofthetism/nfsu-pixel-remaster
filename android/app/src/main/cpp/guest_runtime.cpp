@@ -17,8 +17,10 @@
 #include "nfs_misc_fixes.h"
 #include "nfs_reflections.h"
 #include "nfs_garage.h"
+#include "nfs_rims.h"
 #include "nfs_fastpath.h"
 #include "effect_states.h"
+#include "rim_sizes.h"
 #endif
 #include <array>
 #include <cstdio>
@@ -222,6 +224,23 @@ uint32_t guestGarage=NFS_GARAGE_ALL;
 // Launcher "Effect states": the effects' render, sampler and texture stage states applied by the host
 // (effect_states.h) or by the game's own D3DX code.
 bool guestEffectStates=true;
+// The app's folder for data the host makes from the game's (GameActivity: files/generated), outside the game
+// folder. Before boot.
+std::string generatedDataDir;
+// Game files the host serves another file for, by the path gamePath resolves them to (every rim size: the
+// wheel pack for Cars/WHEELS/GEOMETRY.BIN). Filled before the guest boots, only read afterwards.
+std::map<std::string,std::filesystem::path> servedFiles;
+// Every rim size at boot (prepareRimSizes): whether the wheel pack is served, why, and where it came from.
+struct RimSizesBoot{
+    bool on=false,served=false;
+    std::string reason="off";   // "on": the switch; "save": off, but a save wears a size only the pack has
+    std::string cache="none";   // "hit": the pack made for these game files; "built" now; "failed"
+    std::string error,save;
+    unsigned parts=0,solids=0;
+    uint64_t bytes=0;
+    double ms=0;
+};
+RimSizesBoot rimSizesBoot;
 void* ptr(uint32_t va, uint64_t bytes);
 void applyWrongWayPatch(){
     struct Patch{uint32_t va;const char* expected;};
@@ -708,6 +727,123 @@ void saveChangedOptions(){
 #include "guest_input.inc"
 #include "guest_audio.inc"
 #include "guest_network.inc"
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+// --- Every rim size: the wheel pack (rim_sizes.h makes it, nfs_rims.h is the game side) -------------------------
+bool readWholeFile(const std::filesystem::path& path,std::vector<uint8_t>& out,uint64_t limit=uint64_t(1)<<30){
+    out.clear();
+    int descriptor=::open(path.c_str(),O_RDONLY|O_CLOEXEC);if(descriptor<0)return false;
+    struct stat status{};
+    if(fstat(descriptor,&status)||status.st_size<0||uint64_t(status.st_size)>limit){::close(descriptor);return false;}
+    out.resize(size_t(status.st_size));size_t done=0;
+    while(done<out.size()){ssize_t count=::read(descriptor,out.data()+done,out.size()-done);if(count<0&&errno==EINTR)continue;if(count<=0)break;done+=size_t(count);}
+    ::close(descriptor);
+    if(done!=out.size()){out.clear();return false;}
+    return true;
+}
+// Written beside, synced, then renamed over: a reader sees the old file or the whole new one.
+bool writeFileAtomically(const std::filesystem::path& path,const void* data,size_t size){
+    auto temporary=path;temporary+=".tmp";
+    int descriptor=::open(temporary.c_str(),O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0600);if(descriptor<0)return false;
+    const uint8_t* bytes=static_cast<const uint8_t*>(data);size_t done=0;
+    while(done<size){ssize_t count=::write(descriptor,bytes+done,size-done);if(count<0&&errno==EINTR)continue;if(count<=0)break;done+=size_t(count);}
+    bool ok=done==size&&::fsync(descriptor)==0;
+    ok=::close(descriptor)==0&&ok;
+    if(!ok||::rename(temporary.c_str(),path.c_str())){::unlink(temporary.c_str());return false;}
+    return true;
+}
+// Size and modification time: what tells this game file from another.
+std::string fileStamp(const std::filesystem::path& path){
+    struct stat status{};if(::stat(path.c_str(),&status))return "missing";
+    return std::to_string(uint64_t(status.st_size))+" "+std::to_string(int64_t(status.st_mtim.tv_sec))+"."+std::to_string(long(status.st_mtim.tv_nsec));
+}
+// The saves the game wrote (the profiles folder "NFS Underground", see shellFolderPath: the game asks for the
+// all-users application data folder, which the host leaves unset, so it writes beside its own files).
+std::vector<std::filesystem::path> saveFiles(){
+    std::vector<std::filesystem::path> files;std::error_code error;
+    for(auto& entry:std::filesystem::directory_iterator(hostGameRoot,error)){
+        if(lower(entry.path().filename().string())!="nfs underground"||!entry.is_directory(error))continue;
+        for(auto& file:std::filesystem::directory_iterator(entry.path(),error))if(file.is_regular_file(error))files.push_back(file.path());
+    }
+    return files;
+}
+// Before the guest boots: with every rim size on, or off while a save wears a size only the pack has (the
+// game would find no part for it and draw the car with an empty rim slot, which 0x56A367 does not check), the
+// pack is served in place of Cars/WHEELS/GEOMETRY.BIN: from the app's own folder when it was made from these
+// game files, made now otherwise (about 80 ms of work and 42 MB written, once).
+void prepareRimSizes(){
+    rimSizesBoot=RimSizesBoot{};
+    rimSizesBoot.on=(guestGarage&NFS_GARAGE_ALL_RIM_SIZES)!=0;
+    nfs_garage_set_rim_sizes_served(0);
+    servedFiles.clear();
+    const auto start=std::chrono::steady_clock::now();
+    try{
+        const auto wheelsPath=gamePath("C:\\nfsu1\\Cars\\WHEELS\\GEOMETRY.BIN"),globalPath=gamePath("C:\\nfsu1\\Global\\GlobalB.lzc");
+        std::vector<uint8_t> wheels;
+        if(rimSizesBoot.on)rimSizesBoot.reason="on";
+        else{
+            auto saves=saveFiles();
+            if(saves.empty()||!readWholeFile(wheelsPath,wheels))return;
+            const auto planned=rim_sizes::plannedPartHashes(wheels);
+            std::vector<uint8_t> bytes;
+            for(const auto& save:saves)
+                if(readWholeFile(save,bytes,64u<<20)&&rim_sizes::containsAny(bytes,planned)){rimSizesBoot.save=save.filename().string();break;}
+            if(rimSizesBoot.save.empty())return;
+            rimSizesBoot.reason="save";
+        }
+        if(generatedDataDir.empty())throw std::runtime_error("no folder for generated data");
+        const std::filesystem::path directory=std::filesystem::path(generatedDataDir)/"rim_sizes",pack=directory/"GEOMETRY.BIN",keyPath=directory/"key.txt";
+        std::error_code error;std::filesystem::create_directories(directory,error);
+        if(error)throw std::runtime_error("cannot make "+directory.string()+": "+error.message());
+        // The key names the generator and the game files the pack was made from; then "pack <bytes> <parts> <solids>".
+        const std::string key="rim sizes "+std::to_string(rim_sizes::kGeneratorVersion)+"\nwheels "+fileStamp(wheelsPath)+"\nglobal "+fileStamp(globalPath)+"\n";
+        std::vector<uint8_t> stored;
+        if(readWholeFile(keyPath,stored,4096)){
+            std::string text(stored.begin(),stored.end());unsigned long long bytes=0;unsigned parts=0,solids=0;struct stat status{};
+            if(text.rfind(key,0)==0&&std::sscanf(text.c_str()+key.size(),"pack %llu %u %u",&bytes,&parts,&solids)==3&&
+               !::stat(pack.c_str(),&status)&&uint64_t(status.st_size)==bytes){
+                rimSizesBoot.cache="hit";rimSizesBoot.bytes=bytes;rimSizesBoot.parts=parts;rimSizesBoot.solids=solids;
+            }
+        }
+        if(rimSizesBoot.cache!="hit"){
+            rimSizesBoot.cache="failed";
+            if(wheels.empty()&&!readWholeFile(wheelsPath,wheels))throw std::runtime_error("Cars/WHEELS/GEOMETRY.BIN unreadable");
+            std::vector<uint8_t> global,globalb;
+            if(!readWholeFile(globalPath,global))throw std::runtime_error("Global/GlobalB.lzc unreadable");
+            if(!rim_sizes::jdlzDecompress(global,globalb))globalb=std::move(global);   // a mod's may be stored unpacked
+            auto result=rim_sizes::generate(wheels,globalb);
+            if(!result.error.empty())throw std::runtime_error(result.error);
+            ::unlink(keyPath.c_str());   // no key names a pack being replaced
+            if(!writeFileAtomically(pack,result.file.data(),result.file.size()))throw std::runtime_error("cannot write "+pack.string()+": "+std::strerror(errno));
+            const std::string text=key+"pack "+std::to_string(result.file.size())+" "+std::to_string(result.parts)+" "+std::to_string(result.solids)+"\n";
+            if(!writeFileAtomically(keyPath,text.data(),text.size()))throw std::runtime_error("cannot write "+keyPath.string());
+            rimSizesBoot.cache="built";rimSizesBoot.bytes=result.file.size();rimSizesBoot.parts=result.parts;rimSizesBoot.solids=result.solids;
+        }
+        servedFiles[wheelsPath.string()]=pack;
+        rimSizesBoot.served=true;
+        nfs_garage_set_rim_sizes_served(1);
+    }catch(const std::exception& e){rimSizesBoot.error=e.what();}
+    rimSizesBoot.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+    if(rimSizesBoot.served)
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Rim sizes: the wheel pack (%u parts, %u solids added, %llu bytes) served for Cars/WHEELS/GEOMETRY.BIN, %s in %.0f ms%s%s",
+            rimSizesBoot.parts,rimSizesBoot.solids,static_cast<unsigned long long>(rimSizesBoot.bytes),rimSizesBoot.cache=="hit"?"made earlier, checked":"made",
+            rimSizesBoot.ms,rimSizesBoot.reason=="save"?"; every rim size is off, kept for the save ":"",rimSizesBoot.save.c_str());
+    else if(rimSizesBoot.on||!rimSizesBoot.error.empty())
+        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Rim sizes: the wheel pack is not served (%s); the rim browser offers the sizes the game has",
+            rimSizesBoot.error.empty()?"unknown":rimSizesBoot.error.c_str());
+}
+// For the session JSON: the boot's outcome and what the game side did with it (nfs_garage_rim_stats).
+std::string rimSizesJson(){
+    auto quoted=[](const std::string& text){std::string out="\"";for(char c:text){if(c=='"'||c=='\\')out+='\\';if(uint8_t(c)>=0x20)out+=c;}return out+"\"";};
+    const nfs_rim_stats stats=nfs_garage_rim_stats();
+    std::ostringstream json;
+    json<<"{\"on\":"<<(rimSizesBoot.on?"true":"false")<<",\"served\":"<<(rimSizesBoot.served?"true":"false")
+        <<",\"reason\":"<<quoted(rimSizesBoot.reason)<<",\"cache\":"<<quoted(rimSizesBoot.cache)<<",\"ms\":"<<std::fixed<<std::setprecision(0)<<rimSizesBoot.ms
+        <<",\"parts\":"<<rimSizesBoot.parts<<",\"solids\":"<<rimSizesBoot.solids<<",\"bytes\":"<<rimSizesBoot.bytes;
+    if(!rimSizesBoot.error.empty())json<<",\"error\":"<<quoted(rimSizesBoot.error);
+    json<<",\"lookups\":"<<stats.lookups<<",\"later\":"<<stats.later<<",\"shared\":"<<stats.shared<<",\"sorted\":"<<stats.sorted<<",\"opened\":"<<stats.opened<<"}";
+    return json.str();
+}
+#endif
 void testGuestScheduling(){
     State original;original.save();uint32_t savedError=lastError,savedTLS=tlsValues[1087];
     g_eax=0x11223344;g_fs_base=0x21000000;g_st[0]=123.5;g_xmm[7].u64[0]=0x123456789abcdef0ull;
@@ -1116,6 +1252,11 @@ std::string connectGuestRuntime(const char* executable) {
         nfs_garage_set_allocator(gameMalloc);
         nfs_garage_boot();        // the game's unlock-everything byte, when that switch is on
         logGarage();
+        // Every rim size: the wheel pack (its parts are a second database, which the parts lookup reaches
+        // through the host), and the rim browser's thumbnails shared by a style's sizes.
+        prepareRimSizes();
+        nfs_fastpath_register(NFS_PARTS_LOOKUP,rimSizesBoot.served?nfs_garage_parts_lookup_fast:nullptr);
+        nfs_fastpath_register(NFS_BROWSER_ADD_ITEM,rimSizesBoot.on?nfs_garage_browser_item_fast:nullptr);
         nfs_fastpath_register(effect_states::kApply,guestEffectStates?applyEffectStateFast:nullptr);
         nfs_fastpath_register(effect_states::kEvaluate,guestEffectStates?evaluateEffectStateFast:nullptr);
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Effect states: %s",guestEffectStates?
@@ -1272,6 +1413,7 @@ std::string guestTelemetryJson(bool live){
         json+=",\"profile\":"+guestProfile.json(kProfileIntervalUs);
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
         json+=",\"garage\":"+garageJson();
+        json+=",\"rimSizes\":"+rimSizesJson();
         json+=",\"effectStates\":"+effectStatesJson();
 #endif
     }
@@ -1310,6 +1452,7 @@ void setGuestHdReflections(bool enabled){std::lock_guard<MachineMutex> lock(mach
 void setGuestEffectStates(bool host){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestEffectStates=host;}
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 void setGuestGarage(uint32_t features){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestGarage=features&NFS_GARAGE_ALL;}
+void setGuestGeneratedDir(const std::string& directory){std::lock_guard<MachineMutex> lock(machine);if(!memory)generatedDataDir=directory;}
 #endif
 void setGuestLanguage(const char* language){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;
