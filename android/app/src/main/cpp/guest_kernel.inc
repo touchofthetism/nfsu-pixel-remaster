@@ -324,6 +324,7 @@ void savePersistedRegistry(){
             if(size)file.write(reinterpret_cast<const char*>(value.bytes.data()),size);}
         if(!file)return;}
     std::rename(temporary.c_str(),target.c_str());
+    gameFolderChanged();   // android_registry.dat is in the game folder
 }
 std::map<uint32_t,bool> registryHandles;
 uint32_t nextRegistryHandle=0xf0050000;

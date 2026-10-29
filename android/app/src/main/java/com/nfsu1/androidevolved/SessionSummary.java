@@ -439,6 +439,10 @@ final class SessionSummary {
         if (freeRoam != null) out.append(freeRoam);
         String effects = effectStatesLine(nat == null ? null : nat.optJSONObject("effectStates"), frames == null ? 0 : frames.optLong("frames"));
         if (effects != null) out.append(effects);
+        String blend = layerBlendLine(nat == null ? null : nat.optJSONObject("layerBlend"));
+        if (blend != null) out.append(blend);
+        String files = filesLine(nat == null ? null : nat.optJSONObject("files"));
+        if (files != null) out.append(files);
         JSONArray events = record.optJSONArray("events");
         if (events != null && events.length() > 0) {
             StringBuilder line = new StringBuilder("  Events:");
@@ -579,6 +583,36 @@ final class SessionSummary {
         return String.format(Locale.US, "  Effect states (host): %,.0f applied a frame, %.0f%% by the host (%.0f%% of those already set, skipped)%s; value updates %.0f%% answered at once\n",
                 frames > 0 ? (double) calls / frames : 0.0, 100.0 * handled / calls, kept + sent > 0 ? 100.0 * kept / (kept + sent) : 0.0,
                 handled < calls ? ", the rest by the game's D3DX code" : "", evaluations > 0 ? 100.0 * immediate / evaluations : 0.0);
+    }
+
+    /** Build 20: the layer blend that composites a car's textures, done by the host (native "layerBlend", nfs_blend.h):
+     *  the pixels blended and how many the host took (the rest ran the game's code: layer counts or memory it would
+     *  not vouch for), and in the test host's verify mode how many were checked against the game's code and how many
+     *  differed, e.g. "  Layer blend (car textures): 1,234,567 pixels, all by the host". Null with no call (a
+     *  session that never showed a car) and before build 20. */
+    static String layerBlendLine(JSONObject blend) {
+        if (blend == null || blend.optLong("calls") <= 0) return null;
+        long calls = blend.optLong("calls"), handled = blend.optLong("handled"), verified = blend.optLong("verified");
+        StringBuilder line = new StringBuilder(String.format(Locale.US, "  Layer blend (car textures): %,d pixels, ", calls));
+        line.append(handled >= calls ? "all by the host" : String.format(Locale.US, "%,d by the host, %,d by the game's code", handled, calls - handled));
+        if (verified > 0) {
+            long mismatches = blend.optLong("mismatches");
+            line.append(String.format(Locale.US, "; %,d checked against the game's code, %,d %s", verified, mismatches, mismatches == 1 ? "difference" : "differences"));
+        }
+        return line.append('\n').toString();
+    }
+
+    /** Build 20: the files the game opened and the paths its file layer resolved (native "files", guest_paths.h):
+     *  opens and their average time (the path and the open), path lookups and the share answered from the folder
+     *  listings kept, the listings read, the changes to the game folder that made them be read again, and the
+     *  time the lookups not kept took, e.g. "  Files: 1,271 opened (0.3 ms each); 6,702 path lookups, 99% kept;
+     *  61 folder listings, 4 folder changes; 52 ms resolving". Null before build 20. */
+    static String filesLine(JSONObject files) {
+        if (files == null || !files.has("lookups")) return null;
+        long opens = files.optLong("opens"), lookups = files.optLong("lookups"), cached = files.optLong("cached"), changes = files.optLong("changes");
+        return String.format(Locale.US, "  Files: %,d opened (%.1f ms each); %,d path lookups, %.0f%% kept; %,d folder listings, %,d folder %s; %.0f ms resolving\n",
+                opens, opens > 0 ? files.optDouble("openMs", 0) / opens : 0.0, lookups, lookups > 0 ? 100.0 * cached / lookups : 0.0,
+                files.optLong("listings"), changes, changes == 1 ? "change" : "changes", files.optDouble("resolveMs", 0));
     }
 
     /** Build 12: where the render thread ran as the phone capped its clocks (host_perf.cpp "clusters", with the

@@ -8,3 +8,4 @@
 0x00430E00  wrong-way test (stdcall player, previous): "not wrong way" on the free roam tracks (src/runtime/nfs_freeroam.h)
 0x00430730  player update (eax = player): observed for free roam's breadcrumbs, never taken (nfs_freeroam.h)
 0x004314A0  player reset (eax = player): on the free roam tracks, back to where the car was driving 3 s before (nfs_freeroam.h)
+0x005A8640  layer blend: a pixel of a car's composited textures from its 2-4 layers, without 4 x87 conversions a layer (src/runtime/nfs_blend.h)

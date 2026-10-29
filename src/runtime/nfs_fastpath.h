@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 typedef int (*nfs_fastpath_fn)(void);
-#define NFS_FASTPATH_SLOTS 8u
+#define NFS_FASTPATH_SLOTS 12u
 
 /* The lifted wrappers' entry (also declared by pcrecomp's recomp_types.h, ci/pcrecomp). */
 int recomp_fastpath(uint32_t va);

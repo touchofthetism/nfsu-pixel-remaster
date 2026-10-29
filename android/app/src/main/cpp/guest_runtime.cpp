@@ -23,6 +23,7 @@
 #include "rim_sizes.h"
 #include "free_roam.h"
 #include "nfs_freeroam.h"
+#include "guest_paths.h"
 #endif
 #include <array>
 #include <cstdio>
@@ -59,6 +60,7 @@ extern "C" {
 #include "recomp_types.h"
 #include "pe_format.h"
 #include "nfs_runtime.h"
+#include "nfs_blend.h"     // needs recomp_types.h first
 
 uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi, g_ebp;
 #ifndef RECOMP_X87_WINDOW
@@ -212,6 +214,8 @@ uint32_t resourceRva{},resourceSize{};
 // plain globals, not thread_local, which cost a TLS descriptor call per COM call.
 uint32_t lastImport{};
 std::string hostGameRoot;
+// Guest file names to host paths, with the folder listings and results kept (guest_paths.h; guest_files.inc).
+GuestPaths guestPaths;
 std::string guestLanguage="Spanish";
 bool guestWidescreen=true;
 // Launcher "Wrong-way warning": off blanks the HUD's wrong-way element names in the mapped image (the
@@ -541,15 +545,26 @@ void startGuestProfiler(){
 }
 // A frame slower than 80 ms that is not a pause: what the profiler saw during it, so a report says which
 // functions (or D3D9 calls, or waiting) filled it. At most one line every 2 s and 300 per session.
+// While the game has its driving controls installed (a race, not its pause menu), frames from 34 ms too: two
+// refreshes of a 60 FPS cap. Build 19's session had one such frame every 10-20 s of racing (35-58 ms, the GPU
+// 65-75% busy), too short for the line above, so nothing said what they were. At most one a second, 400 a session.
+extern std::atomic<bool> inputDrivingMode;   // guest_input.inc
 void explainSlowFrame(std::chrono::steady_clock::time_point now){
-    static uint64_t lastPresent=0,lastLog=0;static unsigned logged=0;
+    static uint64_t lastPresent=0,lastLog=0,lastDriving=0;static unsigned logged=0,driving=0;
     uint64_t at=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
     uint64_t previous=lastPresent;lastPresent=at;
     if(!previous||guestPaused.load(std::memory_order_relaxed))return;
     uint64_t frame=at-previous;
-    if(frame<80000000ull||frame>2000000000ull||logged>=300||at-lastLog<2000000000ull)return;
-    lastLog=at;++logged;
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Slow frame %.0f ms: %s",frame/1e6,guestProfile.explain(previous,at).c_str());
+    if(frame>2000000000ull)return;
+    if(frame>=80000000ull){
+        if(logged>=300||at-lastLog<2000000000ull)return;
+        lastLog=at;++logged;
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Slow frame %.0f ms: %s",frame/1e6,guestProfile.explain(previous,at).c_str());
+    }else if(frame>=34000000ull&&inputDrivingMode.load(std::memory_order_relaxed)){
+        if(driving>=400||at-lastDriving<1000000000ull)return;
+        lastDriving=at;++driving;
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Hitch while driving %.0f ms: %s",frame/1e6,guestProfile.explain(previous,at).c_str());
+    }
 }
 // The frame cap (build 15): before each Present the render thread sleeps to the frame's deadline with the machine
 // handed over (guest audio and streaming threads run meanwhile), so the frames reach DXVK a period apart. Build 14
@@ -630,6 +645,9 @@ std::string garageJson(){
     json+="}";
     return json;
 }
+// The layer blend's fast path (nfs_blend.h): calls, those the host took, and in verify mode those checked against
+// the game's code and the differences.
+std::string layerBlendJson();
 std::string effectStatesJson(){
     uint64_t kept=0,sent=0;d3d9EffectStateCounts(kept,sent);
     return "{\"host\":"+std::string(guestEffectStates?"true":"false")+
@@ -660,6 +678,53 @@ int evaluateEffectStateFast(){
     g_eax=0;        // S_OK, as [ebp-4] holds on that exit
     g_esp=esp+8;    // the return address and the one argument: ret 4
     return 1;
+}
+// The layer blend that composites a car's textures (nfs_blend.h), as a recomp_fastpath handler for sub_005A8640.
+// Layer counts and memory it cannot vouch for go to the game's code. With NFS_VERIFY_FASTPATHS set (the test
+// host's verify mode) the lifted body runs too, on the real state, and every difference is counted and the first
+// ones logged: the host's answer is checked against the game's on every call of a session.
+extern "C" void sub_005A8640_lifted(void);
+bool verifyFastPaths=false;
+std::atomic<uint64_t> layerBlendVerified{0},layerBlendMismatches{0};
+int layerBlendFast(){
+    const uint32_t esp=g_esp;
+    if(!memory->readable(esp,20))return 0;
+    const uint32_t pixelsVa=read32(esp+4),weightsVa=read32(esp+8);
+    const int32_t count=int32_t(read32(esp+12));
+    const uint8_t alphaMax=*static_cast<const uint8_t*>(ptr(esp+16,1));
+    if(count>4096)return 0;   // the callers blend 2 to 4 layers
+    if(count>0&&(!memory->readable(pixelsVa,uint64_t(count)*4)||!memory->readable(weightsVa,uint64_t(count)*4)))return 0;
+    float threshold;std::memcpy(&threshold,ptr(NFS_LAYER_BLEND_THRESHOLD,4),4);
+    const auto* pixels=count>0?static_cast<const uint8_t*>(ptr(pixelsVa,uint64_t(count)*4)):nullptr;
+    const auto* weights=count>0?static_cast<const uint8_t*>(ptr(weightsVa,uint64_t(count)*4)):nullptr;
+    const nfs_layer_blend_result result=nfs_layer_blend(pixels,weights,count,alphaMax,threshold,g_fpu_cw,pixelsVa);
+    if(verifyFastPaths){
+        const uint32_t edxBefore=g_edx;const int topBefore=g_fp_top;
+        std::vector<uint8_t> layers,layerWeights;   // as they were, for the log
+        if(count>0){layers.assign(pixels,pixels+uint64_t(count)*4);layerWeights.assign(weights,weights+uint64_t(count)*4);}
+        sub_005A8640_lifted();
+        const uint32_t edx=result.edx_written?result.edx:edxBefore,arg0=result.arg0_written?result.arg0:pixelsVa;
+        ++layerBlendVerified;
+        if(g_eax!=result.eax||g_ecx!=result.ecx||g_edx!=edx||read32(esp+4)!=arg0||g_esp!=esp+4||g_fp_top!=topBefore){
+            if(++layerBlendMismatches<=20){
+                std::string bytes;char item[48];
+                for(int32_t i=0;i<count&&i<8;++i){float w;std::memcpy(&w,layerWeights.data()+4*i,4);
+                    std::snprintf(item,sizeof item," %02x%02x%02x%02x*%.9g",layers[4*i+3],layers[4*i+2],layers[4*i+1],layers[4*i],w);bytes+=item;}
+                NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Layer blend differs from the game's: count %d max %u cw %04x%s: host eax %08x ecx %08x edx %08x arg %08x, game %08x %08x %08x %08x (esp %+d, x87 %+d)",
+                    count,alphaMax,g_fpu_cw,bytes.c_str(),result.eax,result.ecx,edx,arg0,g_eax,g_ecx,g_edx,read32(esp+4),int(g_esp-(esp+4)),g_fp_top-topBefore);
+            }
+        }
+        return 1;   // the lifted body has run: its state stands
+    }
+    g_eax=result.eax;g_ecx=result.ecx;
+    if(result.edx_written)g_edx=result.edx;
+    if(result.arg0_written)write32(esp+4,result.arg0);
+    g_esp=esp+4;    // ret: the caller pops the four arguments
+    return 1;
+}
+std::string layerBlendJson(){
+    return "{\"calls\":"+std::to_string(nfs_fastpath_calls(NFS_LAYER_BLEND))+",\"handled\":"+std::to_string(nfs_fastpath_handled(NFS_LAYER_BLEND))+
+        ",\"verified\":"+std::to_string(layerBlendVerified.load())+",\"mismatches\":"+std::to_string(layerBlendMismatches.load())+"}";
 }
 #endif
 // threadStart: a thread procedure may be stdcall or cdecl; Windows exits the thread right after either.
@@ -1462,6 +1527,7 @@ std::string connectGuestRuntime(const char* executable) {
         recomp_yield_hook=checkGuestProgress;
         memory=std::make_unique<GuestMemory>();
         hostGameRoot=std::string(executable); hostGameRoot=hostGameRoot.substr(0,hostGameRoot.find_last_of('/'));
+        guestPaths.reset(hostGameRoot);
         g_mem_base=reinterpret_cast<ptrdiff_t>(memory->base());
         testGuestHeaps(*memory);
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest heaps passed ownership, realloc preservation, zero tail, in-place failure and reuse checks");
@@ -1525,6 +1591,10 @@ std::string connectGuestRuntime(const char* executable) {
         nfs_fastpath_register(NFS_PLAYER_RESET,freeRoam?nfs_freeroam_reset_fast:nullptr);
         nfs_fastpath_register(effect_states::kApply,guestEffectStates?applyEffectStateFast:nullptr);
         nfs_fastpath_register(effect_states::kEvaluate,guestEffectStates?evaluateEffectStateFast:nullptr);
+        // The car textures' layer blend (nfs_blend.h): the same pixels, without 4 x87 conversions a layer.
+        {const char* verify=std::getenv("NFS_VERIFY_FASTPATHS");verifyFastPaths=verify&&*verify&&*verify!='0';}
+        nfs_fastpath_register(NFS_LAYER_BLEND,layerBlendFast);
+        if(verifyFastPaths)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Fast paths: verify mode (the game's code runs beside the host's and every difference is logged)");
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Effect states: %s",guestEffectStates?
             "render, sampler and texture stage states of the game's effects applied by the host (already set ones skipped)":
             "applied by the game's own D3DX code");
@@ -1559,6 +1629,8 @@ void setGuestPaused(bool paused) {
     bool previous=guestPaused.exchange(paused);
     if(paused&&!previous){frameTelemetry.pause();frameInterrupted=true;}  // the next frame starts a new interval, not a 30 s "frame"
     if(previous!=paused)pauseGuestSound(paused);
+    // Back from the background: the launcher may have installed or removed a mod pack meanwhile.
+    if(previous&&!paused)guestPaths.changed();
 }
 bool guestDrivingControls() {return inputDrivingMode.load();}
 void setGuestPad(const float axes[6],uint32_t buttons,int hatX,int hatY){
@@ -1677,11 +1749,13 @@ std::string guestTelemetryJson(bool live){
         json+=",\"dxvkQueue\":"+dxvkQueueJson();
 #endif
         json+=",\"profile\":"+guestProfile.json(kProfileIntervalUs);
+        json+=",\"files\":"+filesJson();
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
         json+=",\"garage\":"+garageJson();
         json+=",\"rimSizes\":"+rimSizesJson();
         json+=",\"freeRoam\":"+freeRoamJson();
         json+=",\"effectStates\":"+effectStatesJson();
+        json+=",\"layerBlend\":"+layerBlendJson();
 #endif
     }
     return json+"}";

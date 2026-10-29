@@ -4,3 +4,4 @@
 0x00643A39  Cyrix probe (sahf/div/lahf): DIV flags are undefined and not modelled (same bytes as SPEED2 0x6F5FC5)
 0x00672630  CRT memcpy/memmove: computed jumps into unrolled blocks are not all lifted entries (same bytes as SPEED2 0x75CFD0)
 0x00678D30  CRT memcpy/memmove, second copy (same bytes)
+0x00674898  CRT _ftol2: MSVC's float-to-integer helper (784 call sites, 0.6% of the render thread), the same result op for op without the lifted frame (tests/overrides.cpp)

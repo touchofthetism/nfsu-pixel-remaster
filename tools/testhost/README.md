@@ -43,6 +43,9 @@ tools/testhost/run.sh build-testhost --game ~/testgame/stock --generated /tmp/ge
 - DXVK's own log (warnings) goes to the `--out` folder, its state cache to `--generated` (kept between runs, as
   the phone keeps its).
 - `TESTHOST_WRAP="gdb -batch -x cmds.txt --args"` runs it under a debugger.
+- `NFS_VERIFY_FASTPATHS=1` runs the game's own code beside a fast path that computes a result by itself (the car
+  textures' layer blend, `src/runtime/nfs_blend.h`): both on every call, the game's state kept, each difference
+  counted (`layerBlend` in `telemetry.json`) and the first ones logged (`Layer blend differs from the game's`).
 
 ## Scripts
 

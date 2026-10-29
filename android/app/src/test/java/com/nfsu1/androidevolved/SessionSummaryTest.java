@@ -355,6 +355,39 @@ public class SessionSummaryTest {
         assertEquals(null, SessionSummary.freeRoamLine(null));
     }
 
+    @Test public void filesAndLayerBlendAreReported() throws Exception {
+        // Build 20: the file opens and the path lookups the game's file layer made, with the listings kept.
+        org.json.JSONObject files = new org.json.JSONObject("{\"opens\":1271,\"openMs\":381.3,\"lookups\":6702,\"cached\":6641,"
+                + "\"listings\":61,\"changes\":4,\"resolveMs\":52.4}");
+        assertEquals("  Files: 1,271 opened (0.3 ms each); 6,702 path lookups, 99% kept; 61 folder listings, 4 folder changes; 52 ms resolving\n",
+                SessionSummary.filesLine(files));
+        assertEquals("  Files: 0 opened (0.0 ms each); 0 path lookups, 0% kept; 0 folder listings, 1 folder change; 0 ms resolving\n",
+                SessionSummary.filesLine(new org.json.JSONObject("{\"opens\":0,\"lookups\":0,\"changes\":1}")));
+        assertEquals(null, SessionSummary.filesLine(null));
+        assertEquals(null, SessionSummary.filesLine(new org.json.JSONObject("{}")));
+
+        // The layer blend of the car textures: all by the host, some left to the game's code, the test host's verify mode.
+        assertEquals("  Layer blend (car textures): 1,234,567 pixels, all by the host\n", SessionSummary.layerBlendLine(
+                new org.json.JSONObject("{\"calls\":1234567,\"handled\":1234567,\"verified\":0,\"mismatches\":0}")));
+        assertEquals("  Layer blend (car textures): 1,000 pixels, 990 by the host, 10 by the game's code\n", SessionSummary.layerBlendLine(
+                new org.json.JSONObject("{\"calls\":1000,\"handled\":990}")));
+        assertEquals("  Layer blend (car textures): 500 pixels, all by the host; 500 checked against the game's code, 1 difference\n",
+                SessionSummary.layerBlendLine(new org.json.JSONObject("{\"calls\":500,\"handled\":500,\"verified\":500,\"mismatches\":1}")));
+        assertEquals(null, SessionSummary.layerBlendLine(new org.json.JSONObject("{\"calls\":0,\"handled\":0}")));
+        assertEquals(null, SessionSummary.layerBlendLine(null));
+
+        // In the report, after the effect states and before the events; an older record has neither line.
+        String record = RECORD.replace("\"d3d9Calls\":{", "\"layerBlend\":{\"calls\":20,\"handled\":20,\"verified\":0,\"mismatches\":0},"
+                + "\"files\":{\"opens\":3,\"openMs\":0.9,\"lookups\":10,\"cached\":9,\"listings\":2,\"changes\":0,\"resolveMs\":1.2},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        String lines = "  Layer blend (car textures): 20 pixels, all by the host\n"
+                + "  Files: 3 opened (0.3 ms each); 10 path lookups, 90% kept; 2 folder listings, 0 folder changes; 1 ms resolving\n";
+        assertTrue(report, report.contains(lines));
+        assertTrue(report, report.indexOf(lines) < report.indexOf("  Events:"));
+        String old = SessionSummary.parse(RECORD).report;
+        assertTrue(!old.contains("Files:") && !old.contains("Layer blend"));
+    }
+
     @Test public void rimSizesAreReported() throws Exception {
         // Build 18: the wheel pack served with every rim size on, from the app's folder, and what the game side did.
         org.json.JSONObject on = new org.json.JSONObject("{\"on\":true,\"served\":true,\"reason\":\"on\",\"cache\":\"hit\",\"ms\":3,"
