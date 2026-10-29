@@ -55,6 +55,26 @@ public class SessionSummaryTest {
         assertTrue(report.contains("120 Hz×1") && report.contains("60 Hz×1"));
     }
 
+    @Test public void lostSoundOutputAndDroppedPlacement() throws Exception {
+        // Build 15: two streams lost and replaced, 0.18 s without sound; one placed thread dropped, the render thread
+        // followed again.
+        String record = RECORD.replace("\"audio\":{\"xruns\":0,\"bufferFrames\":1920,\"burstFrames\":192,\"rate\":48000}",
+                        "\"audio\":{\"xruns\":3,\"bufferFrames\":1920,\"burstFrames\":96,\"rate\":48000,\"lost\":2,\"replaced\":2,\"silentMs\":184}")
+                .replace("\"d3d9Calls\":{", "\"host\":{\"affinity\":\"render thread on cpu 7 (follows the fastest cluster)\",\"priority\":\"nice -10\",\"dxvk\":\"4 of 4 DXVK threads off cpu 7\","
+                        + "\"adpf\":\"session with 5 threads, target 12.50 ms\",\"targetFps\":60,\"reports\":100,\"reportFailures\":0,\"placementRestored\":3,\"placementFailed\":0,"
+                        + "\"placementDropped\":1,\"renderFollowedAgain\":1},\"d3d9Calls\":{");
+        String report = SessionSummary.parse(record).report;
+        for (String expected : new String[] {
+                "Audio: xruns 3, buffer 1920 frames (burst 96), 48000 Hz; output lost 2 times, replaced 2, 0.2 s without sound",
+                "performance hints: session with 5 threads, target 12.50 ms (100 reports, 0 failed); placement replaced and put back 3 times; "
+                        + "1 placed thread no longer followed (the render thread followed again 1 time)"}) {
+            assertTrue("missing: " + expected + "\n" + report, report.contains(expected));
+        }
+        // Records before build 15, and sessions that lost nothing, read as before.
+        String old = SessionSummary.parse(RECORD).report;
+        assertTrue(old.contains("Audio: xruns 0, buffer 1920 frames (burst 192), 48000 Hz\n") && !old.contains("no longer followed"));
+    }
+
     @Test public void gpuBusyAndTheRealBackBuffer() throws Exception {
         // Build 9 records: each second carries the GPU busy share, the render block the game's real back buffer.
         String record = RECORD.replace("\"perSecond\":[[0,118,9.1],[120,61,182.0],[121,97,40.0]]",

@@ -1,5 +1,8 @@
 #include "audio_mixer.h"
 #include "audio_limiter.h"
+#ifdef __ANDROID__
+#include "sound_device.h"
+#endif
 constexpr uint32_t soundMethodBase=0x7c000000;
 constexpr uint32_t soundBadFormat=0x88780064;
 PcmMixer soundMixer;
@@ -15,78 +18,16 @@ std::map<uint32_t,SoundObject> soundObjects;
 std::map<uint32_t,uint32_t> soundMethodCalls;
 uint32_t soundToken{};
 #ifdef __ANDROID__
-AAudioStream* soundStream=nullptr;
-// Audio counters at the moment the stream closed, so a complete session's record still carries them.
-struct AudioStats{int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0;};
-AudioStats lastAudioStats;
-int32_t soundLastXruns=0;
-std::atomic<uint32_t> soundCallbackPeakUs{0};
-// The mix can sum past full scale (music + engine + effects in a race); the look-ahead limiter keeps it in
-// range without flattening the peaks (audio_limiter.h). Configured when the stream starts, then used only
-// on the callback thread.
-PeakLimiter soundLimiter;
-aaudio_data_callback_result_t soundCallback(AAudioStream*,void*,void* data,int32_t frames){
-    auto start=std::chrono::steady_clock::now();
-    soundMixer.render(static_cast<float*>(data),unsigned(frames));
-    soundLimiter.process(static_cast<float*>(data),unsigned(frames));
-    uint32_t us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());
-    auto peak=soundCallbackPeakUs.load(std::memory_order_relaxed);
-    while(us>peak&&!soundCallbackPeakUs.compare_exchange_weak(peak,us,std::memory_order_relaxed)){}
-    return AAUDIO_CALLBACK_RESULT_CONTINUE;
-}
-// Output buffer: 40 ms, grown to 100 ms after reported underruns. Two bursts
-// (4-10 ms on MediaTek, Exynos and Unisoc low-latency streams) were all a
-// render or guest-lock hiccup needed to break the sound on busy low-end
-// phones, and those drivers report no xruns, so the old grow-on-xrun rule
-// never fired. A racing game does not need lower latency than this.
-constexpr int32_t soundTargetMs=40,soundMaximumMs=100;
-AAudioStream* openSoundStream(aaudio_performance_mode_t mode){
-    AAudioStreamBuilder* builder=nullptr;
-    if(AAudio_createStreamBuilder(&builder)!=AAUDIO_OK)return nullptr;
-    AAudioStreamBuilder_setDirection(builder,AAUDIO_DIRECTION_OUTPUT);
-    AAudioStreamBuilder_setFormat(builder,AAUDIO_FORMAT_PCM_FLOAT);
-    AAudioStreamBuilder_setChannelCount(builder,2);
-    AAudioStreamBuilder_setSharingMode(builder,AAUDIO_SHARING_MODE_SHARED);
-    AAudioStreamBuilder_setPerformanceMode(builder,mode);
-    AAudioStreamBuilder_setBufferCapacityInFrames(builder,48000*soundMaximumMs/1000);
-    AAudioStreamBuilder_setDataCallback(builder,soundCallback,nullptr);
-    AAudioStream* stream=nullptr;
-    auto status=AAudioStreamBuilder_openStream(builder,&stream);AAudioStreamBuilder_delete(builder);
-    return status==AAUDIO_OK?stream:nullptr;
-}
-int32_t soundFrames(int32_t milliseconds){
-    int32_t frames=int32_t(soundMixer.rate)*milliseconds/1000,burst=AAudioStream_getFramesPerBurst(soundStream);
-    if(burst>0)frames=(frames+burst-1)/burst*burst;
-    return std::min(frames,AAudioStream_getBufferCapacityInFrames(soundStream));
-}
-bool startSoundStream(){
-    if(soundStream)return true;
-    soundStream=openSoundStream(AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    // Some MediaTek low-latency streams cap the buffer at two bursts (512 frames).
-    if(soundStream&&AAudioStream_getBufferCapacityInFrames(soundStream)<AAudioStream_getSampleRate(soundStream)*soundTargetMs/1000){
-        if(AAudioStream* fallback=openSoundStream(AAUDIO_PERFORMANCE_MODE_NONE)){AAudioStream_close(soundStream);soundStream=fallback;}
-    }
-    if(!soundStream)soundStream=openSoundStream(AAUDIO_PERFORMANCE_MODE_NONE);
-    if(!soundStream)return false;
-    soundMixer.rate=unsigned(AAudioStream_getSampleRate(soundStream));
-    soundLimiter.configure(soundMixer.rate);
-    AAudioStream_setBufferSizeInFrames(soundStream,soundFrames(soundTargetMs));
-    soundLastXruns=0;soundCallbackPeakUs=0;
-    auto status=AAudioStream_requestStart(soundStream);
-    if(status!=AAUDIO_OK){AAudioStream_close(soundStream);soundStream=nullptr;return false;}
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","AAudio stereo float stream started: %u Hz",soundMixer.rate);return true;
-}
+// The AAudio output, its keeper and its stand-in (sound_device.h).
+SoundDevice soundDevice(soundMixer);
+bool startSoundStream(){soundDevice.start();return true;}   // the game keeps its device either way
+void pauseGuestSound(bool paused){soundDevice.setPaused(paused);}
 // Called on the guest thread after Present, never from the real-time callback.
-// Grow only after an actual underrun, one burst at a time, bounded by capacity.
 void serviceGuestSound(){
-    if(!soundStream)return;
-    int32_t xruns=AAudioStream_getXRunCount(soundStream),burst=AAudioStream_getFramesPerBurst(soundStream);
-    int32_t size=AAudioStream_getBufferSizeInFrames(soundStream),capacity=AAudioStream_getBufferCapacityInFrames(soundStream);
-    if(xruns>soundLastXruns&&burst>0&&size<soundFrames(soundMaximumMs))
-        AAudioStream_setBufferSizeInFrames(soundStream,std::min(size+burst,soundFrames(soundMaximumMs)));
-    if(xruns>=0)soundLastXruns=xruns;
+    SoundDevice::Health health;
+    if(!soundDevice.service(&health))return;
     uint64_t clipped;float peak;unsigned active=0;double publishGapMs=0,ringMs=0;
-    {std::lock_guard<std::mutex> lock(soundMixer.mutex);
+    {std::lock_guard<std::mutex> mixer(soundMixer.mutex);
         clipped=soundMixer.clippedSamples;peak=soundMixer.peakAmplitude;
         soundMixer.clippedSamples=0;soundMixer.peakAmplitude=0;
         for(const auto& voice:soundMixer.voices)if(voice&&voice->playing)++active;
@@ -98,22 +39,19 @@ void serviceGuestSound(){
             object.maxPublishGap={};}}
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio producer: maxPublishGap=%.2f ms ring=%.2f ms",publishGapMs,ringMs);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio mix: active=%u peak=%.4f over full scale=%llu limited frames=%llu (limiter ceiling -0.3 dBFS)",active,double(peak),
-        static_cast<unsigned long long>(clipped),static_cast<unsigned long long>(soundLimiter.limitedFrames.exchange(0,std::memory_order_relaxed)));
-    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio health: xruns=%d buffer=%d/%d burst=%d rate=%u callbackPeak=%u us mode=%d",
-        xruns,AAudioStream_getBufferSizeInFrames(soundStream),capacity,burst,soundMixer.rate,
-        soundCallbackPeakUs.exchange(0,std::memory_order_relaxed),int(AAudioStream_getPerformanceMode(soundStream)));
+        static_cast<unsigned long long>(clipped),soundDevice.limitedFrames());
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio health: xruns=%d buffer=%d/%d burst=%d rate=%u callbackPeak=%u us mode=%d streams lost=%u silent=%llu ms",
+        health.xruns,health.bufferFrames,health.capacity,health.burst,health.rate,health.callbackPeakUs,health.mode,health.lost,
+        static_cast<unsigned long long>(health.silentMs));
 }
 #else
 void serviceGuestSound(){}
 bool startSoundStream(){return true;} // Host tests inspect the mixer; no physical audio output.
+void pauseGuestSound(bool){}
 #endif
 void shutdownGuestSound(){
 #ifdef __ANDROID__
-    if(soundStream){
-        // Keep the final counters: the session record is written after the stream is gone.
-        lastAudioStats={AAudioStream_getXRunCount(soundStream),AAudioStream_getBufferSizeInFrames(soundStream),AAudioStream_getFramesPerBurst(soundStream),soundMixer.rate};
-        AAudioStream_requestStop(soundStream);AAudioStream_close(soundStream);soundStream=nullptr;
-    }
+    soundDevice.stop();   // its final counters stay: the session record is written after the stream is gone
 #endif
     for(auto& item:soundObjects){auto& object=item.second;if(object.voice)soundMixer.remove(object.voice);
         if(object.guestSamples)heaps->free(GuestHeaps::process,object.guestSamples);

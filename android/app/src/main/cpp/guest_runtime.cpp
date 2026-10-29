@@ -87,7 +87,8 @@ extern "C" size_t dxvkAndroidQueueTimings(uint64_t* out, size_t count);
 #endif
 // Launcher "CPU placement" (host_perf.h): applied on the render thread at its first Present.
 std::atomic<int> cpuPlacement{int(host_perf::Placement::FastestCores)};
-std::chrono::steady_clock::time_point frameWorkStart{};
+// Set when the game pauses: the frame that spans the pause is not reported to the performance hint session.
+std::atomic<bool> frameInterrupted{false};
 std::string hex(uint32_t va) {
     std::ostringstream out; out << "0x" << std::hex << std::setw(8) << std::setfill('0') << va;
     return out.str();
@@ -513,14 +514,34 @@ void explainSlowFrame(std::chrono::steady_clock::time_point now){
     lastLog=at;++logged;
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Slow frame %.0f ms: %s",frame/1e6,guestProfile.explain(previous,at).c_str());
 }
+// The frame cap (build 15): before each Present the render thread sleeps to the frame's deadline with the machine
+// handed over (guest audio and streaming threads run meanwhile), so the frames reach DXVK a period apart. Build 14
+// slept after the Present instead, which spaced the starts of the frames' work: each Present then came one frame's
+// work after the deadline, and that work varies from frame to frame, so the frames reached the screen unevenly. A
+// late frame presents at once, after a turn for any guest thread waiting for the machine; missed deadlines are not
+// made up (frame_pacer.h). Returns the time it waited, which is no part of the frame's work.
+std::chrono::nanoseconds paceFrame(){
+    static FramePacer pacer;
+    if(!renderThread){renderThread=true;machineHolder.store(GuestProfile::Render,std::memory_order_relaxed);}
+    auto now=std::chrono::steady_clock::now();
+    auto deadline=pacer.deadline(now,frameLimit.load(std::memory_order_relaxed));
+    if(deadline>now)yieldGuestMachine(0,deadline);
+    else if(machine.hasWaiters())yieldGuestMachine();
+    else return {};
+    return std::chrono::steady_clock::now()-now;
+}
 void d3dDispatch(){
     // The arguments are read in place on the guest stack (one bounds check)
     // instead of copying 128 bytes for each D3D9 call.
     const uint32_t* args=static_cast<const uint32_t*>(ptr(g_esp+4,128));uint32_t count=0;uint32_t token=d3dToken;
     static uint64_t bridgeCalls=0;static std::chrono::nanoseconds bridgeTime{},presentTime{};
+    const bool present=token==0x7e002110u;
+    // The waits since the last Present that worked, and when it returned: the frame's work lies between.
+    static std::chrono::nanoseconds paced{};static std::chrono::steady_clock::time_point lastPresented{};
+    if(present)paced+=paceFrame();
     // Time one call in 64 (and every Present) so the statistic does not cost
     // two clock reads on each of the ~40k calls in a race frame.
-    bool timed=(++bridgeCalls&63u)==0||token==0x7e002110u;
+    bool timed=(++bridgeCalls&63u)==0||present;
     std::chrono::steady_clock::time_point bridgeStart;if(timed)bridgeStart=std::chrono::steady_clock::now();uint32_t result;
     {RenderPlace place(GuestProfile::D3D9);
      callWatch.begin(token);
@@ -531,25 +552,19 @@ void d3dDispatch(){
     if(timed){auto done=std::chrono::steady_clock::now();auto spent=done-bridgeStart;bridgeTime+=token==0x7e002110u?spent:spent*64;presentTime+=token==0x7e002110u?spent:std::chrono::nanoseconds{};
         // Per-method time: Present in full, every other method estimated from the one call in 64 timed.
         d3d9AddMethodTime(token,uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(token==0x7e002110u?spent:spent*64).count()));
-        if(token==0x7e002110u&&result==0){
+        if(present&&result==0){
             explainSlowFrame(done);
             frameTelemetry.present(done,std::chrono::duration_cast<std::chrono::nanoseconds>(spent),frameLimit.load(std::memory_order_relaxed));
-            // The thread that presents is the game's busy thread: place it once, then feed the frame's
-            // CPU work (from the end of the previous pacer sleep to now) to the performance hint session.
+            // The thread that presents is the game's busy thread: place it once, then feed the frame's CPU work
+            // (since the previous Present returned, less the pacing waits) to the performance hint session.
             host_perf::adoptRenderThread(static_cast<host_perf::Placement>(cpuPlacement.load()),frameLimit.load(std::memory_order_relaxed));
-            if(frameWorkStart.time_since_epoch().count())host_perf::reportFrame(std::chrono::duration_cast<std::chrono::nanoseconds>(done-frameWorkStart));
+            bool interrupted=frameInterrupted.exchange(false,std::memory_order_relaxed);
+            if(lastPresented.time_since_epoch().count()&&!interrupted)
+                host_perf::reportFrame(std::chrono::duration_cast<std::chrono::nanoseconds>(done-lastPresented)-paced);
+            lastPresented=done;paced={};
         }}
-    if(token==0x7e002110u){nfs_widescreen_apply_frame_rate();lastPresentMs=steadyMs();startStallWatch();startGuestProfiler();saveChangedOptions();}
-    if(token==0x7e002110u&&result==0){
-        static FramePacer pacer;
-        auto now=std::chrono::steady_clock::now();
-        auto deadline=pacer.deadline(now,frameLimit.load(std::memory_order_relaxed));
-        // The renderer has returned; guest audio/streaming workers can use the
-        // machine while this thread waits. Late frames incur no extra delay.
-        if(!renderThread){renderThread=true;machineHolder.store(GuestProfile::Render,std::memory_order_relaxed);}
-        if(deadline>now)yieldGuestMachine(0,deadline);
-        else if(machine.hasWaiters())yieldGuestMachine();
-        frameWorkStart=std::chrono::steady_clock::now();
+    if(present){nfs_widescreen_apply_frame_rate();lastPresentMs=steadyMs();startStallWatch();startGuestProfiler();saveChangedOptions();}
+    if(present&&result==0){
         static unsigned frames=0;static auto since=std::chrono::steady_clock::now();
         if(++frames==120){serviceGuestSound();auto now=std::chrono::steady_clock::now();double seconds=std::chrono::duration<double>(now-since).count();
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest D3D9 presentation %.1f FPS over %.2f seconds; bridge ~%.2f ms/frame (present %.2f), %.0f calls/frame",
@@ -1051,13 +1066,11 @@ void requestGuestRuntimeStop() {stopRequested=true;}
 void setGuestPaused(bool paused) {
     // The AAudio stream keeps pulling from looping voices while the guest is
     // paused: in the background the last mixed sound repeated until the app
-    // closed. Pause the output with the guest and restart it on resume.
+    // closed. Pause the output with the guest and restart it on resume (or
+    // replace it, when Android took it meanwhile: sound_output.h).
     bool previous=guestPaused.exchange(paused);
-    if(paused&&!previous)frameTelemetry.pause();  // the next frame starts a new interval, not a 30 s "frame"
-    if(previous!=paused&&soundStream){
-        aaudio_result_t status=paused?AAudioStream_requestPause(soundStream):AAudioStream_requestStart(soundStream);
-        if(status!=AAUDIO_OK)NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFS","Audio %s failed: %d",paused?"pause":"resume",int(status));
-    }
+    if(paused&&!previous){frameTelemetry.pause();frameInterrupted=true;}  // the next frame starts a new interval, not a 30 s "frame"
+    if(previous!=paused)pauseGuestSound(paused);
 }
 bool guestDrivingControls() {return inputDrivingMode.load();}
 void setGuestPad(const float axes[6],uint32_t buttons,int hatX,int hatY){
@@ -1144,22 +1157,24 @@ std::string guestTelemetryJson(bool live){
 #ifdef __ANDROID__
     dxvkAndroidPipelineStats(pipelines);
 #endif
-    char tail[640];
-    int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0;
+    char tail[720];
+    int32_t xruns=-1,bufferFrames=0,burst=0;unsigned rate=0,lost=0,replaced=0;uint64_t silentMs=0;
     // The size the game really renders at (its D3D9 back buffer), next to the size the launcher asked for.
     unsigned backBuffer[2]{};
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
     d3d9BackBufferSize(backBuffer[0],backBuffer[1]);
 #endif
 #ifdef __ANDROID__
-    if(soundStream){xruns=AAudioStream_getXRunCount(soundStream);bufferFrames=AAudioStream_getBufferSizeInFrames(soundStream);burst=AAudioStream_getFramesPerBurst(soundStream);rate=soundMixer.rate;}
-    else{xruns=lastAudioStats.xruns;bufferFrames=lastAudioStats.bufferFrames;burst=lastAudioStats.burst;rate=lastAudioStats.rate;}
+    {auto sound=soundDevice.report();xruns=sound.xruns;bufferFrames=sound.bufferFrames;burst=sound.burst;rate=sound.rate;
+     lost=sound.lost;replaced=sound.replaced;silentMs=sound.silentMs;}
 #endif
+    // Build 15: streams Android took away ("lost"), the new ones opened for them, and how long the game ran without sound.
     std::snprintf(tail,sizeof tail,",\"pipelines\":{\"graphics\":%llu,\"compute\":%llu,\"totalMs\":%.1f,\"maxMs\":%.1f,\"over10Ms\":%llu},"
-        "\"audio\":{\"xruns\":%d,\"bufferFrames\":%d,\"burstFrames\":%d,\"rate\":%u},\"render\":{\"width\":%u,\"height\":%u,\"display\":[%u,%u],\"backBuffer\":[%u,%u]}",
+        "\"audio\":{\"xruns\":%d,\"bufferFrames\":%d,\"burstFrames\":%d,\"rate\":%u,\"lost\":%u,\"replaced\":%u,\"silentMs\":%llu},"
+        "\"render\":{\"width\":%u,\"height\":%u,\"display\":[%u,%u],\"backBuffer\":[%u,%u]}",
         static_cast<unsigned long long>(pipelines[0]),static_cast<unsigned long long>(pipelines[1]),pipelines[2]/1e6,pipelines[3]/1e6,
-        static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load(),
-        backBuffer[0],backBuffer[1]);
+        static_cast<unsigned long long>(pipelines[4]),xruns,bufferFrames,burst,rate,lost,replaced,static_cast<unsigned long long>(silentMs),
+        renderWidth.load(),renderHeight.load(),displayWidth.load(),displayHeight.load(),backBuffer[0],backBuffer[1]);
     std::string json="{\"frames\":"+(live?frameTelemetry.liveJson():frameTelemetry.json())+tail+",\"host\":"+host_perf::statusJson(!live);
     if(!live)json+=",\"buildId\":\""+nativeBuildId()+"\"";
     if(!live){

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <fstream>
 #include <functional>
 #include <mutex>
@@ -41,8 +42,13 @@ unsigned placementLogs=0;
 CoreChoice choice;
 bool adaptive=false;
 bool renderPlaced=false;                     // the render thread is pinned (to choice.current()'s cpus)
-bool renderAlive=true;                       // false once a move found the render thread gone
 int32_t renderTid=0;
+// What adoption applied to the render thread, so it can be followed again (followRenderAgain) when the keeper loses
+// it while it still presents: its mask (the fixed one; adaptive placement uses choice.current()'s) and nice value.
+bool renderPinned=false,renderNiced=false;
+cpu_set_t renderFixedMask{};
+std::atomic<bool> renderLost{false};          // the keeper stopped following the render thread
+unsigned renderFollows=0;                     // times it was followed again
 std::vector<int32_t> dxvkPlacedTids;         // DXVK threads placed off the render thread's cores (helperCpus)
 std::vector<double> clusterSeconds;          // checks spent on each cluster (one a second)
 std::vector<unsigned> capMinKhz;             // lowest allowed clock seen per cluster
@@ -56,24 +62,51 @@ constexpr size_t kMoveRecords=1000;          // ten seconds apart at least: hour
 std::vector<MoveRecord> moveRecord;
 bool moveRecordFull=false;
 std::chrono::steady_clock::time_point adoptedAt;
-// The kernel's cpu directory, the cpu count and the affinity calls: replaceable by tests/host_perf.cpp, which
-// runs this file against a fake cpu directory, with this machine's cpus or with the Pixel's eight simulated.
+// A thread of this process by id: its name, or ESRCH once it is gone (or the id is another process's); any other
+// error (out of file descriptors, say) is passed on as it is, and says nothing about the thread.
+int threadName(int32_t tid,std::string* name){
+    char path[64];std::snprintf(path,sizeof path,"/proc/self/task/%d/comm",int(tid));
+    int fd=open(path,O_RDONLY|O_CLOEXEC);
+    if(fd<0)return errno==ENOENT?ESRCH:errno;
+    char text[64];ssize_t got=read(fd,text,sizeof text-1);int error=got<0?errno:0;close(fd);
+    if(got<0)return error==ENOENT?ESRCH:error;
+    while(got>0&&(text[got-1]=='\n'||text[got-1]=='\0'))--got;
+    name->assign(text,size_t(got));return 0;
+}
+// When the thread started (field 22 of /proc/self/task/<tid>/stat, clock ticks since boot): with its id, which
+// thread it is, whatever it is named.
+int threadStart(int32_t tid,uint64_t* start){
+    char path[64];std::snprintf(path,sizeof path,"/proc/self/task/%d/stat",int(tid));
+    int fd=open(path,O_RDONLY|O_CLOEXEC);
+    if(fd<0)return errno==ENOENT?ESRCH:errno;
+    char text[1024];ssize_t got=read(fd,text,sizeof text-1);int error=got<0?errno:0;close(fd);
+    if(got<0)return error==ENOENT?ESRCH:error;
+    text[got]=0;
+    const char* at=std::strrchr(text,')');   // the name, in parentheses, may hold spaces
+    if(!at)return EINVAL;
+    ++at;
+    for(int field=3;field<=22;++field){        // field 3 (the state) follows the parenthesis
+        while(*at==' ')++at;
+        if(!*at)return EINVAL;
+        if(field==22){char* end=nullptr;unsigned long long value=std::strtoull(at,&end,10);if(end==at)return EINVAL;*start=value;return 0;}
+        while(*at&&*at!=' ')++at;
+    }
+    return EINVAL;
+}
+// The kernel's cpu directory, the cpu count, the affinity calls and the threads' start times: replaceable by
+// tests/host_perf.cpp, which runs this file against a fake cpu directory, with this machine's cpus or with the
+// Pixel's eight simulated.
 std::string cpuSysfs="/sys/devices/system/cpu";
 struct Os{
     std::function<long()> cpus=[]{return sysconf(_SC_NPROCESSORS_CONF);};
     std::function<int(int32_t,cpu_set_t*)> getAffinity=[](int32_t tid,cpu_set_t* mask){return sched_getaffinity(pid_t(tid),sizeof *mask,mask)==0?0:errno;};
     std::function<int(int32_t,const cpu_set_t&)> setAffinity=[](int32_t tid,const cpu_set_t& mask){return sched_setaffinity(pid_t(tid),sizeof mask,&mask)==0?0:errno;};
+    std::function<int(int32_t,uint64_t*)> threadStart=host_perf::threadStart;
 } os;
-
-// A thread of this process by id: its name, or ESRCH once it is gone (or the id is another process's).
-int threadName(int32_t tid,std::string* name){
-    char path[64];std::snprintf(path,sizeof path,"/proc/self/task/%d/comm",int(tid));
-    std::ifstream file(path);if(!file)return ESRCH;
-    std::getline(file,*name);return 0;
-}
 PlacementKeeper::System systemCalls(){
     PlacementKeeper::System system;
     system.getName=threadName;
+    system.getStart=[](int32_t tid,uint64_t* start){return os.threadStart(tid,start);};
     system.getAffinity=[](int32_t tid,cpu_set_t* mask){return os.getAffinity(tid,mask);};
     system.setAffinity=[](int32_t tid,const cpu_set_t& mask){return os.setAffinity(tid,mask);};
     system.getNice=[](int32_t tid,int* nice){errno=0;int value=getpriority(PRIO_PROCESS,id_t(tid));if(value==-1&&errno)return errno;*nice=value;return 0;};
@@ -85,7 +118,7 @@ PlacementKeeper::System systemCalls(){
 std::mutex keeperMutex;
 PlacementKeeper keeper(systemCalls());
 PlacementKeeper::Thread placed(const char* label,int32_t tid,const cpu_set_t* mask,bool keepNice,int nice){
-    PlacementKeeper::Thread thread;thread.label=label;thread.tid=tid;threadName(tid,&thread.name);
+    PlacementKeeper::Thread thread;thread.label=label;thread.tid=tid;threadName(tid,&thread.name);os.threadStart(tid,&thread.start);
     if(mask){thread.keepMask=true;thread.mask=*mask;}
     thread.keepNice=keepNice;thread.nice=nice;
     return thread;
@@ -94,7 +127,6 @@ PlacementKeeper::Thread placed(const char* label,int32_t tid,const cpu_set_t* ma
 unsigned readKhz(const std::string& path){
     std::ifstream file(path);unsigned value=0;if(!(file>>value))return 0;return value;
 }
-int64_t targetNanos(unsigned fps){return int64_t(1000000000ll/(fps?fps:120));}
 
 std::vector<int32_t> threadsNamed(const std::vector<const char*>& names){
     std::vector<int32_t> tids;
@@ -136,6 +168,16 @@ std::vector<unsigned> readCaps(){
     return caps;
 }
 }  // namespace
+
+// The performance hint session's target work duration (build 15): three quarters of the frame period, so the
+// governor clocks for the frame's work to end with time to spare, and never under the 120 Hz panel's own period
+// (8.33 ms, also the target uncapped). Aimed at the period itself (builds 3-14), the governor settled where half the
+// frames took longer: build 14 under a 60 cap ran 57 FPS on average, 60 in 46-59 % of its seconds, two frames in
+// five at 16.7-20 ms, with the X4 at 1.9 GHz on average while it was allowed 3.78.
+int64_t targetNanos(unsigned fps){
+    constexpr int64_t panel=1000000000ll/120;
+    return fps?std::max(int64_t(750000000ll/fps),panel):panel;   // 3/4 of 1e9/fps, without rounding it twice
+}
 
 CpuTopology readTopology(){
     CpuTopology topology;
@@ -207,17 +249,18 @@ void adoptRenderThread(Placement placement,unsigned targetFps){
     for(const auto& thread:dxvkThreads)tracked.emplace_back(thread.first,thread.second);
     std::lock_guard<std::mutex> keeperLock(keeperMutex);
     keeper.clear();placementLogs=0;moveLogs=0;moveRecord.clear();moveRecordFull=false;adoptedAt=startedAt;
-    choice=CoreChoice(topology.clusters);adaptive=false;renderPlaced=false;renderAlive=true;renderTid=int32_t(tid);dxvkPlacedTids.clear();
+    choice=CoreChoice(topology.clusters);adaptive=false;renderPlaced=false;renderTid=int32_t(tid);dxvkPlacedTids.clear();
+    renderPinned=renderNiced=false;CPU_ZERO(&renderFixedMask);renderLost=false;renderFollows=0;
     clusterSeconds.assign(choice.size(),0.0);capMinKhz.assign(choice.size(),0u);capSumKhz.assign(choice.size(),0.0);capChecks=0;
     cpu_set_t set,rest;CPU_ZERO(&set);CPU_ZERO(&rest);
-    bool renderPinned=false;std::vector<bool> dxvkPlaced(dxvkThreads.size(),false);
+    std::vector<bool> dxvkPlaced(dxvkThreads.size(),false);
     if((placement==Placement::FastestCores||placement==Placement::BigCore)&&!topology.fastest.empty()){
         for(unsigned cpu=0;cpu<topology.cpus&&cpu<CPU_SETSIZE;++cpu){
             std::string needle=std::to_string(cpu);std::string list=","+topology.fastest+",";
             if(list.find(","+needle+",")!=std::string::npos)CPU_SET(cpu,&set);
         }
         int error=os.setAffinity(int32_t(tid),set);
-        renderPinned=error==0;
+        renderPinned=error==0;renderFixedMask=set;
         if(renderPinned)affinityResult="render thread on cpu "+topology.fastest;
         else affinityResult=std::string("sched_setaffinity failed: ")+std::strerror(error);
         // DXVK's threads stay off the render thread's cores. The performance hint boosts them too, and the
@@ -246,6 +289,7 @@ void adoptRenderThread(Placement placement,unsigned targetFps){
     }
     // Apps may lower their own threads' nice value on Android (how THREAD_PRIORITY_URGENT_AUDIO works).
     bool renderNice=setpriority(PRIO_PROCESS,id_t(tid),-10)==0;
+    renderNiced=renderNice;
     if(renderNice)priorityResult="nice -10";
     else priorityResult=std::string("setpriority failed: ")+std::strerror(errno);
     // The command stream is on every frame's critical path as much as the render thread is.
@@ -285,8 +329,25 @@ void setTargetFps(unsigned targetFps){
     if(session&&updateTarget)updateTarget(session,targetNanos(targetFps));
 }
 
+// On the render thread, when the keeper has lost it: followed again, by the thread itself, so there is no doubt
+// which thread it is. Its placement (the current cluster with adaptive placement) and nice value are put back by
+// the keeper's next check.
+void followRenderAgain(){
+    std::lock_guard<std::mutex> keeperLock(keeperMutex);
+    if(!renderLost.exchange(false))return;
+    int32_t tid=int32_t(syscall(SYS_gettid));
+    if(keeper.tracks(tid))return;
+    cpu_set_t mask=adaptive&&choice.current()>=0?maskOf(choice.cluster(size_t(choice.current())).cpus):renderFixedMask;
+    keeper.add(placed("render",tid,renderPinned?&mask:nullptr,renderNiced,-10));
+    std::string name="?";threadName(tid,&name);
+    renderTid=tid;++renderFollows;
+    if(placementLogs<40){++placementLogs;
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Placement of render: followed again (thread %d \"%s\", still presenting)",int(tid),name.c_str());}
+}
+
 void reportFrame(std::chrono::nanoseconds work){
     if(!adopted.load(std::memory_order_relaxed))return;
+    if(renderLost.load(std::memory_order_relaxed))followRenderAgain();
     std::lock_guard<std::mutex> lock(mutex);
     if(!session||!reportActual)return;
     int64_t nanos=work.count();if(nanos<=0)return;
@@ -298,7 +359,8 @@ void maintainPlacement(){
     if(!adopted.load(std::memory_order_acquire))return;
     std::lock_guard<std::mutex> lock(keeperMutex);
     if(!keeper.size())return;
-    if(adaptive&&renderAlive){
+    // Moves wait while the render thread is not followed (until its next frame follows it again).
+    if(adaptive&&keeper.tracks(renderTid)){
         std::vector<unsigned> caps=readCaps();
         int from=choice.current();
         if(from>=0)clusterSeconds[size_t(from)]+=1.0;
@@ -319,7 +381,6 @@ void maintainPlacement(){
             char text[256];
             if(error){
                 choice.undo(from);
-                if(error==ESRCH)renderAlive=false;
                 std::snprintf(text,sizeof text,"Render thread stays on %s: moving it to %s failed (%s)",CoreChoice::describe(choice.cluster(size_t(from)).cpus).c_str(),
                               CoreChoice::describe(choice.cluster(size_t(to)).cpus).c_str(),std::strerror(error));
             }else{
@@ -339,7 +400,9 @@ void maintainPlacement(){
         }
     }
     for(const auto& change:keeper.check(cpuCount)){
-        if(placementLogs>=40)break;   // a session that keeps losing it is visible in the counts
+        // The render thread lost while it presents is followed again from its next frame (reportFrame).
+        if(change.dropped&&change.label=="render")renderLost=true;
+        if(placementLogs>=40)continue;   // a session that keeps losing it is visible in the counts
         ++placementLogs;
         NFS_RUNTIME_LOG(change.restored?ANDROID_LOG_INFO:ANDROID_LOG_WARN,"NFSU1","Placement of %s: %s",change.label.c_str(),change.what.c_str());
     }
@@ -362,9 +425,10 @@ std::string statusJson(bool full){
     std::lock_guard<std::mutex> keeperLock(keeperMutex);
     char text[720];
     std::snprintf(text,sizeof text,"{\"affinity\":\"%s\",\"priority\":\"%s\",\"dxvk\":\"%s\",\"adpf\":\"%s\",\"targetFps\":%u,\"reports\":%llu,\"reportFailures\":%llu,"
-        "\"placementRestored\":%llu,\"placementFailed\":%llu",
+        "\"placementRestored\":%llu,\"placementFailed\":%llu,\"placementDropped\":%llu,\"renderFollowedAgain\":%u",
         affinityResult.c_str(),priorityResult.c_str(),dxvkResult.c_str(),adpfResult.c_str(),currentTargetFps,static_cast<unsigned long long>(reports),static_cast<unsigned long long>(reportFailures),
-        static_cast<unsigned long long>(keeper.restored()),static_cast<unsigned long long>(keeper.failed()));
+        static_cast<unsigned long long>(keeper.restored()),static_cast<unsigned long long>(keeper.failed()),
+        static_cast<unsigned long long>(keeper.dropped()),renderFollows);
     std::string json=text;
     // Build 12: the cpus the render thread is on now (the overlay shows them), and with FastestCores where it ran,
     // how often it moved and the clocks each cluster was allowed (min and average MHz, one check a second).

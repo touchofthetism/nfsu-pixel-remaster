@@ -20,7 +20,7 @@ Later builds install straight over the previous one (same signing key, higher ve
 - [ ] HUD, mirror, minimap sit correctly in the 20:9 picture; no stretching.
 - [ ] Cars show reflections; textures stay sharp at grazing angles (Texture filtering 16×).
 - [ ] Turn **Anti-aliasing** to 4× MSAA, play one race: smoother edges, no visual breakage, framerate holds. If anything breaks, set it back to Off and say so in the report.
-- [ ] Background the game and come back; rotate the phone; play 10 minutes — no crash.
+- [ ] Background the game and come back (the sound returns at once, even after minutes away); rotate the phone; play 10 minutes — no crash.
 - [ ] **Share diagnostics** → send the ZIP (Drive is fine).
 
 ## What the diagnostics ZIP holds
@@ -49,4 +49,7 @@ Later builds install straight over the previous one (same signing key, higher ve
 - `D3D9 CreateCubeTexture … status=` — reflection cubemaps; a failing status explains missing car reflections.
 - `E DXVK` lines — DXVK errors; the first one after `CreateDevice` is usually the story.
 - `CPU topology: … clusters: cpu 0-1 (capacity …), …` — the groups of cores sharing a clock and the kernel's capacity for each (1024 = the X4 at its top clock): what the placement works from. `(estimated)` means the kernel didn't say.
-- `Render thread to cpu 5-6, allowed … MHz (speed …), from cpu 7 allowed … MHz (speed …); DXVK threads on …` — the game thread moved because the X4's allowed clock fell (or came back). No such line in a long session means the caps never favoured a move, or the phone doesn't show them: the summary's *allowed* clocks tell which.
+- `Render thread to cpu 5-6, allowed … MHz (speed …), from cpu 7 allowed … MHz (speed …); DXVK threads on …` — the game thread moved because the X4's allowed clock fell (or came back). Since build 15 the X4's speed counts 1.5 times its kernel figure per clock, so a move needs the other cores allowed 1.8 times the X4's clock: on the Pixel only deep throttling moves it. No such line in a long session means the caps never favoured a move, or the phone doesn't show them: the summary's *allowed* clocks tell which.
+- `Placement of render: renamed … still followed`, `… no longer followed: …`, `… followed again` — the keeper's view of a placed thread: a new name (the same thread), a drop with its reason, and the game thread followed again from its own next frame (build 15).
+- `Sound output lost (…): …` then `Sound output replaced: a new stream after … ms without sound` — Android took the sound stream (in the background, or headphones in or out) and a new one plays. `Sound output: no stream (…), attempt …` — an open that failed and when the next try is due; the game's sound buffers keep moving meanwhile. The summary's *Audio* line counts them.
+- `ADPF: session with 5 threads, target 12.50 ms` — the performance hint aims at three quarters of the frame period (60 FPS cap: 12.5 ms), so frames end with time to spare.

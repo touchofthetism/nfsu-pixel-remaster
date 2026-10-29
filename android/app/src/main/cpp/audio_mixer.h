@@ -36,7 +36,8 @@ public:
     uint64_t clippedSamples=0;float peakAmplitude=0;
     bool add(const std::shared_ptr<PcmVoice>& voice){
         std::lock_guard<std::mutex> lock(mutex);
-        for(auto& slot:voices)if(!slot){slot=voice;return true;}return false;
+        for(auto& slot:voices)if(!slot){slot=voice;return true;}
+        return false;
     }
     void remove(const std::shared_ptr<PcmVoice>& voice){std::lock_guard<std::mutex> lock(mutex);for(auto& slot:voices)if(slot==voice)slot.reset();}
     static float sample(const PcmVoice& voice,size_t frame,unsigned channel){

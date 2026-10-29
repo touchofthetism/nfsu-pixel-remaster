@@ -1,7 +1,9 @@
 // The placement keeper (android/app/src/main/cpp/placement_keeper.h) against a simulated system: a mask
 // Android replaced is put back and logged once; a placed cpu that is merely inactive is left alone; a restore
 // the kernel refuses (the only placed cpu paused) is reported once, retried, and its success reported; nice
-// values come back too; a thread that ended, or whose id now names another thread, is dropped untouched.
+// values come back too; a thread that ended, or whose id now names another thread, is dropped untouched and the
+// drop reported with its reason; a thread with a new name and its old start time is still followed; a name that
+// cannot be read for a moment drops nothing (build 15).
 #include "../android/app/src/main/cpp/placement_keeper.h"
 
 #include <cstdio>
@@ -13,7 +15,7 @@ static void require(bool ok, const char* message) {
 }
 
 namespace {
-struct FakeThread { std::string name; cpu_set_t mask; int nice; };
+struct FakeThread { std::string name; cpu_set_t mask; int nice; uint64_t start = 0; int nameError = 0; };
 std::map<int32_t, FakeThread> threads;
 cpu_set_t active;          // cpus the kernel will schedule on (a paused one is missing)
 unsigned setCalls = 0, niceCalls = 0;
@@ -29,7 +31,14 @@ PlacementKeeper::System fakeSystem() {
     system.getName = [](int32_t tid, std::string* name) {
         auto it = threads.find(tid);
         if (it == threads.end()) return ESRCH;
+        if (it->second.nameError) return it->second.nameError;
         *name = it->second.name;
+        return 0;
+    };
+    system.getStart = [](int32_t tid, uint64_t* start) {
+        auto it = threads.find(tid);
+        if (it == threads.end()) return ESRCH;
+        *start = it->second.start;
         return 0;
     };
     // Like sched_getaffinity: the thread's mask limited to the active cpus.
@@ -77,15 +86,15 @@ int main() {
     require(PlacementKeeper::describe(cpus({}), count) == "no cpu", "describe nothing");
     require(PlacementKeeper::within(big, all) && !PlacementKeeper::within(all, big), "within");
 
-    threads[100] = {"Thread-7", big, -10};
-    threads[101] = {"dxvk-cs", rest, -10};
-    threads[102] = {"dxvk-queue", rest, 0};
+    threads[100] = {"Thread-7", big, -10, 4242};
+    threads[101] = {"dxvk-cs", rest, -10, 4250};
+    threads[102] = {"dxvk-queue", rest, 0, 4251};
     PlacementKeeper keeper(fakeSystem());
-    PlacementKeeper::Thread render; render.label = "render"; render.tid = 100; render.name = "Thread-7";
+    PlacementKeeper::Thread render; render.label = "render"; render.tid = 100; render.name = "Thread-7"; render.start = 4242;
     render.keepMask = true; render.mask = big; render.keepNice = true; render.nice = -10;
-    PlacementKeeper::Thread cs; cs.label = "dxvk-cs"; cs.tid = 101; cs.name = "dxvk-cs";
+    PlacementKeeper::Thread cs; cs.label = "dxvk-cs"; cs.tid = 101; cs.name = "dxvk-cs"; cs.start = 4250;
     cs.keepMask = true; cs.mask = rest; cs.keepNice = true; cs.nice = -10;
-    PlacementKeeper::Thread queue; queue.label = "dxvk-queue"; queue.tid = 102; queue.name = "dxvk-queue";
+    PlacementKeeper::Thread queue; queue.label = "dxvk-queue"; queue.tid = 102; queue.name = "dxvk-queue"; queue.start = 4251;
     queue.keepMask = true; queue.mask = rest;
     keeper.add(render); keeper.add(cs); keeper.add(queue);
 
@@ -141,15 +150,50 @@ int main() {
     threads[100].mask = big; threads[101].mask = rest; threads[102].mask = rest;
     require(keeper.setMask(100, big) && keeper.setMask(101, rest) && keeper.setMask(102, rest) && keeper.check(count).empty(), "moved home");
 
-    // The queue thread ends and its id goes to a new thread with another name: dropped, never touched.
-    threads[102] = {"AsyncTask #3", all, 0};
+    // Build 15: the render thread under a new name, with its start time: the same thread, still followed, and a
+    // mask Android replaces afterwards is put back.
+    threads[100].name = "GameThread";
+    changes = keeper.check(count);
+    require(changes.size() == 1 && changes[0].label == "render" && changes[0].restored && !changes[0].dropped
+                && changes[0].what == "renamed \"Thread-7\" to \"GameThread\" (the same thread: its start time), still followed",
+            changes.empty() ? "no change" : changes[0].what.c_str());
+    require(keeper.tracks(100) && keeper.check(count).empty() && keeper.dropped() == 0, "followed under its new name, once reported");
+    threads[100].mask = all;
+    changes = keeper.check(count);
+    require(changes.size() == 1 && changes[0].what == "affinity cpu 0-7, put back to cpu 7" && CPU_EQUAL(&threads[100].mask, &big),
+            "its placement kept");
+    // Its name unreadable for a moment (out of file descriptors, say): nothing is dropped or touched until it reads.
+    threads[100].nameError = EMFILE;
+    threads[100].mask = all;
     before = setCalls;
-    require(keeper.check(count).empty() && setCalls == before && keeper.size() == 2 && keeper.dropped() == 1,
-            "a reused thread id is not touched");
+    require(keeper.check(count).empty() && keeper.tracks(100) && setCalls == before, "an unreadable name: left for the next check");
+    threads[100].nameError = 0;
+    changes = keeper.check(count);
+    require(changes.size() == 1 && changes[0].restored && CPU_EQUAL(&threads[100].mask, &big), "and put back then");
+
+    // The queue thread ends and its id goes to a new thread with another name and start: dropped, never touched,
+    // and said so.
+    threads[102] = {"AsyncTask #3", all, 0, 9001};
+    before = setCalls;
+    changes = keeper.check(count);
+    require(changes.size() == 1 && changes[0].label == "dxvk-queue" && changes[0].dropped && !changes[0].restored
+                && changes[0].what == "no longer followed: its id now names another thread (\"AsyncTask #3\")",
+            changes.empty() ? "no change" : changes[0].what.c_str());
+    require(setCalls == before && keeper.size() == 2 && keeper.dropped() == 1 && !keeper.tracks(102), "a reused thread id is not touched");
     require(CPU_EQUAL(&threads[102].mask, &all), "the new thread keeps its own mask");
     // The command stream ends.
     threads.erase(101);
-    require(keeper.check(count).empty() && keeper.size() == 1 && keeper.dropped() == 2, "an ended thread is dropped");
+    changes = keeper.check(count);
+    require(changes.size() == 1 && changes[0].dropped && changes[0].what == "no longer followed: the thread ended"
+                && keeper.size() == 1 && keeper.dropped() == 2, "an ended thread is dropped, and said so");
+    // Without a start time to tell, a new name is another thread (the rule before build 15).
+    threads[103] = {"dxvk-submit", rest, 0};
+    PlacementKeeper::Thread submit; submit.label = "dxvk-submit"; submit.tid = 103; submit.name = "dxvk-submit";
+    submit.keepMask = true; submit.mask = rest;
+    keeper.add(submit);
+    threads[103].name = "binder:4321_2";
+    changes = keeper.check(count);
+    require(changes.size() == 1 && changes[0].dropped && keeper.dropped() == 3 && !keeper.tracks(103), "no start time: dropped");
 
     keeper.clear();
     require(keeper.size() == 0 && keeper.check(count).empty(), "cleared");

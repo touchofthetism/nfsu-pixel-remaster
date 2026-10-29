@@ -6,6 +6,8 @@
 // move to a faster cluster when the big core's cap falls (and between the mid clusters), DXVK's threads moving
 // out of its way, a mask Android replaces put back to the new cluster, the way home, "Biggest core only" (no
 // moves), "System scheduler" (no placement), hidden caps (no moves) and the JSON the overlay and summary read.
+// Build 15: the performance hint's target (three quarters of the frame period), the render thread followed under
+// a new name, and followed again from its own next frame when the keeper loses it anyway (moves then go on).
 #include "../android/app/src/main/cpp/host_perf.cpp"
 
 #include <condition_variable>
@@ -84,7 +86,7 @@ int checksUntil(int32_t render, const std::vector<int>& cpus, int limit) {
     return -1;
 }
 
-// A thread with a name of its own that runs `start` and then waits until the test ends it.
+// A thread with a name of its own that runs `start`, then whatever run() hands it, until the test ends it.
 class NamedThread {
 public:
     NamedThread(const char* name, std::function<void()> start) {
@@ -95,7 +97,17 @@ public:
             std::unique_lock<std::mutex> lock(mutex_);
             ready_ = true;
             changed_.notify_all();
-            changed_.wait(lock, [this] { return stop_; });
+            for (;;) {
+                changed_.wait(lock, [this] { return stop_ || task_; });
+                if (stop_) return;
+                auto task = std::move(task_);
+                task_ = nullptr;
+                lock.unlock();
+                task();
+                lock.lock();
+                done_ = true;
+                changed_.notify_all();
+            }
         });
         std::unique_lock<std::mutex> lock(mutex_);
         changed_.wait(lock, [this] { return ready_; });
@@ -106,11 +118,20 @@ public:
         thread_.join();
     }
     int32_t tid() const { return tid_; }
+    // Runs `task` on this thread and waits for it.
+    void run(std::function<void()> task) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        task_ = std::move(task);
+        done_ = false;
+        changed_.notify_all();
+        changed_.wait(lock, [this] { return done_; });
+    }
 private:
     std::thread thread_;
     std::mutex mutex_;
     std::condition_variable changed_;
-    bool ready_ = false, stop_ = false;
+    std::function<void()> task_;
+    bool ready_ = false, stop_ = false, done_ = false;
     int32_t tid_ = 0;
 };
 void adoptFastest() { host_perf::adoptRenderThread(host_perf::Placement::FastestCores, 60); }
@@ -162,7 +183,8 @@ void realMachine() {
         for (int i = 0; i < 15; ++i) host_perf::maintainPlacement();
         require(affinity(render.tid()) == home.cpus, "uncapped: stays");
 
-        // The big core capped to 1 GHz (speed 1024 * 1.0 / 3.8 = 269 against a mid core's 700): away on the third check.
+        // The big core capped to 1 GHz (speed 1024 * 1.0 / 3.8 = 269, times 1.30 for its work per clock: 350, against a
+        // mid core's 700): away on the third check.
         writeCap(home, 1000000);
         host_perf::maintainPlacement();
         host_perf::maintainPlacement();
@@ -239,7 +261,7 @@ void realMachine() {
 }
 
 // The Pixel 10 Pro XL: eight cpus simulated (the affinity calls kept in a table, refused like the kernel's when
-// no cpu of the mask exists), the clusters as Tensor G5 has them (capacities illustrative), the caps of 2026-10-28.
+// no cpu of the mask exists), the clusters and capacities as its kernel gives them, the caps of 2026-10-28.
 struct Simulated {
     std::mutex mutex;
     std::map<int32_t, cpu_set_t> masks;
@@ -261,11 +283,11 @@ void pixel() {
         simulated.masks[tid] = usable;
         return 0;
     };
-    writeTree({{{0, 1}, 280, 2246000}, {{2, 3, 4}, 760, 3052000}, {{5, 6}, 760, 3052000}, {{7}, 1024, 3782000}});
+    writeTree({{{0, 1}, 207, 2246000}, {{2, 3, 4}, 824, 3052000}, {{5, 6}, 825, 3052000}, {{7}, 1024, 3782000}});
     const FakeCluster little = layout[0], midA = layout[1], midB = layout[2], x4 = layout[3];
     {
         auto topology = host_perf::readTopology();
-        require(topology.clusterSummary == "cpu 0-1 (capacity 280), cpu 2-4 (capacity 760), cpu 5-6 (capacity 760), cpu 7 (capacity 1024)"
+        require(topology.clusterSummary == "cpu 0-1 (capacity 207), cpu 2-4 (capacity 824), cpu 5-6 (capacity 825), cpu 7 (capacity 1024)"
                     && topology.fastest == "7", topology.clusterSummary);
     }
     NamedThread cs("dxvk-cs", nullptr), submit("dxvk-submit", nullptr), queue("dxvk-queue", nullptr), recycle("dxvk-recycle", nullptr);
@@ -279,8 +301,44 @@ void pixel() {
     require(affinity(render.tid()) == x4.cpus && dxvkOn(range(0, 6)), "adopted: render on cpu 7, DXVK on 0-6");
     require(has(json, "\"dxvk\":\"4 of 4 DXVK threads off cpu 7"), json);
 
-    // 05:40: the X4 allowed 1152 MHz (speed 312), both A725 clusters 2688 (669). To cpu 5-6 on the third check;
-    // DXVK's threads off it and off the X4.
+    // The performance hint's target: three quarters of the frame period, not under the 120 Hz panel's 8.33 ms.
+    require(host_perf::targetNanos(60) == 12500000 && host_perf::targetNanos(30) == 25000000 && host_perf::targetNanos(45) == 16666666
+                && host_perf::targetNanos(90) == 8333333 && host_perf::targetNanos(120) == 8333333 && host_perf::targetNanos(0) == 8333333,
+            "hint targets");
+    require(has(json, "\"targetFps\":60"), json);
+
+    // The render thread takes a new name: the same thread (its start time), still followed, its placement kept.
+    render.run([] { pthread_setname_np(pthread_self(), "GameThread"); });
+    host_perf::maintainPlacement();
+    require(host_perf::os.setAffinity(render.tid(), host_perf::maskOf(range(0, 7))) == 0, "widen");
+    host_perf::maintainPlacement();
+    json = host_perf::statusJson(false);
+    require(affinity(render.tid()) == x4.cpus && has(json, "\"placementDropped\":0"), "renamed: still on cpu 7; " + json);
+
+    // Lost anyway (here: its start time reads differently): no longer followed, its widened mask left alone, and
+    // no move made; its next frame follows it again, and the keeper's next check puts it back on cpu 7.
+    auto realStart = host_perf::os.threadStart;
+    const int32_t renderTid = render.tid();
+    host_perf::os.threadStart = [realStart, renderTid](int32_t tid, uint64_t* start) {
+        int result = realStart(tid, start);
+        if (tid == renderTid) *start += 1;
+        return result;
+    };
+    render.run([] { pthread_setname_np(pthread_self(), "GameThread2"); });
+    host_perf::maintainPlacement();
+    host_perf::os.threadStart = realStart;
+    require(host_perf::os.setAffinity(render.tid(), host_perf::maskOf(range(0, 7))) == 0, "widen");
+    host_perf::maintainPlacement();
+    json = host_perf::statusJson(false);
+    require(affinity(render.tid()) == range(0, 7) && has(json, "\"placementDropped\":1") && has(json, "\"renderFollowedAgain\":0"),
+            "lost: not put back; " + json);
+    render.run([] { host_perf::reportFrame(std::chrono::milliseconds(10)); });
+    host_perf::maintainPlacement();
+    json = host_perf::statusJson(false);
+    require(affinity(render.tid()) == x4.cpus && has(json, "\"renderFollowedAgain\":1"), "followed again and put back: " + json);
+
+    // 05:40: the X4 allowed 1152 MHz (speed 312, 467 for its work per clock), both A725 clusters 2688 (726, 727):
+    // to cpu 5-6 on the third check; DXVK's threads off it and off the X4.
     writeCap(little, 2246000); writeCap(midA, 2688000); writeCap(midB, 2688000); writeCap(x4, 1152000);
     require(checksUntil(render.tid(), midB.cpus, 10) == 3, "to cpu 5-6 on the third check");
     require(dxvkOn(range(0, 4)), "DXVK on cpu 0-4: " + list(affinity(cs.tid())));
@@ -294,7 +352,7 @@ void pixel() {
     host_perf::maintainPlacement();
     require(affinity(render.tid()) == midB.cpus, "put back to cpu 5-6");
 
-    // cpu 5-6 capped harder (1536 MHz, speed 382) than cpu 2-4 (669): over to cpu 2-4 once ten checks have passed;
+    // cpu 5-6 capped harder (1536 MHz, speed 415) than cpu 2-4 (726): over to cpu 2-4 once ten checks have passed;
     // DXVK's threads then on the little cores and cpu 5-6.
     writeCap(midB, 1536000);
     require(checksUntil(render.tid(), midA.cpus, 20) > 0, "to cpu 2-4");

@@ -11,8 +11,9 @@
 //  - affinity: the render guest thread (and nothing else) is allowed only on the fastest cluster;
 //  - priority: that thread gets a lower nice value;
 //  - ADPF: an APerformanceHint session (API 33+, resolved at runtime) with the render thread and DXVK's
-//    worker threads and the frame cap as target; every frame's CPU work is reported so the kernel's
-//    governor raises clocks to meet it instead of settling at the cheapest "busy enough" point.
+//    worker threads, aimed at three quarters of the frame cap's period (build 15: aimed at the period itself,
+//    half the frames came in late); every frame's CPU work is reported so the kernel's governor raises clocks
+//    to meet it instead of settling at the cheapest "busy enough" point.
 //    (DXVK's threads carry names only since build 9: until then the session held the render thread alone.)
 //  - DXVK's command-stream, submit, queue and cleanup threads are kept off the render thread's cores (with
 //    FastestCores and BigCore), and the command stream gets the render thread's priority.
@@ -34,7 +35,7 @@ namespace host_perf {
         std::string fastest;   // cpu list of the fastest cluster, e.g. "7"
         std::string summary;   // for the log: per-cpu max MHz
         std::vector<CoreChoice::Cluster> clusters;   // cpus sharing a clock, by first cpu
-        std::string clusterSummary;                    // for the log: "cpu 0-1 (capacity 280), ..."
+        std::string clusterSummary;                    // for the log: "cpu 0-1 (capacity 207), ..."
     };
     CpuTopology readTopology();
 
@@ -42,8 +43,11 @@ namespace host_perf {
     void adoptRenderThread(Placement placement, unsigned targetFps);
     // The frame cap changed (in-game frame limit menu).
     void setTargetFps(unsigned targetFps);
-    // After each Present: the CPU work of the frame (without the pacer's sleep).
+    // After each Present, on the render thread: the CPU work of the frame (without the pacer's sleep). Also where
+    // the render thread is followed again if the keeper lost it (build 15).
     void reportFrame(std::chrono::nanoseconds work);
+    // The performance hint's target work duration for a frame cap (0: uncapped), in nanoseconds.
+    int64_t targetNanos(unsigned fps);
     // Puts back any placed thread's affinity or nice value that was replaced (once a second, while playing).
     void maintainPlacement();
     // Session end.

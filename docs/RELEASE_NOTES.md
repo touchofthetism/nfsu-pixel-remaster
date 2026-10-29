@@ -7,6 +7,37 @@
 
 ## What's new
 
+### Build 15 — the sound comes back, the 60 FPS cap holds 60, and the game stays on the fast core
+Install the APK over build 14; nothing else changes (mod packs, saves and options stay). Built from the 18:21 diagnostics: six build‑14 sessions, no crash.
+- **The sound comes back after you leave the game.** Twice that ZIP shows the game going silent for good: after 40 seconds in the background (18:09) and after 85 minutes (16:26 to 17:51). Android's audio server had taken the game's sound stream back while it was paused. On the return, Android answered the restart with *disconnected*, every later restart with *invalid state*, and the game played on without sound until it was closed. Plugging headphones in or out, or a Bluetooth headset connecting, ends a stream the same way.
+  - Now a stream that fails to restart, reports an error, or shows itself disconnected is closed, and a new one is opened in its place. A sound keeper thread does the opening, which takes 50–110 ms on the Pixel, so no frame waits for it. If the game is paused at that moment, the new stream opens when it resumes.
+  - If an open fails, the keeper tries again after 0.5 s, then waits twice as long each time, up to 8 s.
+  - While no stream plays, the keeper runs the game's mixer in real time without output. The game's sound buffers keep advancing as they would on a working device, so the music and engine pick up where the game is when the sound returns.
+  - The summary's *Audio* line counts the streams lost and replaced and the time without sound, and the log says each one (`Sound output lost (…)`, `Sound output replaced: a new stream after 85 ms without sound`).
+- **A 60 FPS cap now gives 60.** Build 14 averaged 57 FPS under the 60 cap: 46–59 % of seconds reached 60 and two frames in five took 16.7–20 ms. In the 16:25 session the X4 ran at 1.9 GHz on average while allowed 3.78 GHz. Two causes:
+  - *The performance hint.* The game asks Android for the clocks its frames need by reporting each frame's work against a target. That target was the frame period itself, 16.7 ms, so the governor settled where half the frames took longer. It is now three quarters of the period: 12.5 ms at 60, 25 ms at 30, never under the 120 Hz panel's 8.33 ms, which stays the target uncapped and at 90–120. Expect the X4 to run faster at 60 than it did, and a little warmer.
+  - *The frame cap's sleep.* It came after each frame was handed to the screen, so it spaced out the starts of the frames. Each frame then reached the screen one frame's work later, and that work varies, so even frames on time arrived unevenly. The sleep now comes just before the frame is handed over: frames go out exactly a period apart, and the sleep is left out of the work reported. A frame running late is still never made up for with a rushed one.
+- **The game stays on the fast core.** Build 12's placement moves the game thread off the X4 when another group of cores is allowed to run faster. It judges that by the kernel's figures for each core's work per clock, and on this phone those say the X4 and the A725 do the same. For this game they don't. Over the 10 s before and after 25 of build 14's moves, the frame rate per MHz was 1.51 times as high on the X4 (the median; the middle half 1.29–1.71). 9 of the 14 moves away from it lowered the frame rate (98.7 to 59.3 FPS, 56.9 to 35.4), and 9 of the 11 moves back raised it.
+  - The X4 now counts for 1.5 times its kernel figure per clock. Another group of cores needs 1.8 times the X4's allowed clock to take the thread.
+  - Replayed against the clocks those sessions were allowed, the thread would have stayed on the X4 all session, where it moved 13, 11 and 4 times. Only the deepest throttling (the X4 allowed 1.15–1.4 GHz) still moves it.
+- **The game thread's placement no longer slips away.** At 18:15, after five minutes in the background, the placement keeper stopped following the game thread, though the thread went on presenting frames. From then on it ran wherever Android put it (cpu 0 at 18:15), and the move it tried at 18:17 failed with *No such process*, which switched off build 12's placement for the rest of the session. The log couldn't say why, because drops weren't logged. Now:
+  - a thread keeps being followed under a new name while its start time is the same;
+  - a name that can't be read for a moment drops nothing;
+  - every drop is logged with its reason;
+  - if the game thread is dropped anyway, it is followed again from its own next frame, and moves go on.
+  The summary counts drops and re‑follows on its *Threads* line.
+- **Checked on the build machine:**
+  - The sound output against a simulated AAudio: build 14's case (taken back in the background), disconnects reported and unreported, failed pauses, starts and opens, the waits, devices that drop every stream, and reports arriving from streams already closed. Every rule is checked by mutation: tests fail when it is removed.
+  - The whole sound device on a simulated AAudio with its own callback threads, under ThreadSanitizer and AddressSanitizer: the replacements, a resume that doesn't wait for a slow open, figures that don't wait either, the stand‑in mixing in real time, buffer growth after underruns, and a clean stop.
+  - The frame pacer: work varying 6–14 ms under a 60 cap gives frames exactly 16.67 ms apart, where build 14's order varied by 12 ms or more.
+  - The placement: the X4's per‑clock factor against the phone's own kernel figures, build 14's moves of 18:07 and 18:08 no longer made, the deep‑cap moves still made, a game thread renamed or lost and followed again end to end, and the hint targets.
+- **What to try:**
+  - play at the 60 cap: the overlay should sit at 60 outside loading;
+  - leave the game for a few minutes and come back: the sound should return within a moment;
+  - unplug or plug in headphones during a race.
+  Then share diagnostics.
+- **Settings for build 15:** as for build 14, with one change: **FPS limit 60** is now the smooth choice for long sessions (use 120 or Unlimited for short ones on a cool phone). Keep *CPU placement* on *Fastest core*.
+
 ### Build 14 and HD pack v12 — Plajer's HD User Interface and HD Decals, with the fonts they need
 Install the APK over build 13 first, then *Install mod pack (ZIP)* with `nfsu-hdpack-v12.zip` (103 MB). Keep v10 and v11 installed: v12 goes on top of them (about 310 MB more), and *Mod packs* takes it off on its own, putting back what it replaced. Private release `hdpack-v12`. Build 14 carries builds 12 and 13 too, which no session has run yet.
 - **What it is.** Two of Plajer's mods from nfsmods.xyz, 1,005 textures in 33 bundles:

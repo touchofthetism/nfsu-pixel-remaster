@@ -218,8 +218,16 @@ final class SessionSummary {
         if (pipelines != null) out.append(String.format(Locale.US, "  Pipelines compiled: %d graphics + %d compute, %.0f ms total, worst %.0f ms, %d over 10 ms\n",
                 pipelines.optLong("graphics"), pipelines.optLong("compute"), pipelineTotalMs, pipelineMaxMs, pipelineOver10Ms));
         JSONObject audio = nat == null ? null : nat.optJSONObject("audio");
-        if (audio != null) out.append(String.format(Locale.US, "  Audio: xruns %d, buffer %d frames (burst %d), %d Hz\n",
-                audio.optInt("xruns"), audio.optInt("bufferFrames"), audio.optInt("burstFrames"), audio.optInt("rate")));
+        if (audio != null) {
+            // Build 15: streams Android took away (in the background, or on a change of output device), the new
+            // ones opened for them, and how long the game ran without sound meanwhile (sound_output.h).
+            int lost = audio.optInt("lost"), replaced = audio.optInt("replaced");
+            long silentMs = audio.optLong("silentMs");
+            String output = lost == 0 && silentMs == 0 ? "" : String.format(Locale.US, "; output lost %d time%s, replaced %d, %.1f s without sound",
+                    lost, lost == 1 ? "" : "s", replaced, silentMs / 1000.0);
+            out.append(String.format(Locale.US, "  Audio: xruns %d, buffer %d frames (burst %d), %d Hz%s\n",
+                    audio.optInt("xruns"), audio.optInt("bufferFrames"), audio.optInt("burstFrames"), audio.optInt("rate"), output));
+        }
         JSONObject render = nat == null ? null : nat.optJSONObject("render");
         if (render != null) {
             // backBuffer: what the game really rendered (its D3D9 device); width/height: what the launcher asked for.
@@ -295,6 +303,10 @@ final class SessionSummary {
             long restored = host.optLong("placementRestored"), refused = host.optLong("placementFailed");
             String kept = restored + refused == 0 ? (host.has("placementRestored") ? "; placement held all session" : "")
                     : String.format(Locale.US, "; placement replaced and put back %d times%s", restored, refused > 0 ? String.format(Locale.US, " (%d checks could not)", refused) : "");
+            // Build 15: placed threads the keeper stopped following, and how often the render thread was followed again.
+            long dropped = host.optLong("placementDropped"), followed = host.optLong("renderFollowedAgain");
+            if (dropped > 0) kept += String.format(Locale.US, "; %d placed thread%s no longer followed%s", dropped, dropped == 1 ? "" : "s",
+                    followed > 0 ? String.format(Locale.US, " (the render thread followed again %d time%s)", followed, followed == 1 ? "" : "s") : "");
             out.append(String.format(Locale.US, "  Threads: %s, %s%s; performance hints: %s (%d reports, %d failed)%s\n",
                     host.optString("affinity", "?"), host.optString("priority", "?"), dxvk.isEmpty() ? "" : "; " + dxvk,
                     host.optString("adpf", "?"), host.optLong("reports"), host.optLong("reportFailures"), kept));
