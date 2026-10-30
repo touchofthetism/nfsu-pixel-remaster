@@ -93,6 +93,8 @@ android {
 afterEvaluate { tasks.named('preBuild') { dependsOn 'bundleReleaseNotes' } }
 
 dependencies {
+    // LZMA/LZMA2 decoders for the game-archive readers (ZipArchive, the 7z reader); public domain / 0BSD.
+    implementation 'org.tukaani:xz:1.12'
     testImplementation 'junit:junit:4.13.2'
     // android.jar's org.json is a stub in unit tests; the real library backs SessionSummary's tests.
     testImplementation 'org.json:json:20240303'
